@@ -1,0 +1,54 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+
+# Local databases and runtime state
+db.sqlite3
+*.sqlite3
+*.sqlite
+celerybeat-schedule
+celerybeat.pid
+*.pid
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Django/static build outputs
+staticfiles/
+media/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Docker/local tooling
+.docker/
+docker-compose.override.yml
+
+# Editors and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Generated artifacts
+tmp/
+output/
+*.log
+postman/*

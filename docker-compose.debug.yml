@@ -1,0 +1,94 @@
+services:
+  web:
+    build: .
+    command: python -m debugpy --listen 0.0.0.0:5678 manage.py runserver 0.0.0.0:8080 --noreload
+    volumes:
+      - .:/app
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8080}:8080"
+      - "127.0.0.1:${WEB_DEBUG_PORT:-5678}:5678"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.development
+      DB_ENGINE: postgres
+      DB_NAME: ${DB_NAME:-booking_engine}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_HOST: ${DB_HOST:-host.docker.internal}
+      DB_PORT: ${DB_PORT:-5432}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://host.docker.internal:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://host.docker.internal:6379/1}
+
+  celery:
+    build: .
+    command: python -m debugpy --listen 0.0.0.0:5679 -m celery -A config worker -l ${CELERY_LOG_LEVEL:-INFO} --pool=solo
+    volumes:
+      - .:/app
+    ports:
+      - "127.0.0.1:${CELERY_DEBUG_PORT:-5679}:5679"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.development
+      DB_ENGINE: postgres
+      DB_NAME: ${DB_NAME:-booking_engine}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_HOST: ${DB_HOST:-host.docker.internal}
+      DB_PORT: ${DB_PORT:-5432}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://host.docker.internal:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://host.docker.internal:6379/1}
+
+  celery-beat:
+    build: .
+    command: celery -A config beat -l ${CELERY_LOG_LEVEL:-INFO}
+    volumes:
+      - .:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.development
+      DB_ENGINE: postgres
+      DB_NAME: ${DB_NAME:-booking_engine}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_HOST: ${DB_HOST:-host.docker.internal}
+      DB_PORT: ${DB_PORT:-5432}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://host.docker.internal:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://host.docker.internal:6379/1}
+
+  daphne:
+    build: .
+    command: python -m debugpy --listen 0.0.0.0:5680 -m daphne -b 0.0.0.0 -p 8080 config.asgi:application
+    profiles:
+      - asgi
+    volumes:
+      - .:/app
+    ports:
+      - "127.0.0.1:${DAPHNE_PORT:-8081}:8080"
+      - "127.0.0.1:${DAPHNE_DEBUG_PORT:-5680}:5680"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.development
+      DB_ENGINE: postgres
+      DB_NAME: ${DB_NAME:-booking_engine}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_HOST: ${DB_HOST:-host.docker.internal}
+      DB_PORT: ${DB_PORT:-5432}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://host.docker.internal:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://host.docker.internal:6379/1}
