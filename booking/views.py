@@ -461,6 +461,7 @@ class BusinessScopedQuerysetMixin:
         return queryset
 
     def get_queryset(self):
+        print(self.scope_queryset(super().get_queryset()))
         return self.scope_queryset(super().get_queryset())
 
 
