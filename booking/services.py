@@ -20,6 +20,7 @@ from booking.models import (
     Guest,
     Hotel,
     Payment,
+    PhysicalRoom,
     RatePlan,
     RatePeriod,
     RoomAssignment,
@@ -61,6 +62,223 @@ def _rate_amounts(rule, rate_plan):
     if rule is None:
         return rate_plan.base_price, rate_plan.usd_display_price
     return rule.base_price, rule.usd_display_price
+
+
+def room_type_booking_options(room_type):
+    snapshot = room_type.core_snapshot or {}
+    return {
+        "allow_guest_bed_preference": snapshot.get("allow_guest_bed_preference", False),
+        "allow_guest_view_preference": snapshot.get("allow_guest_view_preference", False),
+        "allow_guest_bath_preference": snapshot.get("allow_guest_bath_preference", False),
+        "allow_guest_smoking_preference": snapshot.get("allow_guest_smoking_preference", False),
+        "supports_smoking": snapshot.get("supports_smoking", False),
+        "supports_non_smoking": snapshot.get("supports_non_smoking", True),
+        "beds": snapshot.get("beds", []) or [],
+        "view_options": snapshot.get("view_options", []) or [],
+        "bath_options": snapshot.get("bath_options", []) or [],
+        "custom_options": snapshot.get("custom_options", []) or [],
+    }
+
+
+def _decimal(value):
+    return Decimal(str(value or "0"))
+
+
+def _nested_id(payload, relation_name):
+    if not isinstance(payload, dict):
+        return None
+    relation = payload.get(relation_name)
+    if isinstance(relation, dict):
+        return relation.get("id")
+    return payload.get(f"{relation_name}_id")
+
+
+def _option_total_payload(option, nights, quantity):
+    extra_base_price = _decimal(option.get("extra_base_price"))
+    extra_usd_display_price = option.get("extra_usd_display_price")
+    return {
+        "id": option.get("id"),
+        "extra_base_price": str(extra_base_price),
+        "extra_usd_display_price": str(extra_usd_display_price) if extra_usd_display_price is not None else None,
+        "is_guest_selectable": bool(option.get("is_guest_selectable", True)),
+        "is_guaranteed": bool(option.get("is_guaranteed", False)),
+        "total_base_price": str(extra_base_price * nights * quantity),
+    }
+
+
+def resolve_room_preferences(room_type, preferences, nights, quantity):
+    """Validate guest preferences against synced Core RoomType options and calculate upgrade totals."""
+    preferences = preferences or {}
+    snapshot = room_type.core_snapshot or {}
+    selected = {}
+    constraints = {}
+    option_total = Decimal("0")
+
+    def select_option(kind, flag_name, option_list_name, relation_name, submitted_id):
+        nonlocal option_total
+        if submitted_id in [None, ""]:
+            return
+        if not snapshot.get(flag_name, False):
+            raise ValidationError({"preferences": f"{kind} preference is not enabled for {room_type.name}."})
+        option = next(
+            (
+                item for item in snapshot.get(option_list_name, []) or []
+                if _nested_id(item, relation_name) == submitted_id
+            ),
+            None,
+        )
+        if not option:
+            raise ValidationError({"preferences": f"Selected {kind} option is not available for {room_type.name}."})
+        if not option.get("is_guest_selectable", True):
+            raise ValidationError({"preferences": f"Selected {kind} option is not selectable by guests."})
+        option_total += _decimal(option.get("extra_base_price")) * nights * quantity
+        selected[kind] = {
+            **_option_total_payload(option, nights, quantity),
+            "core_value_id": submitted_id,
+            "name": (option.get(relation_name) or {}).get("name", ""),
+        }
+        if option.get("is_guaranteed", False):
+            constraints[kind] = submitted_id
+
+    select_option(
+        "bed",
+        "allow_guest_bed_preference",
+        "beds",
+        "bed_type",
+        preferences.get("core_bed_type_id"),
+    )
+    select_option(
+        "view",
+        "allow_guest_view_preference",
+        "view_options",
+        "room_view",
+        preferences.get("core_room_view_id"),
+    )
+    select_option(
+        "bath",
+        "allow_guest_bath_preference",
+        "bath_options",
+        "bath_type",
+        preferences.get("core_bath_type_id"),
+    )
+
+    smoking_type = preferences.get("smoking_type")
+    if smoking_type:
+        if not snapshot.get("allow_guest_smoking_preference", False):
+            raise ValidationError({"preferences": f"Smoking preference is not enabled for {room_type.name}."})
+        if smoking_type == "smoking" and not snapshot.get("supports_smoking", False):
+            raise ValidationError({"preferences": f"{room_type.name} does not support smoking rooms."})
+        if smoking_type == "non_smoking" and not snapshot.get("supports_non_smoking", True):
+            raise ValidationError({"preferences": f"{room_type.name} does not support non-smoking rooms."})
+        selected["smoking"] = {"value": smoking_type, "is_guaranteed": True}
+        constraints["smoking"] = smoking_type
+
+    custom_ids = list(dict.fromkeys(preferences.get("core_custom_option_value_ids") or []))
+    if custom_ids:
+        custom_options = snapshot.get("custom_options", []) or []
+        for custom_id in custom_ids:
+            option = next(
+                (
+                    item for item in custom_options
+                    if _nested_id(item, "option_value") == custom_id
+                ),
+                None,
+            )
+            if not option:
+                raise ValidationError({"preferences": f"Selected custom option {custom_id} is not available for {room_type.name}."})
+            if not option.get("is_guest_selectable", True):
+                raise ValidationError({"preferences": f"Selected custom option {custom_id} is not selectable by guests."})
+            option_total += _decimal(option.get("extra_base_price")) * nights * quantity
+            option_value = option.get("option_value") or {}
+            selected.setdefault("custom_options", []).append({
+                **_option_total_payload(option, nights, quantity),
+                "core_value_id": custom_id,
+                "name": option_value.get("name", ""),
+                "group": (option_value.get("group") or {}).get("name", ""),
+            })
+            if option.get("is_guaranteed", False):
+                constraints.setdefault("custom_options", []).append(custom_id)
+
+    return {
+        "requested": preferences,
+        "selected": selected,
+        "guaranteed_constraints": constraints,
+        "has_guaranteed_constraints": bool(constraints),
+        "option_total": str(option_total),
+    }, option_total
+
+
+def _physical_room_bed_ids(room):
+    beds = (room.core_snapshot or {}).get("beds", []) or []
+    return {
+        _nested_id(item, "bed_type")
+        for item in beds
+        if _nested_id(item, "bed_type")
+    }
+
+
+def _physical_room_custom_option_ids(room):
+    options = (room.core_snapshot or {}).get("custom_option_values", []) or []
+    return {
+        _nested_id(item, "option_value")
+        for item in options
+        if _nested_id(item, "option_value")
+    }
+
+
+def physical_room_matches_constraints(room, constraints):
+    constraints = constraints or {}
+    snapshot = room.core_snapshot or {}
+    if constraints.get("bed") and constraints["bed"] not in _physical_room_bed_ids(room):
+        return False
+    if constraints.get("view") and _nested_id(snapshot, "room_view") != constraints["view"]:
+        return False
+    if constraints.get("bath") and _nested_id(snapshot, "bath_type") != constraints["bath"]:
+        return False
+    if constraints.get("smoking") and snapshot.get("smoking_type") != constraints["smoking"]:
+        return False
+    custom_constraints = set(constraints.get("custom_options") or [])
+    if custom_constraints and not custom_constraints.issubset(_physical_room_custom_option_ids(room)):
+        return False
+    return True
+
+
+def ensure_preference_capacity(room_type, dates, constraints, quantity):
+    if not constraints:
+        return
+    matching_room_ids = [
+        room.id
+        for room in PhysicalRoom.objects.filter(room_type=room_type, is_active=True).exclude(status=PhysicalRoom.Status.OUT_OF_SERVICE)
+        if physical_room_matches_constraints(room, constraints)
+    ]
+    if len(matching_room_ids) < quantity:
+        raise ValidationError({"preferences": f"Not enough physical rooms match the guaranteed preferences for {room_type.name}."})
+
+    overlapping = BookingRoom.objects.filter(
+        room_type=room_type,
+        booking__status__in=[Booking.Status.PENDING_PAYMENT, Booking.Status.CONFIRMED, Booking.Status.CHECKED_IN],
+        booking__check_in__lt=dates[-1] + timedelta(days=1),
+        booking__check_out__gt=dates[0],
+        preference_snapshot__has_key="guaranteed_constraints",
+    )
+    for day in dates:
+        committed = quantity
+        for booking_room in overlapping:
+            existing_constraints = (booking_room.preference_snapshot or {}).get("guaranteed_constraints") or {}
+            if existing_constraints and all(
+                physical_room_matches_constraints(room, existing_constraints)
+                for room in PhysicalRoom.objects.filter(id__in=matching_room_ids)
+            ):
+                if booking_room.booking.check_in <= day < booking_room.booking.check_out:
+                    committed += booking_room.quantity
+        if committed > len(matching_room_ids):
+            raise ValidationError({"preferences": f"Guaranteed preference capacity is no longer available on {day}."})
+
+
+def validate_assignment_preferences(booking_room, physical_room):
+    constraints = (booking_room.preference_snapshot or {}).get("guaranteed_constraints") or {}
+    if constraints and not physical_room_matches_constraints(physical_room, constraints):
+        raise ValidationError("The selected physical room does not match this booking room's guaranteed preferences.")
 
 
 def _reference(prefix):
@@ -173,6 +391,7 @@ def availability_for_hotels(hotels, check_in, check_out, adults=1, children=0, g
                 "max_adults": room_type.max_adults,
                 "max_children": room_type.max_children,
                 "available_rooms": available,
+                "booking_options": room_type_booking_options(room_type),
                 "rate_plans": room_plans,
                 "core_snapshot": room_type.core_snapshot,
             })
@@ -199,6 +418,95 @@ def _lock_inventory(room_type, dates):
             defaults={"total_rooms": room_type.default_inventory},
         )
     return list(DailyInventory.objects.select_for_update().filter(room_type=room_type, stay_date__in=dates).order_by("stay_date"))
+
+
+def estimate_booking(data):
+    hotel = Hotel.objects.get(core_business_id=data["core_business_id"], is_active=True)
+    check_in, check_out = data["check_in"], data["check_out"]
+    if check_out <= check_in:
+        raise ValidationError({"check_out": "Must be after check_in."})
+    dates = list(stay_dates(check_in, check_out))
+    guest_market = data.get("guest_market", RatePlan.GuestMarket.LOCAL)
+    room_total = Decimal("0")
+    rooms = []
+    for requested in data["rooms"]:
+        try:
+            room_type = RoomType.objects.get(
+                hotel=hotel,
+                core_room_type_id=requested["core_room_type_id"],
+                booking_enabled=True,
+                core_active=True,
+            )
+            rate_plan = RatePlan.objects.get(
+                id=requested["rate_plan_id"],
+                room_type=room_type,
+                is_active=True,
+                guest_market__in=[guest_market, RatePlan.GuestMarket.ALL],
+            )
+        except (RoomType.DoesNotExist, RatePlan.DoesNotExist):
+            raise ValidationError({"rooms": "A selected room type or rate plan is unavailable."})
+        quantity = requested["quantity"]
+        preference_snapshot, option_total = resolve_room_preferences(
+            room_type,
+            requested.get("preferences") or {},
+            len(dates),
+            quantity,
+        )
+        ensure_preference_capacity(
+            room_type,
+            dates,
+            preference_snapshot.get("guaranteed_constraints") or {},
+            quantity,
+        )
+        daily_rate_rows = {row.stay_date: row for row in DailyRate.objects.filter(rate_plan=rate_plan, stay_date__in=dates)}
+        periods = _period_by_date(rate_plan, dates)
+        nightly_option_total = (option_total / len(dates)) if dates else Decimal("0")
+        nights = []
+        item_total = Decimal("0")
+        for day in dates:
+            rule = daily_rate_rows.get(day) or periods.get(day)
+            unit_price, usd_display_price = _rate_amounts(rule, rate_plan)
+            extra_bed_total = rate_plan.extra_bed_base_price * requested.get("extra_beds", 0)
+            night_total = unit_price * quantity + extra_bed_total + nightly_option_total
+            nights.append({
+                "stay_date": day,
+                "unit_price": unit_price,
+                "usd_display_price": usd_display_price,
+                "quantity": quantity,
+                "extra_bed_total": extra_bed_total,
+                "option_total": nightly_option_total,
+                "total": night_total,
+            })
+            item_total += night_total
+        room_total += item_total
+        rooms.append({
+            "core_room_type_id": room_type.core_room_type_id,
+            "room_type_id": room_type.id,
+            "room_type_name": room_type.name,
+            "rate_plan_id": rate_plan.id,
+            "rate_plan_name": rate_plan.name,
+            "quantity": quantity,
+            "extra_beds": requested.get("extra_beds", 0),
+            "preference_snapshot": preference_snapshot,
+            "option_total": option_total,
+            "nights": nights,
+            "total": item_total,
+        })
+    return {
+        "hotel": {
+            "id": hotel.id,
+            "core_business_id": hotel.core_business_id,
+            "name": hotel.name,
+            "base_currency": hotel.base_currency,
+        },
+        "check_in": check_in,
+        "check_out": check_out,
+        "nights": len(dates),
+        "currency": hotel.base_currency,
+        "rooms": rooms,
+        "room_total": room_total,
+        "grand_total": room_total,
+    }
 
 
 @transaction.atomic
@@ -247,6 +555,18 @@ def create_booking(data, idempotency_key=None):
         quantity = requested["quantity"]
         if requested.get("adults", 1) > room_type.max_adults * quantity or requested.get("children", 0) > room_type.max_children * quantity:
             raise ValidationError({"rooms": f"Guest count exceeds {room_type.name} capacity."})
+        preference_snapshot, option_total = resolve_room_preferences(
+            room_type,
+            requested.get("preferences") or {},
+            len(dates),
+            quantity,
+        )
+        ensure_preference_capacity(
+            room_type,
+            dates,
+            preference_snapshot.get("guaranteed_constraints") or {},
+            quantity,
+        )
         inventory_rows = _lock_inventory(room_type, dates)
         if len(inventory_rows) != len(dates) or any(row.available_rooms < quantity for row in inventory_rows):
             raise ValidationError({"rooms": f"{room_type.name} is no longer available for all selected dates."})
@@ -273,6 +593,8 @@ def create_booking(data, idempotency_key=None):
                 "refundable": rate_plan.refundable,
                 "cancellation_policy": rate_plan.cancellation_policy,
             },
+            preference_snapshot=preference_snapshot,
+            option_total=option_total,
         )
         daily_rate_rows = {row.stay_date: row for row in DailyRate.objects.filter(rate_plan=rate_plan, stay_date__in=dates)}
         periods = _period_by_date(rate_plan, dates)
@@ -287,17 +609,19 @@ def create_booking(data, idempotency_key=None):
         if any(rule.min_stay > len(dates) for rule in effective_rules):
             raise ValidationError({"rooms": f"{rate_plan.name} minimum-stay requirement is not met."})
         item_total = Decimal("0")
+        nightly_option_total = (option_total / len(dates)) if dates else Decimal("0")
         for day in dates:
             rule = daily_rate_rows.get(day) or periods.get(day)
             unit_price, _usd_display_price = _rate_amounts(rule, rate_plan)
             extra_bed_total = rate_plan.extra_bed_base_price * requested.get("extra_beds", 0)
-            night_total = unit_price * quantity + extra_bed_total
+            night_total = unit_price * quantity + extra_bed_total + nightly_option_total
             BookingRoomNight.objects.create(
                 booking_room=booking_room,
                 stay_date=day,
                 unit_price=unit_price,
                 quantity=quantity,
                 extra_bed_total=extra_bed_total,
+                option_total=nightly_option_total,
                 total=night_total,
             )
             item_total += night_total

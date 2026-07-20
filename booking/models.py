@@ -77,6 +77,7 @@ class PhysicalRoom(models.Model):
     status = models.CharField(max_length=32, choices=Status.choices, default=Status.VACANT)
     note = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
+    core_snapshot = models.JSONField(default=dict, blank=True)
 
     class Meta:
         ordering = ["building", "floor", "room_number"]
@@ -369,6 +370,8 @@ class BookingRoom(models.Model):
     extra_beds = models.PositiveSmallIntegerField(default=0)
     room_type_snapshot = models.JSONField(default=dict)
     rate_plan_snapshot = models.JSONField(default=dict)
+    preference_snapshot = models.JSONField(default=dict, blank=True)
+    option_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
 
 
@@ -378,6 +381,7 @@ class BookingRoomNight(models.Model):
     unit_price = models.DecimalField(max_digits=14, decimal_places=2)
     quantity = models.PositiveSmallIntegerField(default=1)
     extra_bed_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    option_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     total = models.DecimalField(max_digits=14, decimal_places=2)
 
     class Meta:

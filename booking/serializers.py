@@ -450,6 +450,18 @@ class BookingSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+class RequestedRoomPreferenceSerializer(serializers.Serializer):
+    core_bed_type_id = serializers.IntegerField(min_value=1, required=False)
+    core_room_view_id = serializers.IntegerField(min_value=1, required=False)
+    core_bath_type_id = serializers.IntegerField(min_value=1, required=False)
+    smoking_type = serializers.ChoiceField(choices=["non_smoking", "smoking"], required=False)
+    core_custom_option_value_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+        allow_empty=True,
+    )
+
+
 class RequestedRoomSerializer(serializers.Serializer):
     core_room_type_id = serializers.IntegerField(min_value=1)
     rate_plan_id = serializers.IntegerField(min_value=1)
@@ -457,6 +469,7 @@ class RequestedRoomSerializer(serializers.Serializer):
     adults = serializers.IntegerField(min_value=1, max_value=100, default=1)
     children = serializers.IntegerField(min_value=0, max_value=100, default=0)
     extra_beds = serializers.IntegerField(min_value=0, max_value=20, default=0)
+    preferences = RequestedRoomPreferenceSerializer(required=False, default=dict)
 
 
 class RequestedGuestSerializer(serializers.Serializer):

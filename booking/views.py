@@ -45,7 +45,7 @@ from booking.serializers import (
     RoomBoardQuerySerializer,
     RoomTypeSerializer,
 )
-from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_booking, deprovision_hotel, record_payment, refund_payment
+from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_booking, deprovision_hotel, estimate_booking, record_payment, refund_payment, validate_assignment_preferences
 from config.response_formatter import success
 
 
@@ -141,6 +141,18 @@ class PublicBookingCreateView(APIView):
             status_code=response_status,
             status=response_status,
         )
+
+
+class PublicBookingEstimateView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = BookingCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            return success(estimate_booking(serializer.validated_data))
+        except Hotel.DoesNotExist:
+            raise NotFound("Hotel is not available in the booking engine.")
 
 
 class PublicBookingDetailView(APIView):
@@ -322,6 +334,7 @@ class RoomBoardView(APIView):
                 "room_number": room.room_number,
                 "building": room.building,
                 "floor": room.floor,
+                "core_snapshot": room.core_snapshot,
                 "operational_status": room.status,
                 "display_status": display_status,
                 "room_type": {
@@ -358,6 +371,7 @@ class RoomBoardView(APIView):
                     "check_in": booking_room.booking.check_in,
                     "check_out": booking_room.booking.check_out,
                     "contact_name": booking_room.booking.contact_name,
+                    "preference_snapshot": booking_room.preference_snapshot,
                 })
 
         return success({
@@ -888,6 +902,7 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
             raise ValidationError("The physical room does not match this booking room.")
         if room.status != PhysicalRoom.Status.VACANT:
             raise ValidationError("Only a vacant physical room can be assigned.")
+        validate_assignment_preferences(booking_room, room)
         if booking_room.assignments.filter(released_at__isnull=True).count() >= booking_room.quantity:
             raise ValidationError("All requested rooms have already been assigned.")
         overlapping_statuses = [Booking.Status.PENDING_PAYMENT, Booking.Status.CONFIRMED, Booking.Status.CHECKED_IN]
@@ -950,6 +965,7 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
         ).first()
         if not new_room:
             raise ValidationError("The new room must be active, vacant, and have the same room type.")
+        validate_assignment_preferences(assignment.booking_room, new_room)
         overlap = RoomAssignment.objects.filter(
             physical_room=new_room,
             released_at__isnull=True,

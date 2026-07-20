@@ -236,6 +236,7 @@ def sync_business_from_core(core_business_id: int, client=None):
                 "floor": payload.get("floor") or "",
                 "building": payload.get("building") or "",
                 "is_active": payload.get("is_active", True),
+                "core_snapshot": payload,
             },
         )
         if created:
