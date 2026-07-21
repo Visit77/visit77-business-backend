@@ -3,76 +3,72 @@ services:
     build: .
     command: sh -c "python manage.py migrate && python manage.py collectstatic --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:8080 --workers ${GUNICORN_WORKERS:-3} --timeout ${GUNICORN_TIMEOUT:-60}"
     restart: unless-stopped
-    ports:
-      - "${WEB_PORT:-8080}:8080"
+    network_mode: host
     env_file:
-      - path: .env
-        required: false
+      - .env
     environment:
       DJANGO_SETTINGS_MODULE: config.settings.production
       DB_ENGINE: postgres
-      DB_NAME: ${DB_NAME:?Set DB_NAME for the server PostgreSQL database}
-      DB_USER: ${DB_USER:?Set DB_USER for the server PostgreSQL database}
-      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD for the server PostgreSQL database}
-      DB_HOST: ${DB_HOST:?Set DB_HOST for the server PostgreSQL database}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_HOST: ${DB_HOST:-127.0.0.1}
       DB_PORT: ${DB_PORT:-5432}
-      CELERY_BROKER_URL: ${CELERY_BROKER_URL:?Set CELERY_BROKER_URL for the server Redis instance}
-      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:?Set CELERY_RESULT_BACKEND for the server Redis instance}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
 
   celery:
     build: .
     command: celery -A config worker -l ${CELERY_LOG_LEVEL:-INFO} --concurrency ${CELERY_CONCURRENCY:-4}
     restart: unless-stopped
+    network_mode: host
     env_file:
-      - path: .env
-        required: false
+      - .env
     environment:
       DJANGO_SETTINGS_MODULE: config.settings.production
       DB_ENGINE: postgres
-      DB_NAME: ${DB_NAME:?Set DB_NAME for the server PostgreSQL database}
-      DB_USER: ${DB_USER:?Set DB_USER for the server PostgreSQL database}
-      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD for the server PostgreSQL database}
-      DB_HOST: ${DB_HOST:?Set DB_HOST for the server PostgreSQL database}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_HOST: ${DB_HOST:-127.0.0.1}
       DB_PORT: ${DB_PORT:-5432}
-      CELERY_BROKER_URL: ${CELERY_BROKER_URL:?Set CELERY_BROKER_URL for the server Redis instance}
-      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:?Set CELERY_RESULT_BACKEND for the server Redis instance}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
 
   celery-beat:
     build: .
     command: celery -A config beat -l ${CELERY_LOG_LEVEL:-INFO}
     restart: unless-stopped
+    network_mode: host
     env_file:
-      - path: .env
-        required: false
+      - .env
     environment:
       DJANGO_SETTINGS_MODULE: config.settings.production
       DB_ENGINE: postgres
-      DB_NAME: ${DB_NAME:?Set DB_NAME for the server PostgreSQL database}
-      DB_USER: ${DB_USER:?Set DB_USER for the server PostgreSQL database}
-      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD for the server PostgreSQL database}
-      DB_HOST: ${DB_HOST:?Set DB_HOST for the server PostgreSQL database}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_HOST: ${DB_HOST:-127.0.0.1}
       DB_PORT: ${DB_PORT:-5432}
-      CELERY_BROKER_URL: ${CELERY_BROKER_URL:?Set CELERY_BROKER_URL for the server Redis instance}
-      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:?Set CELERY_RESULT_BACKEND for the server Redis instance}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
 
   daphne:
     build: .
-    command: daphne -b 0.0.0.0 -p 8080 config.asgi:application
+    command: daphne -b 0.0.0.0 -p 8081 config.asgi:application
     restart: unless-stopped
+    network_mode: host
     profiles:
       - asgi
-    ports:
-      - "${DAPHNE_PORT:-8081}:8080"
     env_file:
-      - path: .env
-        required: false
+      - .env
     environment:
       DJANGO_SETTINGS_MODULE: config.settings.production
       DB_ENGINE: postgres
-      DB_NAME: ${DB_NAME:?Set DB_NAME for the server PostgreSQL database}
-      DB_USER: ${DB_USER:?Set DB_USER for the server PostgreSQL database}
-      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD for the server PostgreSQL database}
-      DB_HOST: ${DB_HOST:?Set DB_HOST for the server PostgreSQL database}
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_HOST: ${DB_HOST:-127.0.0.1}
       DB_PORT: ${DB_PORT:-5432}
-      CELERY_BROKER_URL: ${CELERY_BROKER_URL:?Set CELERY_BROKER_URL for the server Redis instance}
-      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:?Set CELERY_RESULT_BACKEND for the server Redis instance}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}

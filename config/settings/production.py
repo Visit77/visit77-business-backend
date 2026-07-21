@@ -4,7 +4,7 @@ from .base import *
 
 
 DEBUG = False
-DEMO_PAYMENT_ENABLED = False
+DEMO_PAYMENT_ENABLED = env.bool("DEMO_PAYMENT_ENABLED", default=False)
 BOOKING_REQUIRE_BUSINESS_SCOPE = True
 
 if SECRET_KEY == "dev-only-booking-engine-key":
