@@ -247,10 +247,21 @@ def sync_business_from_core(core_business_id: int, client=None):
 
     hotel.physical_rooms.filter(core_physical_room_id__isnull=False).exclude(core_physical_room_id__in=seen_core_room_ids).update(is_active=False)
 
-    for room_type in synced_room_types:
-        active_rooms = room_type.physical_rooms.filter(is_active=True).count()
-        if active_rooms and room_type.default_inventory == 0:
-            room_type.default_inventory = active_rooms
-            room_type.save(update_fields=["default_inventory"])
+    from booking.services import active_sellable_room_count, ensure_daily_inventory_for_room_type
 
-    return {"hotel_id": hotel.id, "core_business_id": core_business_id, "room_types": len(synced_room_types), "new_physical_rooms": physical_room_count}
+    inventory_created = 0
+    inventory_updated = 0
+    for room_type in synced_room_types:
+        active_rooms = active_sellable_room_count(room_type)
+        result = ensure_daily_inventory_for_room_type(room_type, total_rooms=active_rooms)
+        inventory_created += result["created"]
+        inventory_updated += result["updated"]
+
+    return {
+        "hotel_id": hotel.id,
+        "core_business_id": core_business_id,
+        "room_types": len(synced_room_types),
+        "new_physical_rooms": physical_room_count,
+        "inventory_created": inventory_created,
+        "inventory_updated": inventory_updated,
+    }

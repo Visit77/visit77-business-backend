@@ -35,6 +35,73 @@ def stay_dates(check_in, check_out):
         current += timedelta(days=1)
 
 
+def inventory_window_dates(start_date=None, days=None):
+    """Return the rolling inventory dates this service keeps ready for booking."""
+    start_date = start_date or timezone.localdate()
+    days = settings.BOOKING_INVENTORY_WINDOW_DAYS if days is None else days
+    return [start_date + timedelta(days=offset) for offset in range(days + 1)]
+
+
+def active_sellable_room_count(room_type):
+    return room_type.physical_rooms.filter(is_active=True).exclude(status=PhysicalRoom.Status.OUT_OF_SERVICE).count()
+
+
+@transaction.atomic
+def ensure_daily_inventory_for_room_type(room_type, start_date=None, days=None, total_rooms=None):
+    """Create/update future DailyInventory rows for one RoomType.
+
+    Existing rows are kept consistent with the current physical-room count but
+    never reduced below rooms that are already held or reserved.
+    """
+    room_type = RoomType.objects.select_for_update().get(pk=room_type.pk)
+    dates = inventory_window_dates(start_date=start_date, days=days)
+    total_rooms = active_sellable_room_count(room_type) if total_rooms is None else total_rooms
+
+    existing = {
+        row.stay_date: row
+        for row in DailyInventory.objects.select_for_update().filter(room_type=room_type, stay_date__in=dates)
+    }
+    missing_dates = [day for day in dates if day not in existing]
+    DailyInventory.objects.bulk_create([
+        DailyInventory(room_type=room_type, stay_date=day, total_rooms=total_rooms)
+        for day in missing_dates
+    ], ignore_conflicts=True)
+
+    updated = 0
+    for row in existing.values():
+        committed_rooms = row.held_rooms + row.reserved_rooms
+        safe_total_rooms = max(total_rooms, committed_rooms)
+        if row.total_rooms != safe_total_rooms:
+            row.total_rooms = safe_total_rooms
+            row.save(update_fields=["total_rooms"])
+            updated += 1
+
+    if room_type.default_inventory != total_rooms:
+        room_type.default_inventory = total_rooms
+        room_type.save(update_fields=["default_inventory"])
+
+    return {
+        "room_type_id": room_type.id,
+        "total_rooms": total_rooms,
+        "created": len(missing_dates),
+        "updated": updated,
+        "start_date": dates[0],
+        "end_date": dates[-1],
+    }
+
+
+def ensure_rolling_daily_inventory(days=None):
+    """Maintain the rolling future inventory window for all active synced room types."""
+    summary = {"room_types": 0, "created": 0, "updated": 0}
+    queryset = RoomType.objects.filter(hotel__is_active=True, core_active=True, booking_enabled=True).select_related("hotel")
+    for room_type in queryset.iterator():
+        result = ensure_daily_inventory_for_room_type(room_type, days=days)
+        summary["room_types"] += 1
+        summary["created"] += result["created"]
+        summary["updated"] += result["updated"]
+    return summary
+
+
 def _period_by_date(rate_plan, dates):
     if not dates:
         return {}

@@ -12,7 +12,7 @@ from rest_framework_simplejwt.backends import TokenBackend
 
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, CoreIntegrationEvent, DailyInventory, DailyRate, Hotel, Payment, PhysicalRoom, RatePlan, RatePeriod, RoomAssignment, RoomType
 from booking.integrations.core import sync_business_from_core
-from booking.services import availability_for_hotel, cancel_booking, create_booking, record_payment, refund_payment
+from booking.services import availability_for_hotel, cancel_booking, create_booking, ensure_daily_inventory_for_room_type, record_payment, refund_payment
 
 
 class BookingServiceTests(TestCase):
@@ -160,7 +160,8 @@ class BookingServiceTests(TestCase):
         booking, _ = create_booking(payload)
         self.assertEqual(booking.grand_total, Decimal("240"))
 
-    def test_core_sync_updates_default_plans_and_preserves_custom_plans(self):
+    @override_settings(BOOKING_INVENTORY_WINDOW_DAYS=2)
+    def test_core_sync_updates_default_plans_inventory_and_preserves_custom_plans(self):
         class StubCoreClient:
             local_price = 80000
 
@@ -205,7 +206,24 @@ class BookingServiceTests(TestCase):
                             },
                         ],
                     }],
-                    "physical_rooms": [],
+                    "physical_rooms": [
+                        {
+                            "id": 9901,
+                            "room_type_id": 901,
+                            "room_no": "801",
+                            "floor": "8",
+                            "building": "Main Building",
+                            "is_active": True,
+                        },
+                        {
+                            "id": 9902,
+                            "room_type_id": 901,
+                            "room_no": "802",
+                            "floor": "8",
+                            "building": "Main Building",
+                            "is_active": True,
+                        },
+                    ],
                 }
 
         client = StubCoreClient()
@@ -215,6 +233,8 @@ class BookingServiceTests(TestCase):
         self.assertTrue(hotel.has_feature("online_booking"))
         self.assertTrue(hotel.has_feature("room_assignment"))
         room_type = RoomType.objects.get(hotel__core_business_id=99, core_room_type_id=901)
+        self.assertEqual(room_type.default_inventory, 2)
+        self.assertEqual(DailyInventory.objects.filter(room_type=room_type, total_rooms=2).count(), 3)
         custom = RatePlan.objects.create(
             room_type=room_type,
             code="local-saver",
@@ -240,6 +260,32 @@ class BookingServiceTests(TestCase):
         self.assertEqual(custom.default_price, Decimal("70000"))
         self.assertEqual(custom.source, RatePlan.Source.BOOKING)
         self.assertEqual(room_type.rate_plans.count(), 3)
+
+    @override_settings(BOOKING_INVENTORY_WINDOW_DAYS=2)
+    def test_daily_inventory_auto_seed_adjusts_with_physical_room_count(self):
+        PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="801")
+        room_802 = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="802")
+
+        created = ensure_daily_inventory_for_room_type(self.room_type, start_date=self.check_in)
+        self.assertEqual(created["created"], 3)
+        self.assertEqual(self.room_type.daily_inventory.filter(total_rooms=2).count(), 3)
+        self.room_type.refresh_from_db()
+        self.assertEqual(self.room_type.default_inventory, 2)
+
+        first = DailyInventory.objects.get(room_type=self.room_type, stay_date=self.check_in)
+        first.reserved_rooms = 2
+        first.save(update_fields=["reserved_rooms"])
+        room_802.status = PhysicalRoom.Status.OUT_OF_SERVICE
+        room_802.save(update_fields=["status"])
+
+        adjusted = ensure_daily_inventory_for_room_type(self.room_type, start_date=self.check_in)
+        self.assertEqual(adjusted["created"], 0)
+        first.refresh_from_db()
+        self.assertEqual(first.total_rooms, 2)
+        self.assertEqual(
+            list(self.room_type.daily_inventory.exclude(id=first.id).values_list("total_rooms", flat=True)),
+            [1, 1],
+        )
 
 
 @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key", CORE_JWT_SIGNING_KEY="test-core-jwt-key")

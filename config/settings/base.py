@@ -100,6 +100,7 @@ CORE_JWT_ISSUER = env("CORE_JWT_ISSUER", default="")
 BOOKING_ADMIN_API_KEY = env("BOOKING_ADMIN_API_KEY", default="change-me")
 BOOKING_REQUIRE_BUSINESS_SCOPE = env.bool("BOOKING_REQUIRE_BUSINESS_SCOPE", default=False)
 BOOKING_HOLD_MINUTES = env.int("BOOKING_HOLD_MINUTES", default=15)
+BOOKING_INVENTORY_WINDOW_DAYS = env.int("BOOKING_INVENTORY_WINDOW_DAYS", default=365)
 DEMO_PAYMENT_ENABLED = env.bool("DEMO_PAYMENT_ENABLED", default=False)
 
 CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://redis:6379/0")
@@ -109,5 +110,9 @@ CELERY_BEAT_SCHEDULE = {
     "expire-unpaid-booking-holds-every-minute": {
         "task": "booking.tasks.expire_booking_holds_task",
         "schedule": crontab(minute="*"),
+    },
+    "ensure-rolling-daily-inventory": {
+        "task": "booking.tasks.ensure_rolling_daily_inventory_task",
+        "schedule": crontab(hour=1, minute=0),
     },
 }
