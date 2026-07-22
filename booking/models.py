@@ -71,6 +71,8 @@ class PhysicalRoom(models.Model):
     hotel = models.ForeignKey(Hotel, on_delete=models.CASCADE, related_name="physical_rooms")
     room_type = models.ForeignKey(RoomType, on_delete=models.PROTECT, related_name="physical_rooms")
     core_physical_room_id = models.PositiveBigIntegerField(null=True, blank=True)
+    core_building_id = models.PositiveBigIntegerField(null=True, blank=True)
+    core_floor_id = models.PositiveBigIntegerField(null=True, blank=True)
     room_number = models.CharField(max_length=50)
     floor = models.CharField(max_length=50, blank=True)
     building = models.CharField(max_length=120, blank=True)

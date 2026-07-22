@@ -245,9 +245,13 @@ class RoomBoardView(APIView):
 
         target_date = data.get("date") or timezone.localdate()
         rooms = PhysicalRoom.objects.filter(hotel=hotel, is_active=True).select_related("room_type")
-        if data.get("building"):
+        if data.get("building_id"):
+            rooms = rooms.filter(core_building_id=data["building_id"])
+        elif data.get("building"):
             rooms = rooms.filter(building=data["building"])
-        if data.get("floor"):
+        if data.get("floor_id"):
+            rooms = rooms.filter(core_floor_id=data["floor_id"])
+        elif data.get("floor"):
             rooms = rooms.filter(floor=data["floor"])
         rooms = list(rooms.order_by("building", "floor", "room_number", "id"))
         room_ids = [room.id for room in rooms]
@@ -287,9 +291,14 @@ class RoomBoardView(APIView):
             else:
                 display_status = "available"
             counts[display_status] += 1
-            floor_key = (room.building or "Unspecified", room.floor or "Unspecified")
+            floor_key = (
+                room.core_building_id or room.building or "Unspecified",
+                room.core_floor_id or room.floor or "Unspecified",
+            )
             floor_summary = floors.setdefault(floor_key, {
+                "building_id": room.core_building_id,
                 "building": room.building,
+                "floor_id": room.core_floor_id,
                 "floor": room.floor,
                 "total_rooms": 0,
                 "counts": {name: 0 for name in counts},
@@ -331,6 +340,8 @@ class RoomBoardView(APIView):
             room_data = {
                 "id": room.id,
                 "core_physical_room_id": room.core_physical_room_id,
+                "building_id": room.core_building_id,
+                "floor_id": room.core_floor_id,
                 "room_number": room.room_number,
                 "building": room.building,
                 "floor": room.floor,
@@ -378,7 +389,7 @@ class RoomBoardView(APIView):
             "date": target_date,
             "hotel": PublicHotelSerializer(hotel).data,
             "summary": {
-                "buildings": len({room.building or "Unspecified" for room in rooms}),
+                "buildings": len({room.core_building_id or room.building or "Unspecified" for room in rooms}),
                 "floors": len(floors),
                 "total_rooms": len(rooms),
                 **counts,
@@ -539,7 +550,9 @@ class RoomTypeViewSet(AdminModelViewSet):
 class PhysicalRoomViewSet(AdminModelViewSet):
     queryset = PhysicalRoom.objects.select_related("hotel", "room_type")
     serializer_class = PhysicalRoomSerializer
-    filterset_fields = ["hotel", "room_type", "floor", "building", "status", "is_active"]
+    filterset_fields = [
+        "hotel", "room_type", "floor", "building", "core_building_id", "core_floor_id", "status", "is_active",
+    ]
     http_method_names = ["get", "patch", "head", "options"]
     business_lookup = "hotel__core_business_id"
 

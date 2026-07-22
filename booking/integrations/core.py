@@ -35,6 +35,16 @@ def _first_present(payload, *keys, default=None):
     return default
 
 
+def _nested_id(payload, *keys):
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, dict) and value.get("id") is not None:
+            return value["id"]
+        if value is not None and key.endswith("_id"):
+            return value
+    return None
+
+
 @dataclass
 class CoreClient:
     base_url: str = settings.CORE_BASE_URL
@@ -233,6 +243,8 @@ def sync_business_from_core(core_business_id: int, client=None):
             defaults={
                 "room_type": room_type,
                 "core_physical_room_id": payload["id"],
+                "core_building_id": _nested_id(payload, "building_id", "building_data", "building"),
+                "core_floor_id": _nested_id(payload, "floor_id", "floor_data", "floor"),
                 "floor": payload.get("floor") or "",
                 "building": payload.get("building") or "",
                 "is_active": payload.get("is_active", True),

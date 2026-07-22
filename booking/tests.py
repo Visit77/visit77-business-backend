@@ -212,7 +212,9 @@ class BookingServiceTests(TestCase):
                             "room_type_id": 901,
                             "room_no": "801",
                             "floor": "8",
+                            "floor_data": {"id": 8008, "name": "8"},
                             "building": "Main Building",
+                            "building_data": {"id": 7001, "name": "Main Building"},
                             "is_active": True,
                         },
                         {
@@ -220,7 +222,9 @@ class BookingServiceTests(TestCase):
                             "room_type_id": 901,
                             "room_no": "802",
                             "floor": "8",
+                            "floor_data": {"id": 8008, "name": "8"},
                             "building": "Main Building",
+                            "building_data": {"id": 7001, "name": "Main Building"},
                             "is_active": True,
                         },
                     ],
@@ -235,6 +239,9 @@ class BookingServiceTests(TestCase):
         room_type = RoomType.objects.get(hotel__core_business_id=99, core_room_type_id=901)
         self.assertEqual(room_type.default_inventory, 2)
         self.assertEqual(DailyInventory.objects.filter(room_type=room_type, total_rooms=2).count(), 3)
+        room = PhysicalRoom.objects.get(core_physical_room_id=9901)
+        self.assertEqual(room.core_building_id, 7001)
+        self.assertEqual(room.core_floor_id, 8008)
         custom = RatePlan.objects.create(
             room_type=room_type,
             code="local-saver",
@@ -646,6 +653,8 @@ class BookingApiTests(BookingServiceTests):
             hotel=self.hotel,
             room_type=self.room_type,
             core_physical_room_id=801,
+            core_building_id=7001,
+            core_floor_id=8008,
             room_number="801",
             building="Main Building",
             floor="8",
@@ -654,6 +663,8 @@ class BookingApiTests(BookingServiceTests):
             hotel=self.hotel,
             room_type=self.room_type,
             core_physical_room_id=802,
+            core_building_id=7001,
+            core_floor_id=8008,
             room_number="802",
             building="Main Building",
             floor="8",
@@ -675,7 +686,7 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(assigned.status_code, 201, assigned.data)
         board = self.client.get(
             "/api/v1/admin/room-board/",
-            {"date": str(self.check_in), "building": "Main Building"},
+            {"date": str(self.check_in), "building_id": 7001},
             **headers,
         )
         self.assertEqual(board.status_code, 200, board.data)
@@ -683,7 +694,11 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(summary["reserved"], 1)
         self.assertEqual(summary["out_of_service"], 1)
         self.assertEqual(summary["unassigned_bookings"], 1)
+        self.assertEqual(board.data["data"]["floors"][0]["building_id"], 7001)
+        self.assertEqual(board.data["data"]["floors"][0]["floor_id"], 8008)
         reserved = next(room for room in board.data["data"]["rooms"] if room["display_status"] == "reserved")
+        self.assertEqual(reserved["building_id"], 7001)
+        self.assertEqual(reserved["floor_id"], 8008)
         self.assertEqual(reserved["assignment"]["booking_reference"], booking.reference)
         self.assertEqual(reserved["assignment"]["payment_status"], "paid")
 
