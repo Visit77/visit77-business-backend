@@ -321,6 +321,34 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["data"]["room_types"][0]["available_rooms"], 3)
 
+    def test_public_booking_estimate_does_not_require_contact_info(self):
+        self.rate_plan.extra_bed_base_price = Decimal("30000")
+        self.rate_plan.save(update_fields=["extra_bed_base_price"])
+        payload = {
+            "core_business_id": self.hotel.core_business_id,
+            "check_in": str(self.check_in),
+            "check_out": str(self.check_out),
+            "guest_market": "local",
+            "rooms": [{
+                "core_room_type_id": self.room_type.core_room_type_id,
+                "rate_plan_id": self.rate_plan.id,
+                "quantity": 2,
+                "adults": 4,
+                "children": 0,
+                "extra_beds": 1,
+            }],
+        }
+
+        response = self.client.post("/api/v1/public/bookings/estimate/", payload, format="json")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.data["data"]
+        self.assertEqual(data["grand_total"], Decimal("380000"))
+        self.assertEqual(data["formatted_grand_total"], "MMK 380,000")
+        self.assertEqual(data["summary_text"], "2 Rooms x 2 Nights x 1 Extra Bed")
+        self.assertEqual(data["summary_items"][0]["label"], "2 x Double Room")
+        self.assertEqual(data["summary_items"][1]["label"], "1 x Extra Bed(s)")
+
     def test_global_availability_returns_rooms_from_multiple_hotels(self):
         second_hotel = Hotel.objects.create(
             core_business_id=88,

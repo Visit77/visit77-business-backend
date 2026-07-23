@@ -512,6 +512,22 @@ class BookingCreateSerializer(serializers.Serializer):
         return attrs
 
 
+class BookingEstimateSerializer(serializers.Serializer):
+    core_business_id = serializers.IntegerField(min_value=1)
+    check_in = serializers.DateField()
+    check_out = serializers.DateField()
+    guest_market = serializers.ChoiceField(choices=RatePlan.GuestMarket.choices, default=RatePlan.GuestMarket.LOCAL)
+    rooms = RequestedRoomSerializer(many=True, allow_empty=False)
+    add_ons = RequestedAddOnSerializer(many=True, required=False)
+
+    def validate(self, attrs):
+        if attrs["check_out"] <= attrs["check_in"]:
+            raise serializers.ValidationError({"check_out": "Must be after check_in."})
+        if (attrs["check_out"] - attrs["check_in"]).days > 90:
+            raise serializers.ValidationError({"check_out": "A stay cannot exceed 90 nights."})
+        return attrs
+
+
 class PaymentCreateSerializer(serializers.Serializer):
     provider = serializers.CharField(max_length=50)
     provider_reference = serializers.CharField(max_length=255, required=False, allow_blank=True)

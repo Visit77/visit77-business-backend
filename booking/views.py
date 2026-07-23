@@ -24,6 +24,7 @@ from booking.serializers import (
     AddOnTemplateSerializer,
     AvailabilitySearchQuerySerializer,
     BookingCreateSerializer,
+    BookingEstimateSerializer,
     BookingSerializer,
     CoreEventSerializer,
     DailyInventorySerializer,
@@ -147,7 +148,7 @@ class PublicBookingEstimateView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        serializer = BookingCreateSerializer(data=request.data)
+        serializer = BookingEstimateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
             return success(estimate_booking(serializer.validated_data))

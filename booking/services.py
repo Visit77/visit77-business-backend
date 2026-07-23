@@ -35,6 +35,15 @@ def stay_dates(check_in, check_out):
         current += timedelta(days=1)
 
 
+def format_money(amount, currency):
+    amount = Decimal(amount or 0)
+    if amount == amount.to_integral_value():
+        formatted_amount = f"{int(amount):,}"
+    else:
+        formatted_amount = f"{amount:,.2f}"
+    return f"{currency} {formatted_amount}"
+
+
 def inventory_window_dates(start_date=None, days=None):
     """Return the rolling inventory dates this service keeps ready for booking."""
     start_date = start_date or timezone.localdate()
@@ -496,6 +505,9 @@ def estimate_booking(data):
     guest_market = data.get("guest_market", RatePlan.GuestMarket.LOCAL)
     room_total = Decimal("0")
     rooms = []
+    summary_items = []
+    selected_room_count = 0
+    selected_extra_bed_count = 0
     for requested in data["rooms"]:
         try:
             room_type = RoomType.objects.get(
@@ -513,6 +525,7 @@ def estimate_booking(data):
         except (RoomType.DoesNotExist, RatePlan.DoesNotExist):
             raise ValidationError({"rooms": "A selected room type or rate plan is unavailable."})
         quantity = requested["quantity"]
+        extra_beds = requested.get("extra_beds", 0)
         preference_snapshot, option_total = resolve_room_preferences(
             room_type,
             requested.get("preferences") or {},
@@ -530,10 +543,11 @@ def estimate_booking(data):
         nightly_option_total = (option_total / len(dates)) if dates else Decimal("0")
         nights = []
         item_total = Decimal("0")
+        extra_bed_stay_total = Decimal("0")
         for day in dates:
             rule = daily_rate_rows.get(day) or periods.get(day)
             unit_price, usd_display_price = _rate_amounts(rule, rate_plan)
-            extra_bed_total = rate_plan.extra_bed_base_price * requested.get("extra_beds", 0)
+            extra_bed_total = rate_plan.extra_bed_base_price * extra_beds
             night_total = unit_price * quantity + extra_bed_total + nightly_option_total
             nights.append({
                 "stay_date": day,
@@ -545,7 +559,43 @@ def estimate_booking(data):
                 "total": night_total,
             })
             item_total += night_total
+            extra_bed_stay_total += extra_bed_total
         room_total += item_total
+        selected_room_count += quantity
+        selected_extra_bed_count += extra_beds
+        room_stay_total = item_total - extra_bed_stay_total - option_total
+        summary_items.append({
+            "type": "room",
+            "label": f"{quantity} x {room_type.name}",
+            "room_type_id": room_type.id,
+            "core_room_type_id": room_type.core_room_type_id,
+            "rate_plan_id": rate_plan.id,
+            "quantity": quantity,
+            "amount": room_stay_total,
+            "formatted_amount": format_money(room_stay_total, hotel.base_currency),
+        })
+        if extra_beds:
+            summary_items.append({
+                "type": "extra_bed",
+                "label": f"{extra_beds} x Extra Bed(s)",
+                "room_type_id": room_type.id,
+                "core_room_type_id": room_type.core_room_type_id,
+                "rate_plan_id": rate_plan.id,
+                "quantity": extra_beds,
+                "amount": extra_bed_stay_total,
+                "formatted_amount": format_money(extra_bed_stay_total, hotel.base_currency),
+            })
+        if option_total:
+            summary_items.append({
+                "type": "option",
+                "label": f"{quantity} x {room_type.name} option upgrade(s)",
+                "room_type_id": room_type.id,
+                "core_room_type_id": room_type.core_room_type_id,
+                "rate_plan_id": rate_plan.id,
+                "quantity": quantity,
+                "amount": option_total,
+                "formatted_amount": format_money(option_total, hotel.base_currency),
+            })
         rooms.append({
             "core_room_type_id": room_type.core_room_type_id,
             "room_type_id": room_type.id,
@@ -558,7 +608,13 @@ def estimate_booking(data):
             "option_total": option_total,
             "nights": nights,
             "total": item_total,
+            "formatted_total": format_money(item_total, hotel.base_currency),
         })
+    summary_text_parts = [f"{selected_room_count} Room{'s' if selected_room_count != 1 else ''}"]
+    if len(dates):
+        summary_text_parts.append(f"{len(dates)} Night{'s' if len(dates) != 1 else ''}")
+    if selected_extra_bed_count:
+        summary_text_parts.append(f"{selected_extra_bed_count} Extra Bed{'s' if selected_extra_bed_count != 1 else ''}")
     return {
         "hotel": {
             "id": hotel.id,
@@ -571,8 +627,15 @@ def estimate_booking(data):
         "nights": len(dates),
         "currency": hotel.base_currency,
         "rooms": rooms,
+        "summary_items": summary_items,
+        "summary_text": " x ".join(summary_text_parts[:2]) + (
+            f" x {selected_extra_bed_count} Extra Bed{'s' if selected_extra_bed_count != 1 else ''}"
+            if selected_extra_bed_count else ""
+        ),
         "room_total": room_total,
         "grand_total": room_total,
+        "formatted_room_total": format_money(room_total, hotel.base_currency),
+        "formatted_grand_total": format_money(room_total, hotel.base_currency),
     }
 
 
