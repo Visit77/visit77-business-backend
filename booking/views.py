@@ -14,7 +14,7 @@ from rest_framework.views import APIView
 
 from booking.authentication import CoreJWTAuthentication
 from booking.integrations.core import sync_business_from_core
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Hotel, Payment, PhysicalRoom, RatePlan, RatePeriod, RoomAssignment, RoomType
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Hotel, MealPlan, Payment, PhysicalRoom, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
 from booking.serializers import (
     AddOnSerializer,
@@ -32,6 +32,7 @@ from booking.serializers import (
     DailyRateSerializer,
     DailyRateBulkUpsertSerializer,
     HotelSerializer,
+    MealPlanSerializer,
     PaymentCreateSerializer,
     PaymentSerializer,
     PhysicalRoomSerializer,
@@ -44,6 +45,7 @@ from booking.serializers import (
     RoomChangeSerializer,
     RoomUnassignmentSerializer,
     RoomBoardQuerySerializer,
+    RoomTypeMealPlanSerializer,
     RoomTypeSerializer,
 )
 from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_booking, deprovision_hotel, estimate_booking, record_payment, refund_payment, validate_assignment_preferences
@@ -541,11 +543,27 @@ class HotelViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins.L
 
 
 class RoomTypeViewSet(AdminModelViewSet):
-    queryset = RoomType.objects.select_related("hotel")
+    queryset = RoomType.objects.select_related("hotel").prefetch_related("meal_plan_links", "meal_plan_links__meal_plan")
     serializer_class = RoomTypeSerializer
     filterset_fields = ["hotel", "core_room_type_id", "booking_enabled", "core_active"]
     http_method_names = ["get", "patch", "head", "options"]
     business_lookup = "hotel__core_business_id"
+
+
+class MealPlanViewSet(AdminModelViewSet):
+    queryset = MealPlan.objects.select_related("hotel")
+    serializer_class = MealPlanSerializer
+    filterset_fields = ["hotel", "core_meal_plan_id", "availability", "core_active"]
+    http_method_names = ["get", "head", "options"]
+    business_lookup = "hotel__core_business_id"
+
+
+class RoomTypeMealPlanViewSet(AdminModelViewSet):
+    queryset = RoomTypeMealPlan.objects.select_related("room_type", "room_type__hotel", "meal_plan")
+    serializer_class = RoomTypeMealPlanSerializer
+    filterset_fields = ["room_type", "meal_plan", "is_included", "is_default", "is_guest_selectable"]
+    http_method_names = ["get", "head", "options"]
+    business_lookup = "room_type__hotel__core_business_id"
 
 
 class PhysicalRoomViewSet(AdminModelViewSet):

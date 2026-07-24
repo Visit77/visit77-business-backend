@@ -12,6 +12,7 @@ from booking.views import (
     DailyRateViewSet,
     HotelViewSet,
     IntegrationStatusView,
+    MealPlanViewSet,
     PhysicalRoomViewSet,
     PublicAvailabilityView,
     PublicBookingCreateView,
@@ -23,6 +24,7 @@ from booking.views import (
     RatePlanViewSet,
     RatePeriodViewSet,
     RoomBoardView,
+    RoomTypeMealPlanViewSet,
     RoomTypeViewSet,
     SuperAdminAddOnTemplateRequestViewSet,
     SuperAdminAddOnTemplateViewSet,
@@ -32,6 +34,8 @@ from booking.views import (
 router = DefaultRouter()
 router.register("admin/hotels", HotelViewSet, basename="hotel")
 router.register("admin/room-types", RoomTypeViewSet, basename="room-type")
+router.register("admin/meal-plans", MealPlanViewSet, basename="meal-plan")
+router.register("admin/room-type-meal-plans", RoomTypeMealPlanViewSet, basename="room-type-meal-plan")
 router.register("admin/physical-rooms", PhysicalRoomViewSet, basename="physical-room")
 router.register("admin/rate-plans", RatePlanViewSet, basename="rate-plan")
 router.register("admin/inventory", DailyInventoryViewSet, basename="inventory")

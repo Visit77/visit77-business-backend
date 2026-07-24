@@ -6,7 +6,7 @@ from django.conf import settings
 from django.utils import timezone
 from rest_framework.exceptions import APIException
 
-from booking.models import Hotel, PhysicalRoom, RatePlan, RoomType
+from booking.models import Hotel, MealPlan, PhysicalRoom, RatePlan, RoomType, RoomTypeMealPlan
 
 
 class CoreIntegrationError(APIException):
@@ -143,6 +143,30 @@ def sync_business_from_core(core_business_id: int, client=None):
 
     synced_room_types = []
     core_room_type_ids = []
+    meal_plan_by_core_id = {}
+    synced_core_meal_plan_ids = []
+    for payload in bundle.get("meal_plans", []) or []:
+        synced_core_meal_plan_ids.append(payload["id"])
+        meal_plan, _ = MealPlan.objects.update_or_create(
+            hotel=hotel,
+            core_meal_plan_id=payload["id"],
+            defaults={
+                "name": payload.get("name") or f"Meal plan {payload['id']}",
+                "description": payload.get("description") or "",
+                "included_meals": payload.get("included_meals") or [],
+                "availability": payload.get("availability") or MealPlan.Availability.GUEST_ONLY,
+                "local_base_price": payload.get("local_base_price") or 0,
+                "local_usd_display_price": payload.get("local_usd_display_price"),
+                "foreign_base_price": payload.get("foreign_base_price") or 0,
+                "foreign_usd_display_price": payload.get("foreign_usd_display_price"),
+                "core_active": payload.get("is_active", True),
+                "core_snapshot": payload,
+                "synced_at": now,
+            },
+        )
+        meal_plan_by_core_id[meal_plan.core_meal_plan_id] = meal_plan
+    hotel.meal_plans.exclude(core_meal_plan_id__in=synced_core_meal_plan_ids).update(core_active=False, synced_at=now)
+
     for payload in bundle.get("room_types", []) or []:
         core_room_type_ids.append(payload["id"])
         photos = payload.get("photos") or []
@@ -222,6 +246,31 @@ def sync_business_from_core(core_business_id: int, client=None):
         room_type.rate_plans.filter(source=RatePlan.Source.CORE).exclude(
             core_rate_plan_id__in=synced_core_rate_plan_ids,
         ).update(is_active=False)
+        synced_room_type_meal_plan_ids = []
+        for link_payload in payload.get("meal_plans", []) or []:
+            meal_payload = link_payload.get("meal_plan") or {}
+            core_meal_plan_id = link_payload.get("meal_plan_id") or meal_payload.get("id")
+            meal_plan = meal_plan_by_core_id.get(core_meal_plan_id)
+            if not meal_plan:
+                continue
+            link, _ = RoomTypeMealPlan.objects.update_or_create(
+                room_type=room_type,
+                meal_plan=meal_plan,
+                defaults={
+                    "is_included": link_payload.get("is_included", False),
+                    "is_default": link_payload.get("is_default", False),
+                    "is_guest_selectable": link_payload.get("is_guest_selectable", True),
+                    "use_hotel_default_price": link_payload.get("use_hotel_default_price", True),
+                    "local_base_price": link_payload.get("local_base_price") or 0,
+                    "local_usd_display_price": link_payload.get("local_usd_display_price"),
+                    "foreign_base_price": link_payload.get("foreign_base_price") or 0,
+                    "foreign_usd_display_price": link_payload.get("foreign_usd_display_price"),
+                    "core_snapshot": link_payload,
+                    "synced_at": now,
+                },
+            )
+            synced_room_type_meal_plan_ids.append(link.id)
+        room_type.meal_plan_links.exclude(id__in=synced_room_type_meal_plan_ids).delete()
         synced_room_types.append(room_type)
 
     hotel.room_types.exclude(core_room_type_id__in=core_room_type_ids).update(core_active=False, booking_enabled=False)

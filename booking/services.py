@@ -134,6 +134,35 @@ def _display_amount(base_amount, usd_amount, display_currency):
     return base_amount
 
 
+def _meal_plan_link_payload(link, guest_market="local", display_currency=None):
+    meal_plan = link.meal_plan
+    if guest_market == RatePlan.GuestMarket.FOREIGN:
+        base_price = link.effective_foreign_base_price
+        usd_display_price = link.effective_foreign_usd_display_price
+    else:
+        base_price = link.effective_local_base_price
+        usd_display_price = link.effective_local_usd_display_price
+    selected_display_currency = display_currency or link.room_type.hotel.base_currency
+    return {
+        "id": link.id,
+        "meal_plan_id": meal_plan.id,
+        "core_meal_plan_id": meal_plan.core_meal_plan_id,
+        "name": meal_plan.name,
+        "description": meal_plan.description,
+        "included_meals": meal_plan.included_meals,
+        "availability": meal_plan.availability,
+        "is_included": link.is_included,
+        "is_default": link.is_default,
+        "is_guest_selectable": link.is_guest_selectable,
+        "use_hotel_default_price": link.use_hotel_default_price,
+        "base_currency": link.room_type.hotel.base_currency,
+        "display_currency": selected_display_currency,
+        "base_price": base_price,
+        "usd_display_price": usd_display_price,
+        "display_price": _display_amount(base_price, usd_display_price, selected_display_currency),
+    }
+
+
 def _rate_amounts(rule, rate_plan):
     if rule is None:
         return rate_plan.base_price, rate_plan.usd_display_price
@@ -372,7 +401,7 @@ def availability_for_hotels(hotels, check_in, check_out, adults=1, children=0, g
         hotel_id__in=hotel_ids,
         booking_enabled=True,
         core_active=True,
-    ).order_by("hotel_id", "id"))
+    ).select_related("hotel").prefetch_related("meal_plan_links", "meal_plan_links__meal_plan").order_by("hotel_id", "id"))
     room_type_ids = [room_type.id for room_type in room_types]
     inventory = {
         (row.room_type_id, row.stay_date): row
@@ -468,6 +497,11 @@ def availability_for_hotels(hotels, check_in, check_out, adults=1, children=0, g
                 "max_children": room_type.max_children,
                 "available_rooms": available,
                 "booking_options": room_type_booking_options(room_type),
+                "meal_plans": [
+                    _meal_plan_link_payload(link, guest_market, display_currency)
+                    for link in room_type.meal_plan_links.all()
+                    if link.meal_plan.core_active
+                ],
                 "rate_plans": room_plans,
                 "core_snapshot": room_type.core_snapshot,
             })

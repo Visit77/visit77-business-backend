@@ -10,7 +10,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.backends import TokenBackend
 
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, CoreIntegrationEvent, DailyInventory, DailyRate, Hotel, Payment, PhysicalRoom, RatePlan, RatePeriod, RoomAssignment, RoomType
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, CoreIntegrationEvent, DailyInventory, DailyRate, Hotel, MealPlan, Payment, PhysicalRoom, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import sync_business_from_core
 from booking.services import availability_for_hotel, cancel_booking, create_booking, ensure_daily_inventory_for_room_type, record_payment, refund_payment
 
@@ -178,6 +178,20 @@ class BookingServiceTests(TestCase):
                         },
                     },
                     "business": {"id": core_business_id, "name": "Seed Hotel", "status": True},
+                    "meal_plans": [
+                        {
+                            "id": 501,
+                            "name": "Breakfast",
+                            "description": "Breakfast buffet.",
+                            "included_meals": ["breakfast"],
+                            "availability": "guest_only",
+                            "local_base_price": 20000,
+                            "local_usd_display_price": 10,
+                            "foreign_base_price": 30000,
+                            "foreign_usd_display_price": 15,
+                            "is_active": True,
+                        }
+                    ],
                     "room_types": [{
                         "id": 901,
                         "name": "Seed Double",
@@ -204,6 +218,18 @@ class BookingServiceTests(TestCase):
                                 "base_price": 100000,
                                 "usd_display_price": 50,
                             },
+                        ],
+                        "meal_plans": [
+                            {
+                                "meal_plan": {
+                                    "id": 501,
+                                    "included_meals": ["breakfast"],
+                                },
+                                "is_included": True,
+                                "is_default": True,
+                                "is_guest_selectable": True,
+                                "use_hotel_default_price": True,
+                            }
                         ],
                     }],
                     "physical_rooms": [
@@ -262,6 +288,12 @@ class BookingServiceTests(TestCase):
         foreign_default = RatePlan.objects.get(core_rate_plan_id="room-901-foreign")
         self.assertEqual(foreign_default.base_price, Decimal("100000"))
         self.assertEqual(foreign_default.usd_display_price, Decimal("50"))
+        meal_plan = MealPlan.objects.get(hotel=hotel, core_meal_plan_id=501)
+        self.assertEqual(meal_plan.name, "Breakfast")
+        self.assertTrue(meal_plan.includes_breakfast)
+        room_type_meal_plan = RoomTypeMealPlan.objects.get(room_type=room_type, meal_plan=meal_plan)
+        self.assertTrue(room_type_meal_plan.is_included)
+        self.assertEqual(room_type_meal_plan.effective_local_base_price, Decimal("20000"))
         self.assertEqual(local_default.source, RatePlan.Source.CORE)
         self.assertTrue(local_default.is_default)
         self.assertEqual(custom.default_price, Decimal("70000"))

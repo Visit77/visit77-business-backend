@@ -61,6 +61,76 @@ class RoomType(models.Model):
         return f"{self.hotel.name} / {self.name}"
 
 
+class MealPlan(models.Model):
+    class Availability(models.TextChoices):
+        GUEST_ONLY = "guest_only", "Guest Only"
+        PUBLIC = "public", "Public / Walk-in"
+
+    hotel = models.ForeignKey(Hotel, on_delete=models.CASCADE, related_name="meal_plans")
+    core_meal_plan_id = models.PositiveBigIntegerField()
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    included_meals = models.JSONField(default=list, blank=True)
+    availability = models.CharField(max_length=32, choices=Availability.choices, default=Availability.GUEST_ONLY)
+    local_base_price = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    local_usd_display_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    foreign_base_price = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    foreign_usd_display_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    core_active = models.BooleanField(default=True)
+    core_snapshot = models.JSONField(default=dict, blank=True)
+    synced_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["name", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["hotel", "core_meal_plan_id"], name="uniq_core_meal_plan_per_hotel"),
+        ]
+
+    def __str__(self):
+        return f"{self.hotel.name} / {self.name}"
+
+    @property
+    def includes_breakfast(self):
+        return "breakfast" in (self.included_meals or [])
+
+
+class RoomTypeMealPlan(models.Model):
+    room_type = models.ForeignKey(RoomType, on_delete=models.CASCADE, related_name="meal_plan_links")
+    meal_plan = models.ForeignKey(MealPlan, on_delete=models.PROTECT, related_name="room_type_links")
+    is_included = models.BooleanField(default=False)
+    is_default = models.BooleanField(default=False)
+    is_guest_selectable = models.BooleanField(default=True)
+    use_hotel_default_price = models.BooleanField(default=True)
+    local_base_price = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    local_usd_display_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    foreign_base_price = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    foreign_usd_display_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    core_snapshot = models.JSONField(default=dict, blank=True)
+    synced_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.UniqueConstraint(fields=["room_type", "meal_plan"], name="uniq_booking_room_type_meal_plan"),
+        ]
+
+    @property
+    def effective_local_base_price(self):
+        return self.meal_plan.local_base_price if self.use_hotel_default_price else self.local_base_price
+
+    @property
+    def effective_local_usd_display_price(self):
+        return self.meal_plan.local_usd_display_price if self.use_hotel_default_price else self.local_usd_display_price
+
+    @property
+    def effective_foreign_base_price(self):
+        return self.meal_plan.foreign_base_price if self.use_hotel_default_price else self.foreign_base_price
+
+    @property
+    def effective_foreign_usd_display_price(self):
+        return self.meal_plan.foreign_usd_display_price if self.use_hotel_default_price else self.foreign_usd_display_price
+
+
 class PhysicalRoom(models.Model):
     class Status(models.TextChoices):
         VACANT = "vacant", "Vacant"
@@ -84,6 +154,10 @@ class PhysicalRoom(models.Model):
     class Meta:
         ordering = ["building", "floor", "room_number"]
         constraints = [models.UniqueConstraint(fields=["hotel", "room_number"], name="uniq_room_number_per_hotel")]
+        indexes = [
+            models.Index(fields=["hotel", "core_building_id"], name="booking_phy_hotel_i_2e5f4d_idx"),
+            models.Index(fields=["hotel", "core_floor_id"], name="booking_phy_hotel_i_c2a08a_idx"),
+        ]
 
     def clean(self):
         if self.room_type_id and self.hotel_id and self.room_type.hotel_id != self.hotel_id:

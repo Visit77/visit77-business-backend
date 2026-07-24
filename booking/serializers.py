@@ -16,12 +16,14 @@ from booking.models import (
     DailyRate,
     Guest,
     Hotel,
+    MealPlan,
     Payment,
     PhysicalRoom,
     RatePlan,
     RatePeriod,
     RoomAssignment,
     RoomType,
+    RoomTypeMealPlan,
 )
 
 
@@ -106,11 +108,48 @@ class RoomBoardQuerySerializer(serializers.Serializer):
 
 class RoomTypeSerializer(serializers.ModelSerializer):
     core_business_id = serializers.IntegerField(source="hotel.core_business_id", read_only=True)
+    meal_plans = serializers.SerializerMethodField()
+
+    def get_meal_plans(self, obj):
+        links = obj.meal_plan_links.select_related("meal_plan").all()
+        return RoomTypeMealPlanSerializer(links, many=True).data
 
     class Meta:
         model = RoomType
         fields = "__all__"
         read_only_fields = ["hotel", "core_room_type_id", "name", "description", "cover_image_url", "max_adults", "max_children", "max_occupancy", "core_active", "core_snapshot", "synced_at"]
+
+
+class MealPlanSerializer(serializers.ModelSerializer):
+    core_business_id = serializers.IntegerField(source="hotel.core_business_id", read_only=True)
+    includes_breakfast = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = MealPlan
+        fields = "__all__"
+        read_only_fields = [
+            "hotel", "core_meal_plan_id", "name", "description", "included_meals",
+            "availability", "local_base_price", "local_usd_display_price",
+            "foreign_base_price", "foreign_usd_display_price", "core_active",
+            "core_snapshot", "synced_at",
+        ]
+
+
+class RoomTypeMealPlanSerializer(serializers.ModelSerializer):
+    meal_plan = MealPlanSerializer(read_only=True)
+    effective_local_base_price = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    effective_local_usd_display_price = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True, allow_null=True)
+    effective_foreign_base_price = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    effective_foreign_usd_display_price = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True, allow_null=True)
+
+    class Meta:
+        model = RoomTypeMealPlan
+        fields = "__all__"
+        read_only_fields = [
+            "room_type", "meal_plan", "is_included", "is_default", "is_guest_selectable",
+            "use_hotel_default_price", "local_base_price", "local_usd_display_price",
+            "foreign_base_price", "foreign_usd_display_price", "core_snapshot", "synced_at",
+        ]
 
 
 class PhysicalRoomSerializer(serializers.ModelSerializer):
