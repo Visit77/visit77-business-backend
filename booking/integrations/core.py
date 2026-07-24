@@ -154,6 +154,7 @@ def sync_business_from_core(core_business_id: int, client=None):
                 "name": payload.get("name") or f"Meal plan {payload['id']}",
                 "description": payload.get("description") or "",
                 "included_meals": payload.get("included_meals") or [],
+                "meal_windows": payload.get("meal_windows") or {},
                 "availability": payload.get("availability") or MealPlan.Availability.GUEST_ONLY,
                 "local_base_price": payload.get("local_base_price") or 0,
                 "local_usd_display_price": payload.get("local_usd_display_price"),

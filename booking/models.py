@@ -71,6 +71,7 @@ class MealPlan(models.Model):
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     included_meals = models.JSONField(default=list, blank=True)
+    meal_windows = models.JSONField(default=dict, blank=True)
     availability = models.CharField(max_length=32, choices=Availability.choices, default=Availability.GUEST_ONLY)
     local_base_price = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     local_usd_display_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)

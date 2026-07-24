@@ -237,6 +237,7 @@ class BookingServiceTests(TestCase):
                             "name": "Breakfast",
                             "description": "Breakfast buffet.",
                             "included_meals": ["breakfast"],
+                            "meal_windows": {"breakfast": {"start": "06:30", "end": "10:00"}},
                             "availability": "guest_only",
                             "local_base_price": 20000,
                             "local_usd_display_price": 10,
@@ -277,6 +278,7 @@ class BookingServiceTests(TestCase):
                                 "meal_plan": {
                                     "id": 501,
                                     "included_meals": ["breakfast"],
+                                    "meal_windows": {"breakfast": {"start": "06:30", "end": "10:00"}},
                                 },
                                 "is_included": True,
                                 "is_default": True,
@@ -343,6 +345,7 @@ class BookingServiceTests(TestCase):
         self.assertEqual(foreign_default.usd_display_price, Decimal("50"))
         meal_plan = MealPlan.objects.get(hotel=hotel, core_meal_plan_id=501)
         self.assertEqual(meal_plan.name, "Breakfast")
+        self.assertEqual(meal_plan.meal_windows["breakfast"]["start"], "06:30")
         self.assertTrue(meal_plan.includes_breakfast)
         room_type_meal_plan = RoomTypeMealPlan.objects.get(room_type=room_type, meal_plan=meal_plan)
         self.assertTrue(room_type_meal_plan.is_included)
@@ -1088,9 +1091,13 @@ class DemoSeedCommandTests(TestCase):
         self.assertEqual(Hotel.objects.filter(core_business_id__in=[990001, 990002, 990003]).count(), 3)
         self.assertEqual(PhysicalRoom.objects.filter(hotel=hotel).count(), 10)
         self.assertEqual(room_type.rate_plans.count(), 3)
+        self.assertEqual(hotel.meal_plans.count(), 5)
+        self.assertEqual(room_type.meal_plan_links.count(), 5)
+        self.assertTrue(room_type.meal_plan_links.filter(meal_plan__included_meals=["breakfast"], is_included=True, is_default=True).exists())
         self.assertEqual(room_type.rate_plans.filter(source=RatePlan.Source.CORE, is_default=True).count(), 2)
         self.assertEqual(room_type.rate_plans.filter(source=RatePlan.Source.BOOKING, is_default=False).count(), 1)
         self.assertEqual(Booking.objects.filter(hotel=hotel, reference__startswith="DEMO-").count(), 4)
+        self.assertEqual(Booking.objects.get(reference="DEMO-UNASSIGNED-001").rooms.get().meal_plan_snapshot["name"], "Half Board")
         self.assertTrue(RatePeriod.objects.filter(rate_plan__room_type=room_type, name="Demo High Season").exists())
         self.assertTrue(DailyRate.objects.filter(rate_plan__room_type=room_type).exists())
         self.assertEqual(PhysicalRoom.objects.get(hotel=hotel, room_number="807").status, PhysicalRoom.Status.OCCUPIED)

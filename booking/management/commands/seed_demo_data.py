@@ -15,10 +15,12 @@ from booking.models import (
     DailyRate,
     Guest,
     Hotel,
+    MealPlan,
     Payment,
     PhysicalRoom,
     RatePeriod,
     RatePlan,
+    RoomTypeMealPlan,
     RoomAssignment,
     RoomType,
 )
@@ -225,6 +227,7 @@ class Command(BaseCommand):
             physical_rooms[room_number] = room
 
         self._seed_add_ons(hotel)
+        meal_plans = self._seed_meal_plans(hotel, room_type)
         self._seed_demo_booking(
             "DEMO-RSV-001",
             hotel,
@@ -237,6 +240,7 @@ class Command(BaseCommand):
             "Myo Myo",
             physical_rooms[804],
             paid=True,
+            meal_plan_link=meal_plans["Breakfast"],
             special_request="High floor and quiet room, please.",
         )
         self._seed_demo_booking(
@@ -251,6 +255,7 @@ class Command(BaseCommand):
             "Aye Aye",
             physical_rooms[807],
             paid=True,
+            meal_plan_link=meal_plans["Breakfast"],
             special_request="Late checkout requested.",
         )
         self._seed_demo_booking(
@@ -265,6 +270,7 @@ class Command(BaseCommand):
             "John Demo",
             physical_rooms[805],
             paid=True,
+            meal_plan_link=meal_plans["Half Board"],
             special_request="Two nearby rooms.",
         )
         self._seed_demo_booking(
@@ -279,6 +285,7 @@ class Command(BaseCommand):
             "Pending Guest",
             None,
             paid=False,
+            meal_plan_link=meal_plans["Breakfast"],
         )
         self._rebuild_demo_inventory(room_type, inventory_start, inventory_end)
         return {"hotel": hotel, "room_type": room_type, "local_plan": local_plan}
@@ -350,6 +357,7 @@ class Command(BaseCommand):
             {},
         )
         self._seed_inventory(room_type, inventory_start, inventory_end, 5)
+        self._seed_meal_plans(hotel, room_type)
         for index in range(1, 6):
             PhysicalRoom.objects.update_or_create(
                 hotel=hotel,
@@ -465,6 +473,131 @@ class Command(BaseCommand):
             },
         )
 
+    def _seed_meal_plans(self, hotel, room_type):
+        specs = [
+            {
+                "core_meal_plan_id": hotel.core_business_id * 1000 + 1,
+                "name": "Room Only",
+                "description": "No meals included. Useful for price-sensitive guests.",
+                "included_meals": ["no_meal"],
+                "meal_windows": {},
+                "availability": MealPlan.Availability.PUBLIC,
+                "local_base_price": Decimal("0"),
+                "local_usd_display_price": Decimal("0"),
+                "foreign_base_price": Decimal("0"),
+                "foreign_usd_display_price": Decimal("0"),
+            },
+            {
+                "core_meal_plan_id": hotel.core_business_id * 1000 + 2,
+                "name": "Breakfast",
+                "description": "Breakfast buffet for hotel guests.",
+                "included_meals": ["breakfast"],
+                "meal_windows": {"breakfast": {"start": "06:30", "end": "10:00"}},
+                "availability": MealPlan.Availability.GUEST_ONLY,
+                "local_base_price": Decimal("20000"),
+                "local_usd_display_price": Decimal("10"),
+                "foreign_base_price": Decimal("30000"),
+                "foreign_usd_display_price": Decimal("15"),
+            },
+            {
+                "core_meal_plan_id": hotel.core_business_id * 1000 + 3,
+                "name": "Half Board",
+                "description": "Breakfast and dinner included.",
+                "included_meals": ["breakfast", "dinner"],
+                "meal_windows": {
+                    "breakfast": {"start": "06:30", "end": "10:00"},
+                    "dinner": {"start": "18:00", "end": "21:00"},
+                },
+                "availability": MealPlan.Availability.GUEST_ONLY,
+                "local_base_price": Decimal("100000"),
+                "local_usd_display_price": Decimal("50"),
+                "foreign_base_price": Decimal("120000"),
+                "foreign_usd_display_price": Decimal("60"),
+            },
+            {
+                "core_meal_plan_id": hotel.core_business_id * 1000 + 4,
+                "name": "Full Board",
+                "description": "Breakfast, lunch, and dinner included.",
+                "included_meals": ["breakfast", "lunch", "dinner"],
+                "meal_windows": {
+                    "breakfast": {"start": "06:30", "end": "10:00"},
+                    "lunch": {"start": "12:00", "end": "14:00"},
+                    "dinner": {"start": "18:00", "end": "21:00"},
+                },
+                "availability": MealPlan.Availability.GUEST_ONLY,
+                "local_base_price": Decimal("140000"),
+                "local_usd_display_price": Decimal("70"),
+                "foreign_base_price": Decimal("170000"),
+                "foreign_usd_display_price": Decimal("85"),
+            },
+            {
+                "core_meal_plan_id": hotel.core_business_id * 1000 + 5,
+                "name": "All Inclusive",
+                "description": "All meals and selected drinks. Public restaurant package demo.",
+                "included_meals": ["breakfast", "lunch", "dinner", "drinks"],
+                "meal_windows": {
+                    "breakfast": {"start": "06:30", "end": "10:00"},
+                    "lunch": {"start": "12:00", "end": "14:00"},
+                    "dinner": {"start": "18:00", "end": "21:00"},
+                    "drinks": {"start": "10:00", "end": "22:00"},
+                },
+                "availability": MealPlan.Availability.PUBLIC,
+                "local_base_price": Decimal("200000"),
+                "local_usd_display_price": Decimal("100"),
+                "foreign_base_price": Decimal("240000"),
+                "foreign_usd_display_price": Decimal("120"),
+            },
+        ]
+        meal_plans = {}
+        for spec in specs:
+            meal_plan, _ = MealPlan.objects.update_or_create(
+                hotel=hotel,
+                core_meal_plan_id=spec["core_meal_plan_id"],
+                defaults={
+                    "name": spec["name"],
+                    "description": spec["description"],
+                    "included_meals": spec["included_meals"],
+                    "meal_windows": spec["meal_windows"],
+                    "availability": spec["availability"],
+                    "local_base_price": spec["local_base_price"],
+                    "local_usd_display_price": spec["local_usd_display_price"],
+                    "foreign_base_price": spec["foreign_base_price"],
+                    "foreign_usd_display_price": spec["foreign_usd_display_price"],
+                    "core_active": True,
+                    "core_snapshot": {"demo": True},
+                    "synced_at": timezone.now(),
+                },
+            )
+            meal_plans[meal_plan.name] = meal_plan
+
+        link_specs = [
+            ("Breakfast", True, True, True, True, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
+            ("Room Only", False, False, True, True, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
+            ("Half Board", False, False, True, True, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
+            ("Full Board", False, False, True, True, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
+            ("All Inclusive", False, False, True, False, Decimal("180000"), Decimal("90"), Decimal("220000"), Decimal("110")),
+        ]
+        links = {}
+        for rank, (name, is_included, is_default, is_guest_selectable, use_default_price, local_price, local_usd, foreign_price, foreign_usd) in enumerate(link_specs, start=1):
+            link, _ = RoomTypeMealPlan.objects.update_or_create(
+                room_type=room_type,
+                meal_plan=meal_plans[name],
+                defaults={
+                    "is_included": is_included,
+                    "is_default": is_default,
+                    "is_guest_selectable": is_guest_selectable,
+                    "use_hotel_default_price": use_default_price,
+                    "local_base_price": local_price,
+                    "local_usd_display_price": local_usd,
+                    "foreign_base_price": foreign_price,
+                    "foreign_usd_display_price": foreign_usd,
+                    "core_snapshot": {"demo": True, "rank": rank},
+                    "synced_at": timezone.now(),
+                },
+            )
+            links[name] = link
+        return links
+
     def _seed_demo_booking(
         self,
         reference,
@@ -478,6 +611,7 @@ class Command(BaseCommand):
         guest_name,
         physical_room,
         paid,
+        meal_plan_link=None,
         special_request="",
     ):
         nightly_prices = []
@@ -494,7 +628,32 @@ class Command(BaseCommand):
                 end_date__gte=day,
             ).first()
             nightly_prices.append((day, daily.price if daily else period.price if period else rate_plan.default_price))
-        room_total = sum((price * quantity for _, price in nightly_prices), Decimal("0"))
+        meal_plan_nightly_total = Decimal("0")
+        meal_plan_snapshot = {}
+        if meal_plan_link:
+            if not meal_plan_link.is_included:
+                meal_plan_price = (
+                    meal_plan_link.effective_foreign_base_price
+                    if rate_plan.guest_market == RatePlan.GuestMarket.FOREIGN
+                    else meal_plan_link.effective_local_base_price
+                )
+                meal_plan_nightly_total = meal_plan_price * quantity
+            meal_plan_snapshot = {
+                "id": meal_plan_link.id,
+                "meal_plan_id": meal_plan_link.meal_plan_id,
+                "core_meal_plan_id": meal_plan_link.meal_plan.core_meal_plan_id,
+                "name": meal_plan_link.meal_plan.name,
+                "description": meal_plan_link.meal_plan.description,
+                "included_meals": meal_plan_link.meal_plan.included_meals,
+                "meal_windows": meal_plan_link.meal_plan.meal_windows,
+                "availability": meal_plan_link.meal_plan.availability,
+                "is_included": meal_plan_link.is_included,
+                "is_default": meal_plan_link.is_default,
+                "is_guest_selectable": meal_plan_link.is_guest_selectable,
+                "base_currency": rate_plan.room_type.hotel.base_currency,
+            }
+        room_total = sum((price * quantity + meal_plan_nightly_total for _, price in nightly_prices), Decimal("0"))
+        meal_plan_total = meal_plan_nightly_total * len(nightly_prices)
         booking, _ = Booking.objects.update_or_create(
             reference=reference,
             defaults={
@@ -520,12 +679,15 @@ class Command(BaseCommand):
             defaults={
                 "room_type": room_type,
                 "rate_plan": rate_plan,
+                "meal_plan_link": meal_plan_link,
                 "quantity": quantity,
                 "adults": quantity * 2,
                 "children": 0,
                 "extra_beds": 0,
                 "room_type_snapshot": {"core_room_type_id": room_type.core_room_type_id, "name": room_type.name},
                 "rate_plan_snapshot": {"code": rate_plan.code, "name": rate_plan.name, "currency": rate_plan.currency},
+                "meal_plan_snapshot": meal_plan_snapshot,
+                "meal_plan_total": meal_plan_total,
                 "total": room_total,
             },
         )
@@ -536,7 +698,8 @@ class Command(BaseCommand):
                 stay_date=day,
                 unit_price=price,
                 quantity=quantity,
-                total=price * quantity,
+                meal_plan_total=meal_plan_nightly_total,
+                total=price * quantity + meal_plan_nightly_total,
             )
             for day, price in nightly_prices
         ])
