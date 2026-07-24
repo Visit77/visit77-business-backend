@@ -92,6 +92,59 @@ class BookingServiceTests(TestCase):
         booking, _ = create_booking(self.payload())
         self.assertEqual(booking.grand_total, Decimal("380000"))
 
+    def test_selected_paid_meal_plan_is_priced_for_each_room_night(self):
+        meal_plan = MealPlan.objects.create(
+            hotel=self.hotel,
+            core_meal_plan_id=401,
+            name="Breakfast",
+            included_meals=["breakfast"],
+            local_base_price=Decimal("20000"),
+            foreign_base_price=Decimal("30000"),
+        )
+        link = RoomTypeMealPlan.objects.create(
+            room_type=self.room_type,
+            meal_plan=meal_plan,
+            is_included=False,
+            is_default=False,
+            is_guest_selectable=True,
+        )
+        payload = self.payload()
+        payload["rooms"][0]["meal_plan_link_id"] = link.id
+
+        booking, _ = create_booking(payload)
+
+        booking_room = booking.rooms.get()
+        self.assertEqual(booking.grand_total, Decimal("400000"))
+        self.assertEqual(booking_room.meal_plan_link_id, link.id)
+        self.assertEqual(booking_room.meal_plan_total, Decimal("80000"))
+        self.assertEqual(booking_room.meal_plan_snapshot["name"], "Breakfast")
+        self.assertEqual(list(booking_room.nights.values_list("meal_plan_total", flat=True)), [Decimal("40000"), Decimal("40000")])
+
+    def test_default_included_meal_plan_is_attached_without_charge(self):
+        meal_plan = MealPlan.objects.create(
+            hotel=self.hotel,
+            core_meal_plan_id=402,
+            name="Breakfast Included",
+            included_meals=["breakfast"],
+            local_base_price=Decimal("20000"),
+            foreign_base_price=Decimal("30000"),
+        )
+        link = RoomTypeMealPlan.objects.create(
+            room_type=self.room_type,
+            meal_plan=meal_plan,
+            is_included=True,
+            is_default=True,
+            is_guest_selectable=True,
+        )
+
+        booking, _ = create_booking(self.payload())
+
+        booking_room = booking.rooms.get()
+        self.assertEqual(booking.grand_total, Decimal("320000"))
+        self.assertEqual(booking_room.meal_plan_link_id, link.id)
+        self.assertEqual(booking_room.meal_plan_total, Decimal("0"))
+        self.assertTrue(booking_room.meal_plan_snapshot["is_included"])
+
     def test_deposit_confirms_and_refund_updates_paid_balance(self):
         booking, _ = create_booking(self.payload())
         payment = record_payment(booking, {"provider": "cash", "amount": Decimal("50000"), "status": Payment.Status.PAID})
@@ -380,6 +433,45 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(data["summary_text"], "2 Rooms x 2 Nights x 1 Extra Bed")
         self.assertEqual(data["summary_items"][0]["label"], "2 x Double Room")
         self.assertEqual(data["summary_items"][1]["label"], "1 x Extra Bed(s)")
+
+    def test_public_booking_estimate_includes_paid_meal_plan_supplement(self):
+        meal_plan = MealPlan.objects.create(
+            hotel=self.hotel,
+            core_meal_plan_id=403,
+            name="Breakfast",
+            included_meals=["breakfast"],
+            local_base_price=Decimal("20000"),
+            foreign_base_price=Decimal("30000"),
+        )
+        link = RoomTypeMealPlan.objects.create(
+            room_type=self.room_type,
+            meal_plan=meal_plan,
+            is_included=False,
+            is_guest_selectable=True,
+        )
+        payload = {
+            "core_business_id": self.hotel.core_business_id,
+            "check_in": str(self.check_in),
+            "check_out": str(self.check_out),
+            "guest_market": "local",
+            "rooms": [{
+                "core_room_type_id": self.room_type.core_room_type_id,
+                "rate_plan_id": self.rate_plan.id,
+                "meal_plan_link_id": link.id,
+                "quantity": 2,
+                "adults": 4,
+                "children": 0,
+            }],
+        }
+
+        response = self.client.post("/api/v1/public/bookings/estimate/", payload, format="json")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.data["data"]
+        self.assertEqual(data["grand_total"], Decimal("400000"))
+        self.assertEqual(data["rooms"][0]["meal_plan_total"], Decimal("80000"))
+        self.assertEqual(data["rooms"][0]["meal_plan"]["name"], "Breakfast")
+        self.assertEqual(data["summary_items"][1]["type"], "meal_plan")
 
     def test_global_availability_returns_rooms_from_multiple_hotels(self):
         second_hotel = Hotel.objects.create(

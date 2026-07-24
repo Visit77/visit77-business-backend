@@ -440,14 +440,17 @@ class BookingRoom(models.Model):
     booking = models.ForeignKey(Booking, on_delete=models.CASCADE, related_name="rooms")
     room_type = models.ForeignKey(RoomType, on_delete=models.PROTECT, related_name="booking_rooms")
     rate_plan = models.ForeignKey(RatePlan, on_delete=models.PROTECT, related_name="booking_rooms")
+    meal_plan_link = models.ForeignKey(RoomTypeMealPlan, on_delete=models.SET_NULL, related_name="booking_rooms", null=True, blank=True)
     quantity = models.PositiveSmallIntegerField(default=1)
     adults = models.PositiveSmallIntegerField(default=1)
     children = models.PositiveSmallIntegerField(default=0)
     extra_beds = models.PositiveSmallIntegerField(default=0)
     room_type_snapshot = models.JSONField(default=dict)
     rate_plan_snapshot = models.JSONField(default=dict)
+    meal_plan_snapshot = models.JSONField(default=dict, blank=True)
     preference_snapshot = models.JSONField(default=dict, blank=True)
     option_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    meal_plan_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
 
 
@@ -458,6 +461,7 @@ class BookingRoomNight(models.Model):
     quantity = models.PositiveSmallIntegerField(default=1)
     extra_bed_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     option_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    meal_plan_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     total = models.DecimalField(max_digits=14, decimal_places=2)
 
     class Meta:

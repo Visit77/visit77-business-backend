@@ -506,6 +506,7 @@ class RequestedRoomPreferenceSerializer(serializers.Serializer):
 class RequestedRoomSerializer(serializers.Serializer):
     core_room_type_id = serializers.IntegerField(min_value=1)
     rate_plan_id = serializers.IntegerField(min_value=1)
+    meal_plan_link_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     quantity = serializers.IntegerField(min_value=1, max_value=20)
     adults = serializers.IntegerField(min_value=1, max_value=100, default=1)
     children = serializers.IntegerField(min_value=0, max_value=100, default=0)
