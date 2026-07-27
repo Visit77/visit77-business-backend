@@ -144,6 +144,7 @@ class BookingServiceTests(TestCase):
         self.assertEqual(booking_room.meal_plan_link_id, link.id)
         self.assertEqual(booking_room.meal_plan_total, Decimal("0"))
         self.assertTrue(booking_room.meal_plan_snapshot["is_included"])
+        self.assertIn("pricing_mode", booking_room.meal_plan_snapshot)
 
     def test_deposit_confirms_and_refund_updates_paid_balance(self):
         booking, _ = create_booking(self.payload())
@@ -349,7 +350,8 @@ class BookingServiceTests(TestCase):
         self.assertTrue(meal_plan.includes_breakfast)
         room_type_meal_plan = RoomTypeMealPlan.objects.get(room_type=room_type, meal_plan=meal_plan)
         self.assertTrue(room_type_meal_plan.is_included)
-        self.assertEqual(room_type_meal_plan.effective_local_base_price, Decimal("20000"))
+        self.assertEqual(room_type_meal_plan.pricing_mode, RoomTypeMealPlan.PricingMode.INCLUDED_IN_ROOM_PRICE)
+        self.assertEqual(room_type_meal_plan.effective_local_base_price, Decimal("0"))
         self.assertEqual(local_default.source, RatePlan.Source.CORE)
         self.assertTrue(local_default.is_default)
         self.assertEqual(custom.default_price, Decimal("70000"))

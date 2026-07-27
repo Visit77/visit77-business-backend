@@ -571,14 +571,14 @@ class Command(BaseCommand):
             meal_plans[meal_plan.name] = meal_plan
 
         link_specs = [
-            ("Breakfast", True, True, True, True, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
-            ("Room Only", False, False, True, True, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
-            ("Half Board", False, False, True, True, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
-            ("Full Board", False, False, True, True, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
-            ("All Inclusive", False, False, True, False, Decimal("180000"), Decimal("90"), Decimal("220000"), Decimal("110")),
+            ("Breakfast", RoomTypeMealPlan.PricingMode.INCLUDED_IN_ROOM_PRICE, True, True, True, True, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
+            ("Room Only", RoomTypeMealPlan.PricingMode.HOTEL_DEFAULT, False, False, True, True, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
+            ("Half Board", RoomTypeMealPlan.PricingMode.HOTEL_DEFAULT, False, False, True, True, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
+            ("Full Board", RoomTypeMealPlan.PricingMode.HOTEL_DEFAULT, False, False, True, True, Decimal("0"), Decimal("0"), Decimal("0"), Decimal("0")),
+            ("All Inclusive", RoomTypeMealPlan.PricingMode.CUSTOM, False, False, True, False, Decimal("180000"), Decimal("90"), Decimal("220000"), Decimal("110")),
         ]
         links = {}
-        for rank, (name, is_included, is_default, is_guest_selectable, use_default_price, local_price, local_usd, foreign_price, foreign_usd) in enumerate(link_specs, start=1):
+        for rank, (name, pricing_mode, is_included, is_default, is_guest_selectable, use_default_price, local_price, local_usd, foreign_price, foreign_usd) in enumerate(link_specs, start=1):
             link, _ = RoomTypeMealPlan.objects.update_or_create(
                 room_type=room_type,
                 meal_plan=meal_plans[name],
@@ -586,6 +586,7 @@ class Command(BaseCommand):
                     "is_included": is_included,
                     "is_default": is_default,
                     "is_guest_selectable": is_guest_selectable,
+                    "pricing_mode": pricing_mode,
                     "use_hotel_default_price": use_default_price,
                     "local_base_price": local_price,
                     "local_usd_display_price": local_usd,

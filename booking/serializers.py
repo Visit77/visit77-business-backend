@@ -147,7 +147,7 @@ class RoomTypeMealPlanSerializer(serializers.ModelSerializer):
         fields = "__all__"
         read_only_fields = [
             "room_type", "meal_plan", "is_included", "is_default", "is_guest_selectable",
-            "use_hotel_default_price", "local_base_price", "local_usd_display_price",
+            "use_hotel_default_price", "pricing_mode", "local_base_price", "local_usd_display_price",
             "foreign_base_price", "foreign_usd_display_price", "core_snapshot", "synced_at",
         ]
 

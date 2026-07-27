@@ -261,6 +261,15 @@ def sync_business_from_core(core_business_id: int, client=None):
                     "is_included": link_payload.get("is_included", False),
                     "is_default": link_payload.get("is_default", False),
                     "is_guest_selectable": link_payload.get("is_guest_selectable", True),
+                    "pricing_mode": link_payload.get("pricing_mode") or (
+                        RoomTypeMealPlan.PricingMode.INCLUDED_IN_ROOM_PRICE
+                        if link_payload.get("is_included", False)
+                        else (
+                            RoomTypeMealPlan.PricingMode.HOTEL_DEFAULT
+                            if link_payload.get("use_hotel_default_price", True)
+                            else RoomTypeMealPlan.PricingMode.CUSTOM
+                        )
+                    ),
                     "use_hotel_default_price": link_payload.get("use_hotel_default_price", True),
                     "local_base_price": link_payload.get("local_base_price") or 0,
                     "local_usd_display_price": link_payload.get("local_usd_display_price"),

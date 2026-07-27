@@ -1,4 +1,5 @@
 import uuid
+from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -96,12 +97,18 @@ class MealPlan(models.Model):
 
 
 class RoomTypeMealPlan(models.Model):
+    class PricingMode(models.TextChoices):
+        HOTEL_DEFAULT = "hotel_default", "Use Hotel Default Meal Price"
+        CUSTOM = "custom", "Use Custom Room Type Meal Price"
+        INCLUDED_IN_ROOM_PRICE = "included_in_room_price", "Included In Room Price"
+
     room_type = models.ForeignKey(RoomType, on_delete=models.CASCADE, related_name="meal_plan_links")
     meal_plan = models.ForeignKey(MealPlan, on_delete=models.PROTECT, related_name="room_type_links")
     is_included = models.BooleanField(default=False)
     is_default = models.BooleanField(default=False)
     is_guest_selectable = models.BooleanField(default=True)
     use_hotel_default_price = models.BooleanField(default=True)
+    pricing_mode = models.CharField(max_length=32, choices=PricingMode.choices, default=PricingMode.HOTEL_DEFAULT)
     local_base_price = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     local_usd_display_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     foreign_base_price = models.DecimalField(max_digits=14, decimal_places=2, default=0)
@@ -116,19 +123,31 @@ class RoomTypeMealPlan(models.Model):
         ]
 
     @property
+    def is_price_included_in_room_price(self):
+        return self.pricing_mode == self.PricingMode.INCLUDED_IN_ROOM_PRICE or self.is_included
+
+    @property
     def effective_local_base_price(self):
+        if self.is_price_included_in_room_price:
+            return Decimal("0")
         return self.meal_plan.local_base_price if self.use_hotel_default_price else self.local_base_price
 
     @property
     def effective_local_usd_display_price(self):
+        if self.is_price_included_in_room_price:
+            return Decimal("0")
         return self.meal_plan.local_usd_display_price if self.use_hotel_default_price else self.local_usd_display_price
 
     @property
     def effective_foreign_base_price(self):
+        if self.is_price_included_in_room_price:
+            return Decimal("0")
         return self.meal_plan.foreign_base_price if self.use_hotel_default_price else self.foreign_base_price
 
     @property
     def effective_foreign_usd_display_price(self):
+        if self.is_price_included_in_room_price:
+            return Decimal("0")
         return self.meal_plan.foreign_usd_display_price if self.use_hotel_default_price else self.foreign_usd_display_price
 
 
