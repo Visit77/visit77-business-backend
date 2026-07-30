@@ -526,6 +526,7 @@ class Payment(models.Model):
 
     class Provider(models.TextChoices):
         DEMO = "demo", "Demo"
+        AYA = "aya", "AYA"
         CASH = "cash", "Cash"
         MMQR = "mmqr", "MMQR"
         OTHER = "other", "Other"

@@ -710,6 +710,69 @@ class BookingApiTests(BookingServiceTests):
         response = self.client.post(f"/api/v1/public/bookings/{uuid.uuid4()}/demo-payment/", {}, format="json")
         self.assertEqual(response.status_code, 404)
 
+    @override_settings(CORE_SERVICE_KEY="core-service-key")
+    @patch("booking.views.CoreClient.post")
+    def test_public_aya_payment_starts_core_checkout(self, core_post):
+        core_post.return_value = {
+            "checkout_type": "form_post",
+            "checkout_url": "https://core.test/subscriptions/billing/aya/checkout/AYA-BKG-1/",
+        }
+        payload = self.payload()
+        payload["check_in"] = str(payload["check_in"])
+        payload["check_out"] = str(payload["check_out"])
+        created = self.client.post("/api/v1/public/bookings/", payload, format="json")
+        token = created.data["data"]["public_token"]
+
+        response = self.client.post(f"/api/v1/public/bookings/{token}/aya-payment/", {"channel": "MMQR", "method": "QR"}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["booking"]["status"], Booking.Status.PENDING_PAYMENT)
+        self.assertEqual(response.data["data"]["checkout"]["checkout_type"], "form_post")
+        core_post.assert_called_once()
+        self.assertEqual(core_post.call_args.args[0], "direct-booking/hotel-bookings/aya-checkout/")
+        self.assertEqual(core_post.call_args.args[1]["amount"], 320000)
+
+    def test_core_payment_success_confirms_booking_and_is_idempotent(self):
+        payload = self.payload()
+        payload["check_in"] = str(payload["check_in"])
+        payload["check_out"] = str(payload["check_out"])
+        created = self.client.post("/api/v1/public/bookings/", payload, format="json")
+        booking_id = created.data["data"]["id"]
+        public_token = created.data["data"]["public_token"]
+
+        core_payload = {
+            "booking_id": booking_id,
+            "booking_public_token": public_token,
+            "business_id": self.hotel.core_business_id,
+            "payment": {
+                "provider": "aya",
+                "status": "success",
+                "amount": "320000",
+                "currency": "MMK",
+                "payment_reference": "AYA-BKG-test-001",
+                "transaction_id": "AYA-TXN-001",
+            },
+            "aya": {"status_code": "00", "transaction_id": "AYA-TXN-001"},
+        }
+        response = self.client.post(
+            "/api/v1/admin/payments/core-success/",
+            core_payload,
+            format="json",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["data"]["booking"]["status"], Booking.Status.CONFIRMED)
+        self.assertEqual(response.data["data"]["payment"]["provider"], Payment.Provider.AYA)
+
+        duplicate = self.client.post(
+            "/api/v1/admin/payments/core-success/",
+            core_payload,
+            format="json",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+        )
+        self.assertEqual(duplicate.status_code, 200, duplicate.data)
+        self.assertTrue(duplicate.data["duplicate"])
+        self.assertEqual(Payment.objects.filter(provider_reference="AYA-BKG-test-001").count(), 1)
+
     def test_admin_api_requires_key(self):
         denied = self.client.get("/api/v1/admin/bookings/")
         allowed = self.client.get("/api/v1/admin/bookings/", HTTP_X_BOOKING_ADMIN_KEY="test-admin-key")

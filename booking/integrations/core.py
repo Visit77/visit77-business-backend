@@ -71,6 +71,19 @@ class CoreClient:
         except (httpx.HTTPError, ValueError) as exc:
             raise CoreIntegrationError(f"Visit77 Core request failed: {exc}") from exc
 
+    def post(self, path: str, json=None):
+        try:
+            response = httpx.post(f"{self.base_url}/{path.lstrip('/')}", json=json, headers=self.headers, timeout=20)
+            response.raise_for_status()
+            return _unwrap(response.json())
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text[:1000] if exc.response is not None else ""
+            raise CoreIntegrationError(
+                f"Visit77 Core returned HTTP {exc.response.status_code}: {detail}"
+            ) from exc
+        except (httpx.HTTPError, ValueError) as exc:
+            raise CoreIntegrationError(f"Visit77 Core request failed: {exc}") from exc
+
     def business(self, core_business_id: int):
         return self.get(f"business/{core_business_id}/")
 

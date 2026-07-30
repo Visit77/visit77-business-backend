@@ -576,6 +576,32 @@ class PaymentCreateSerializer(serializers.Serializer):
     metadata = serializers.JSONField(required=False, default=dict)
 
 
+class CorePaymentSuccessSerializer(serializers.Serializer):
+    booking_id = serializers.UUIDField(required=False)
+    booking_public_token = serializers.UUIDField(required=False)
+    business_id = serializers.IntegerField(min_value=1)
+    payment = serializers.DictField()
+    aya = serializers.DictField(required=False, default=dict)
+
+    def validate(self, attrs):
+        if not attrs.get("booking_id") and not attrs.get("booking_public_token"):
+            raise serializers.ValidationError("booking_id or booking_public_token is required.")
+
+        payment = attrs.get("payment") or {}
+        try:
+            attrs["amount"] = Decimal(str(payment["amount"]))
+        except (KeyError, TypeError, ValueError):
+            raise serializers.ValidationError({"payment.amount": "A valid payment amount is required."})
+        if attrs["amount"] <= 0:
+            raise serializers.ValidationError({"payment.amount": "Payment amount must be greater than zero."})
+
+        attrs["currency"] = str(payment.get("currency") or "MMK")
+        attrs["payment_reference"] = str(payment.get("payment_reference") or payment.get("provider_payment_id") or "")
+        if not attrs["payment_reference"]:
+            raise serializers.ValidationError({"payment.payment_reference": "Payment reference is required."})
+        return attrs
+
+
 class RefundCreateSerializer(serializers.Serializer):
     payment_id = serializers.UUIDField()
     amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.01"))

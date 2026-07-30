@@ -13,7 +13,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
 
 from booking.authentication import CoreJWTAuthentication
-from booking.integrations.core import sync_business_from_core
+from booking.integrations.core import CoreClient, sync_business_from_core
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Hotel, MealPlan, Payment, PhysicalRoom, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
 from booking.serializers import (
@@ -26,6 +26,7 @@ from booking.serializers import (
     BookingCreateSerializer,
     BookingEstimateSerializer,
     BookingSerializer,
+    CorePaymentSuccessSerializer,
     CoreEventSerializer,
     DailyInventorySerializer,
     DailyInventoryBulkUpsertSerializer,
@@ -194,6 +195,95 @@ class PublicDemoPaymentView(APIView):
             "status": Payment.Status.PAID,
             "amount": amount_due,
             "metadata": {"demo": True},
+        })
+        booking.refresh_from_db()
+        return success(
+            {"booking": BookingSerializer(booking).data, "payment": PaymentSerializer(payment).data},
+            extra_dict={"duplicate": False},
+            status_code=status.HTTP_201_CREATED,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class PublicAYAPaymentView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request, public_token):
+        booking = Booking.objects.filter(public_token=public_token).select_related("hotel").first()
+        if not booking:
+            raise NotFound("Booking not found.")
+        if booking.status != Booking.Status.PENDING_PAYMENT:
+            raise ValidationError(f"A booking in status '{booking.status}' cannot start AYA payment.")
+
+        amount_due = booking.grand_total - booking.amount_paid
+        if amount_due <= 0:
+            raise ValidationError("This booking has no outstanding payment amount.")
+
+        checkout = CoreClient().post("direct-booking/hotel-bookings/aya-checkout/", {
+            "business_id": booking.hotel.core_business_id,
+            "booking_id": str(booking.id),
+            "booking_public_token": str(booking.public_token),
+            "amount": int(amount_due),
+            "currency": booking.currency,
+            "description": f"Visit77 hotel booking payment for {booking.hotel.name}",
+            "customer_name": booking.contact_name,
+            "customer_phone": booking.contact_phone,
+            "customer_email": booking.contact_email,
+            "channel": request.data.get("channel") or "",
+            "method": request.data.get("method") or "",
+        })
+        return success({
+            "booking": BookingSerializer(booking).data,
+            "checkout": checkout,
+        })
+
+
+class CorePaymentSuccessView(APIView):
+    permission_classes = [HasBookingAdminKey]
+
+    def post(self, request):
+        serializer = CorePaymentSuccessSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        query = Q()
+        if data.get("booking_id"):
+            query |= Q(id=data["booking_id"])
+        if data.get("booking_public_token"):
+            query |= Q(public_token=data["booking_public_token"])
+
+        booking = Booking.objects.filter(query).select_related("hotel").first()
+        if not booking:
+            raise NotFound("Booking not found.")
+        if booking.hotel.core_business_id != data["business_id"]:
+            raise ValidationError("Booking does not belong to the supplied business.")
+
+        existing = booking.payments.filter(
+            provider=Payment.Provider.AYA,
+            provider_reference=data["payment_reference"],
+            status=Payment.Status.PAID,
+        ).order_by("-created_at").first()
+        if existing:
+            booking.refresh_from_db()
+            return success(
+                {"booking": BookingSerializer(booking).data, "payment": PaymentSerializer(existing).data},
+                extra_dict={"duplicate": True},
+            )
+
+        if booking.status != Booking.Status.PENDING_PAYMENT:
+            raise ValidationError(f"A booking in status '{booking.status}' cannot be marked paid by Core.")
+
+        payment_payload = data["payment"] or {}
+        payment = record_payment(booking, {
+            "provider": Payment.Provider.AYA,
+            "provider_reference": data["payment_reference"],
+            "status": Payment.Status.PAID,
+            "amount": data["amount"],
+            "metadata": {
+                "source": "visit77_core_aya_webhook",
+                "core_payment": payment_payload,
+                "aya": data.get("aya") or {},
+            },
         })
         booking.refresh_from_db()
         return success(
