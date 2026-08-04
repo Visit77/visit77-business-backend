@@ -3,6 +3,7 @@ from pathlib import Path
 
 import environ
 from celery.schedules import crontab
+from corsheaders.defaults import default_headers
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -12,20 +13,10 @@ environ.Env.read_env(BASE_DIR / ".env")
 SECRET_KEY = env("DJANGO_SECRET_KEY", default="dev-only-booking-engine-key")
 DEBUG = False
 ALLOWED_HOSTS = env.list("DJANGO_ALLOWED_HOSTS", default=[])
-CORS_ALLOW_HEADERS = (
-    "accept",
-    "authorization",
-    "content-type",
-    "user-agent",
-    "Access-Control-Allow-Origin",
-    "x-requested-with", "Access-Control-Allow-Headers", "Origin", "Accept", "X-Requested-With",
-    "Content-Type", "Access-Control-Request-Method", "Access-Control-Request-Headers",
-    "Idempotency-Key",
-    "idempotency-key",
-    "X-Booking-Admin-Key","X-Booking-Business-ID"
-)
+CORS_ALLOW_HEADERS = (*default_headers, "idempotency-key", "x-booking-admin-key", "x-booking-business-id")
 
 INSTALLED_APPS = [
+    "corsheaders",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -38,6 +29,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
