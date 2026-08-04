@@ -14,6 +14,9 @@ SECRET_KEY = env("DJANGO_SECRET_KEY", default="dev-only-booking-engine-key")
 DEBUG = False
 ALLOWED_HOSTS = env.list("DJANGO_ALLOWED_HOSTS", default=[])
 CORS_ALLOW_HEADERS = (*default_headers, "idempotency-key", "x-booking-admin-key", "x-booking-business-id")
+CORS_ALLOW_ALL_ORIGINS = env.bool("CORS_ALLOW_ALL_ORIGINS", default=True)
+CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
+CORS_ALLOW_CREDENTIALS = env.bool("CORS_ALLOW_CREDENTIALS", default=False)
 
 INSTALLED_APPS = [
     "corsheaders",
