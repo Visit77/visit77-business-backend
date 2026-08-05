@@ -12,7 +12,7 @@ from rest_framework_simplejwt.backends import TokenBackend
 
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, CoreIntegrationEvent, DailyInventory, DailyRate, Hotel, MealPlan, Payment, PhysicalRoom, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import sync_business_from_core
-from booking.services import availability_for_hotel, cancel_booking, create_booking, ensure_daily_inventory_for_room_type, record_payment, refund_payment
+from booking.services import availability_for_hotel, cancel_booking, create_booking, create_walk_in_booking, ensure_daily_inventory_for_room_type, record_payment, refund_payment
 
 
 class BookingServiceTests(TestCase):
@@ -89,6 +89,48 @@ class BookingServiceTests(TestCase):
         self.assertEqual(assigned_room_numbers, ["G01", "101"])
         room_801.refresh_from_db()
         self.assertEqual(room_801.status, PhysicalRoom.Status.VACANT)
+
+    def test_walk_in_booking_assigns_selected_room_and_checks_in_immediately(self):
+        physical_room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="803",
+            floor="8",
+        )
+
+        booking = create_walk_in_booking(
+            {
+                "physical_room_id": physical_room.id,
+                "check_in": self.check_in,
+                "check_out": self.check_in + timedelta(days=1),
+                "contact_name": "Walk In Guest",
+                "contact_phone": "09123456789",
+                "guest_market": RatePlan.GuestMarket.LOCAL,
+                "adults": 2,
+                "children": 0,
+                "payment": {
+                    "provider": Payment.Provider.CASH,
+                    "status": Payment.Status.PAID,
+                },
+            },
+            core_business_id=self.hotel.core_business_id,
+        )
+
+        booking.refresh_from_db()
+        physical_room.refresh_from_db()
+        self.assertEqual(booking.status, Booking.Status.CHECKED_IN)
+        self.assertEqual(booking.amount_paid, booking.grand_total)
+        self.assertEqual(physical_room.status, PhysicalRoom.Status.OCCUPIED)
+        self.assertTrue(
+            RoomAssignment.objects.filter(
+                booking_room__booking=booking,
+                physical_room=physical_room,
+                released_at__isnull=True,
+            ).exists()
+        )
+        inventory = DailyInventory.objects.get(room_type=self.room_type, stay_date=self.check_in)
+        self.assertEqual(inventory.held_rooms, 0)
+        self.assertEqual(inventory.reserved_rooms, 1)
 
     def test_payment_auto_assigns_preferred_room_before_lower_floor_fallback(self):
         self.room_type.core_snapshot = {

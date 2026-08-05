@@ -568,6 +568,44 @@ class BookingEstimateSerializer(serializers.Serializer):
         return attrs
 
 
+class WalkInPaymentSerializer(serializers.Serializer):
+    provider = serializers.ChoiceField(choices=Payment.Provider.choices, default=Payment.Provider.CASH)
+    provider_reference = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    status = serializers.ChoiceField(
+        choices=[Payment.Status.PAID, Payment.Status.PENDING],
+        default=Payment.Status.PAID,
+    )
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=0, required=False, allow_null=True)
+    metadata = serializers.JSONField(required=False, default=dict)
+
+
+class WalkInBookingCreateSerializer(serializers.Serializer):
+    physical_room_id = serializers.IntegerField(min_value=1)
+    rate_plan_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    meal_plan_link_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    core_customer_user_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    check_in = serializers.DateField()
+    check_out = serializers.DateField()
+    contact_name = serializers.CharField(max_length=255)
+    contact_phone = serializers.CharField(max_length=64)
+    contact_email = serializers.EmailField(required=False, allow_blank=True)
+    guest_market = serializers.ChoiceField(choices=RatePlan.GuestMarket.choices, default=RatePlan.GuestMarket.LOCAL)
+    adults = serializers.IntegerField(min_value=1, max_value=100, default=1)
+    children = serializers.IntegerField(min_value=0, max_value=100, default=0)
+    extra_beds = serializers.IntegerField(min_value=0, max_value=20, default=0)
+    preferences = RequestedRoomPreferenceSerializer(required=False, default=dict)
+    guests = RequestedGuestSerializer(many=True, required=False)
+    special_request = serializers.CharField(required=False, allow_blank=True)
+    payment = WalkInPaymentSerializer(required=False, default=dict)
+
+    def validate(self, attrs):
+        if attrs["check_out"] <= attrs["check_in"]:
+            raise serializers.ValidationError({"check_out": "Must be after check_in."})
+        if (attrs["check_out"] - attrs["check_in"]).days > 90:
+            raise serializers.ValidationError({"check_out": "A stay cannot exceed 90 nights."})
+        return attrs
+
+
 class PaymentCreateSerializer(serializers.Serializer):
     provider = serializers.CharField(max_length=50)
     provider_reference = serializers.CharField(max_length=255, required=False, allow_blank=True)

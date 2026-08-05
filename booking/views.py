@@ -48,8 +48,9 @@ from booking.serializers import (
     RoomBoardQuerySerializer,
     RoomTypeMealPlanSerializer,
     RoomTypeSerializer,
+    WalkInBookingCreateSerializer,
 )
-from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_booking, deprovision_hotel, estimate_booking, record_payment, refund_payment, validate_assignment_preferences
+from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_booking, create_walk_in_booking, deprovision_hotel, estimate_booking, record_payment, refund_payment, validate_assignment_preferences
 from config.response_formatter import success
 
 
@@ -1294,6 +1295,7 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
         booking.save(update_fields=["status", "updated_at"])
         return success(BookingSerializer(booking).data)
 
+
     @action(detail=True, methods=["post"], url_path="check-out")
     @transaction.atomic
     def check_out(self, request, pk=None):
@@ -1306,3 +1308,22 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
         booking.status = Booking.Status.CHECKED_OUT
         booking.save(update_fields=["status", "updated_at"])
         return success(BookingSerializer(booking).data)
+
+
+class WalkInBookingView(APIView):
+    permission_classes = [HasBookingAdminKey]
+    business_scoped = True
+
+    def post(self, request):
+        serializer = WalkInBookingCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        booking = create_walk_in_booking(
+            serializer.validated_data,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            core_business_id=getattr(request, "booking_core_business_id", None),
+        )
+        return success(
+            BookingSerializer(booking).data,
+            status_code=status.HTTP_201_CREATED,
+            status=status.HTTP_201_CREATED,
+        )

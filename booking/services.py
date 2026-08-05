@@ -1076,7 +1076,7 @@ def _move_inventory(booking, from_field, to_field=None):
 
 
 @transaction.atomic
-def record_payment(booking, data):
+def record_payment(booking, data, auto_assign=True):
     booking = Booking.objects.select_for_update().get(pk=booking.pk)
     if (
         booking.status == Booking.Status.PENDING_PAYMENT
@@ -1105,9 +1105,155 @@ def record_payment(booking, data):
             booking.status = Booking.Status.CONFIRMED
             booking.hold_expires_at = None
         booking.save(update_fields=["amount_paid", "status", "hold_expires_at", "updated_at"])
-        if payment.amount > 0 and was_pending and booking.status == Booking.Status.CONFIRMED:
+        if auto_assign and payment.amount > 0 and was_pending and booking.status == Booking.Status.CONFIRMED:
             auto_assign_physical_rooms_for_booking(booking)
     return payment
+
+
+def _default_rate_plan_for_room_type(room_type, guest_market):
+    plans = RatePlan.objects.filter(
+        room_type=room_type,
+        is_active=True,
+        guest_market__in=[guest_market, RatePlan.GuestMarket.ALL],
+    )
+    return (
+        plans.filter(guest_market=guest_market, is_default=True).order_by("id").first()
+        or plans.filter(guest_market=RatePlan.GuestMarket.ALL, is_default=True).order_by("id").first()
+        or plans.filter(guest_market=guest_market).order_by("id").first()
+        or plans.filter(guest_market=RatePlan.GuestMarket.ALL).order_by("id").first()
+    )
+
+
+def _has_overlapping_room_assignment(physical_room, check_in, check_out, exclude_booking=None):
+    overlapping_statuses = [Booking.Status.PENDING_PAYMENT, Booking.Status.CONFIRMED, Booking.Status.CHECKED_IN]
+    queryset = RoomAssignment.objects.filter(
+        physical_room=physical_room,
+        released_at__isnull=True,
+        booking_room__booking__status__in=overlapping_statuses,
+        booking_room__booking__check_in__lt=check_out,
+        booking_room__booking__check_out__gt=check_in,
+    )
+    if exclude_booking is not None:
+        queryset = queryset.exclude(booking_room__booking=exclude_booking)
+    return queryset.exists()
+
+
+@transaction.atomic
+def create_walk_in_booking(data, idempotency_key=None, core_business_id=None):
+    physical_room = PhysicalRoom.objects.select_for_update().select_related(
+        "hotel",
+        "room_type",
+    ).filter(id=data["physical_room_id"], is_active=True).first()
+    if not physical_room:
+        raise ValidationError({"physical_room_id": "Selected physical room is unavailable."})
+    if core_business_id and physical_room.hotel.core_business_id != core_business_id:
+        raise ValidationError({"physical_room_id": "Selected physical room does not belong to this business."})
+    if physical_room.status != PhysicalRoom.Status.VACANT:
+        raise ValidationError({"physical_room_id": "Only a vacant physical room can be used for walk-in check-in."})
+
+    check_in, check_out = data["check_in"], data["check_out"]
+    if check_out <= check_in:
+        raise ValidationError({"check_out": "Must be after check_in."})
+    if _has_overlapping_room_assignment(physical_room, check_in, check_out):
+        raise ValidationError({"physical_room_id": "Selected physical room is assigned to an overlapping booking."})
+
+    guest_market = data.get("guest_market", RatePlan.GuestMarket.LOCAL)
+    rate_plan_id = data.get("rate_plan_id")
+    if rate_plan_id:
+        rate_plan = RatePlan.objects.filter(
+            id=rate_plan_id,
+            room_type=physical_room.room_type,
+            is_active=True,
+            guest_market__in=[guest_market, RatePlan.GuestMarket.ALL],
+        ).first()
+    else:
+        rate_plan = _default_rate_plan_for_room_type(physical_room.room_type, guest_market)
+    if not rate_plan:
+        raise ValidationError({"rate_plan_id": "No active rate plan is available for this physical room."})
+
+    booking, _created = create_booking(
+        {
+            "core_business_id": physical_room.hotel.core_business_id,
+            "core_customer_user_id": data.get("core_customer_user_id"),
+            "check_in": check_in,
+            "check_out": check_out,
+            "contact_name": data["contact_name"],
+            "contact_phone": data["contact_phone"],
+            "contact_email": data.get("contact_email", ""),
+            "guest_market": guest_market,
+            "special_request": data.get("special_request", ""),
+            "rooms": [
+                {
+                    "core_room_type_id": physical_room.room_type.core_room_type_id,
+                    "rate_plan_id": rate_plan.id,
+                    "meal_plan_link_id": data.get("meal_plan_link_id"),
+                    "quantity": 1,
+                    "adults": data.get("adults", 1),
+                    "children": data.get("children", 0),
+                    "extra_beds": data.get("extra_beds", 0),
+                    "preferences": data.get("preferences") or {},
+                }
+            ],
+            "guests": data.get("guests") or [],
+        },
+        idempotency_key=idempotency_key,
+    )
+    booking = Booking.objects.select_for_update().prefetch_related("rooms").get(pk=booking.pk)
+    if booking.status == Booking.Status.CHECKED_IN:
+        return booking
+
+    payment_data = dict(data.get("payment") or {})
+    payment_status = payment_data.get("status", Payment.Status.PAID)
+    payment_amount = payment_data.get("amount")
+    if payment_amount is None:
+        payment_amount = booking.grand_total if payment_status == Payment.Status.PAID else Decimal("0")
+    payment_payload = {
+        "provider": payment_data.get("provider", Payment.Provider.CASH),
+        "provider_reference": payment_data.get("provider_reference", ""),
+        "status": payment_status,
+        "amount": payment_amount,
+        "metadata": {
+            **(payment_data.get("metadata") or {}),
+            "source": "walk_in",
+            "physical_room_id": physical_room.id,
+            "room_number": physical_room.room_number,
+        },
+    }
+    if payment_status == Payment.Status.PAID:
+        record_payment(booking, payment_payload, auto_assign=False)
+        booking = Booking.objects.select_for_update().prefetch_related("rooms").get(pk=booking.pk)
+    else:
+        Payment.objects.create(
+            booking=booking,
+            provider=payment_payload["provider"],
+            provider_reference=payment_payload["provider_reference"],
+            status=Payment.Status.PENDING,
+            amount=payment_amount,
+            currency=booking.currency,
+            invoice_number=_reference("IV"),
+            metadata=payment_payload["metadata"],
+        )
+        if booking.status == Booking.Status.PENDING_PAYMENT:
+            _move_inventory(booking, "held_rooms", "reserved_rooms")
+            booking.status = Booking.Status.CONFIRMED
+            booking.hold_expires_at = None
+            booking.save(update_fields=["status", "hold_expires_at", "updated_at"])
+
+    physical_room = PhysicalRoom.objects.select_for_update().get(pk=physical_room.pk)
+    if physical_room.status != PhysicalRoom.Status.VACANT:
+        raise ValidationError({"physical_room_id": "Selected physical room is no longer vacant."})
+    if _has_overlapping_room_assignment(physical_room, check_in, check_out, exclude_booking=booking):
+        raise ValidationError({"physical_room_id": "Selected physical room is assigned to an overlapping booking."})
+
+    booking_room = booking.rooms.select_related("room_type").get()
+    validate_assignment_preferences(booking_room, physical_room)
+    RoomAssignment.objects.create(booking_room=booking_room, physical_room=physical_room)
+    physical_room.status = PhysicalRoom.Status.OCCUPIED
+    physical_room.save(update_fields=["status"])
+    booking.status = Booking.Status.CHECKED_IN
+    booking.hold_expires_at = None
+    booking.save(update_fields=["status", "hold_expires_at", "updated_at"])
+    return booking
 
 
 @transaction.atomic
