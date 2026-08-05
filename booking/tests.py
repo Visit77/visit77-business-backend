@@ -72,12 +72,62 @@ class BookingServiceTests(TestCase):
         self.assertEqual(list(DailyInventory.objects.values_list("held_rooms", flat=True)), [2, 2])
 
     def test_paid_payment_commits_inventory(self):
+        room_801 = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="801", floor="8")
+        room_g01 = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="G01", floor="G")
+        PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="101", floor="1")
         booking, _ = create_booking(self.payload())
         record_payment(booking, {"provider": "mmqr", "amount": booking.grand_total, "status": Payment.Status.PAID})
         booking.refresh_from_db()
         self.assertEqual(booking.status, Booking.Status.CONFIRMED)
         self.assertEqual(list(DailyInventory.objects.values_list("held_rooms", flat=True)), [0, 0])
         self.assertEqual(list(DailyInventory.objects.values_list("reserved_rooms", flat=True)), [2, 2])
+        assigned_room_numbers = list(
+            RoomAssignment.objects.filter(booking_room__booking=booking)
+            .order_by("assigned_at")
+            .values_list("physical_room__room_number", flat=True)
+        )
+        self.assertEqual(assigned_room_numbers, ["G01", "101"])
+        room_801.refresh_from_db()
+        self.assertEqual(room_801.status, PhysicalRoom.Status.VACANT)
+
+    def test_payment_auto_assigns_preferred_room_before_lower_floor_fallback(self):
+        self.room_type.core_snapshot = {
+            "allow_guest_bed_preference": True,
+            "beds": [
+                {
+                    "bed_type": {"id": 1, "name": "King Bed"},
+                    "quantity": 1,
+                    "is_guest_selectable": True,
+                    "is_guaranteed": True,
+                    "extra_base_price": 0,
+                }
+            ],
+        }
+        self.room_type.save(update_fields=["core_snapshot"])
+        PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="101",
+            floor="1",
+            core_snapshot={"beds": [{"bed_type": {"id": 2, "name": "Queen Bed"}}]},
+        )
+        preferred_room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="801",
+            floor="8",
+            core_snapshot={"beds": [{"bed_type": {"id": 1, "name": "King Bed"}}]},
+        )
+        payload = self.payload()
+        payload["rooms"][0]["quantity"] = 1
+        payload["rooms"][0]["adults"] = 2
+        payload["rooms"][0]["preferences"] = {"core_bed_type_id": 1}
+
+        booking, _ = create_booking(payload)
+        record_payment(booking, {"provider": "cash", "amount": booking.grand_total, "status": Payment.Status.PAID})
+
+        assignment = RoomAssignment.objects.get(booking_room__booking=booking)
+        self.assertEqual(assignment.physical_room_id, preferred_room.id)
 
     def test_cancel_pending_booking_returns_held_inventory(self):
         booking, _ = create_booking(self.payload())
@@ -890,20 +940,36 @@ class BookingApiTests(BookingServiceTests):
             floor="8",
             status=PhysicalRoom.Status.OUT_OF_SERVICE,
         )
-        booking, _ = create_booking(self.payload())
+        room_803 = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            core_physical_room_id=803,
+            core_building_id=7001,
+            core_floor_id=8008,
+            room_number="803",
+            building="Main Building",
+            floor="8",
+        )
+        payload = self.payload()
+        payload["rooms"][0]["quantity"] = 1
+        payload["rooms"][0]["adults"] = 2
+        booking, _ = create_booking(payload)
         record_payment(booking, {"provider": "cash", "amount": booking.grand_total, "status": Payment.Status.PAID})
         booking.refresh_from_db()
+        future_payload = self.payload()
+        future_payload["check_in"] = self.check_in + timedelta(days=2)
+        future_payload["check_out"] = self.check_in + timedelta(days=3)
+        future_payload["rooms"][0]["quantity"] = 1
+        future_payload["rooms"][0]["adults"] = 2
+        future_booking, _ = create_booking(future_payload)
+        record_payment(future_booking, {"provider": "cash", "amount": future_booking.grand_total, "status": Payment.Status.PAID})
+        future_booking.refresh_from_db()
+        RoomAssignment.objects.filter(booking_room__booking=future_booking).delete()
+        RoomAssignment.objects.create(booking_room=future_booking.rooms.get(), physical_room=room_803)
         headers = {
             "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
             "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
         }
-        assigned = self.client.post(
-            f"/api/v1/admin/bookings/{booking.id}/assign-room/",
-            {"booking_room_id": booking.rooms.get().id, "physical_room_id": room_801.id},
-            format="json",
-            **headers,
-        )
-        self.assertEqual(assigned.status_code, 201, assigned.data)
         board = self.client.get(
             "/api/v1/admin/room-board/",
             {"date": str(self.check_in), "building_id": 7001},
@@ -913,14 +979,22 @@ class BookingApiTests(BookingServiceTests):
         summary = board.data["data"]["summary"]
         self.assertEqual(summary["reserved"], 1)
         self.assertEqual(summary["out_of_service"], 1)
-        self.assertEqual(summary["unassigned_bookings"], 1)
+        self.assertEqual(summary["unassigned_bookings"], 0)
         self.assertEqual(board.data["data"]["floors"][0]["building_id"], 7001)
         self.assertEqual(board.data["data"]["floors"][0]["floor_id"], 8008)
         reserved = next(room for room in board.data["data"]["rooms"] if room["display_status"] == "reserved")
         self.assertEqual(reserved["building_id"], 7001)
         self.assertEqual(reserved["floor_id"], 8008)
+        self.assertEqual(reserved["room_type"]["name"], self.room_type.name)
+        self.assertEqual(reserved["room_type"]["price"]["base_price"], Decimal("80000"))
+        self.assertEqual(reserved["room_type"]["price"]["currency"], "MMK")
         self.assertEqual(reserved["assignment"]["booking_reference"], booking.reference)
         self.assertEqual(reserved["assignment"]["payment_status"], "paid")
+        self.assertEqual(reserved["timeline"]["text"], "Reserved: 2 Nights")
+        available_with_next = next(room for room in board.data["data"]["rooms"] if room["room_number"] == "803")
+        self.assertEqual(available_with_next["display_status"], "available")
+        self.assertEqual(available_with_next["timeline"]["text"], "Vacant: 2 Days | Reserved: 1 Night")
+        self.assertEqual(available_with_next["timeline"]["next_reserved"]["booking_reference"], future_booking.reference)
 
     def test_assignment_requires_confirmed_booking_and_vacant_room(self):
         room = PhysicalRoom.objects.create(

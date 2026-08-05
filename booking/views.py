@@ -53,6 +53,14 @@ from booking.services import availability_for_hotel_with_display, availability_f
 from config.response_formatter import success
 
 
+def _pluralize_day_label(days):
+    return "Day" if days == 1 else "Days"
+
+
+def _pluralize_night_label(nights):
+    return "Night" if nights == 1 else "Nights"
+
+
 class PublicAvailabilityView(APIView):
     permission_classes = [AllowAny]
 
@@ -337,7 +345,13 @@ class RoomBoardView(APIView):
             raise NotFound("Hotel is not synced in the booking engine.")
 
         target_date = data.get("date") or timezone.localdate()
-        rooms = PhysicalRoom.objects.filter(hotel=hotel, is_active=True).select_related("room_type")
+        rooms = PhysicalRoom.objects.filter(hotel=hotel, is_active=True).select_related("room_type").prefetch_related(
+            Prefetch(
+                "room_type__rate_plans",
+                queryset=RatePlan.objects.filter(is_active=True).order_by("-is_default", "guest_market", "id"),
+                to_attr="room_board_rate_plans",
+            )
+        )
         if data.get("building_id"):
             rooms = rooms.filter(core_building_id=data["building_id"])
         elif data.get("building"):
@@ -366,6 +380,32 @@ class RoomBoardView(APIView):
         ).order_by("assigned_at", "id")
         assignment_by_room = {assignment.physical_room_id: assignment for assignment in active_assignments}
 
+        future_assignments = RoomAssignment.objects.filter(
+            physical_room_id__in=room_ids,
+            released_at__isnull=True,
+            booking_room__booking__status=Booking.Status.CONFIRMED,
+            booking_room__booking__check_in__gt=target_date,
+        ).select_related(
+            "booking_room__room_type",
+            "booking_room__booking",
+        ).order_by("booking_room__booking__check_in", "assigned_at", "id")
+        next_assignment_by_room = {}
+        for future_assignment in future_assignments:
+            next_assignment_by_room.setdefault(future_assignment.physical_room_id, future_assignment)
+
+        released_assignments = RoomAssignment.objects.filter(
+            physical_room_id__in=room_ids,
+            released_at__isnull=False,
+            booking_room__booking__status=Booking.Status.CHECKED_OUT,
+            booking_room__booking__check_out=target_date,
+        ).select_related(
+            "booking_room__room_type",
+            "booking_room__booking",
+        ).order_by("-released_at", "-id")
+        last_checkout_assignment_by_room = {}
+        for released_assignment in released_assignments:
+            last_checkout_assignment_by_room.setdefault(released_assignment.physical_room_id, released_assignment)
+
         counts = {status_name: 0 for status_name in ["available", "reserved", "occupied", "cleaning", "out_of_service"]}
         floors = {}
         room_rows = []
@@ -384,6 +424,13 @@ class RoomBoardView(APIView):
             else:
                 display_status = "available"
             counts[display_status] += 1
+            timeline = self.build_room_timeline(
+                display_status=display_status,
+                target_date=target_date,
+                assignment=assignment,
+                next_assignment=next_assignment_by_room.get(room.id),
+                checkout_assignment=last_checkout_assignment_by_room.get(room.id),
+            )
             floor_key = (
                 room.core_building_id or room.building or "Unspecified",
                 room.core_floor_id or room.floor or "Unspecified",
@@ -441,11 +488,9 @@ class RoomBoardView(APIView):
                 "core_snapshot": room.core_snapshot,
                 "operational_status": room.status,
                 "display_status": display_status,
-                "room_type": {
-                    "id": room.room_type_id,
-                    "core_room_type_id": room.room_type.core_room_type_id,
-                    "name": room.room_type.name,
-                },
+                "timeline": timeline,
+                "timeline_text": timeline["text"],
+                "room_type": self.serialize_room_board_room_type(room.room_type),
                 "assignment": assignment_data,
             }
             floor_summary["rooms"].append(room_data)
@@ -492,6 +537,128 @@ class RoomBoardView(APIView):
             "rooms": room_rows,
             "unassigned": unassigned,
         })
+
+    def build_room_timeline(self, *, display_status, target_date, assignment=None, next_assignment=None, checkout_assignment=None):
+        base = {
+            "type": display_status,
+            "text": "",
+            "stay_nights": None,
+            "reserved_nights": None,
+            "vacant_days": None,
+            "next_reserved": None,
+            "checkout": None,
+        }
+
+        if display_status == "occupied" and assignment:
+            booking = assignment.booking_room.booking
+            stay_nights = max(booking.nights, 0)
+            base.update({
+                "text": f"Stay: {stay_nights} {_pluralize_night_label(stay_nights)}",
+                "stay_nights": stay_nights,
+                "checkout": {
+                    "date": booking.check_out,
+                    "label": "Check-out",
+                },
+            })
+            return base
+
+        if display_status == "reserved" and assignment:
+            booking = assignment.booking_room.booking
+            reserved_nights = max(booking.nights, 0)
+            base.update({
+                "text": f"Reserved: {reserved_nights} {_pluralize_night_label(reserved_nights)}",
+                "reserved_nights": reserved_nights,
+                "next_reserved": {
+                    "booking_id": booking.id,
+                    "booking_reference": booking.reference,
+                    "check_in": booking.check_in,
+                    "check_out": booking.check_out,
+                    "nights": reserved_nights,
+                },
+            })
+            return base
+
+        if display_status == "cleaning":
+            checkout_booking = checkout_assignment.booking_room.booking if checkout_assignment else None
+            checkout_data = None
+            if checkout_assignment:
+                checkout_data = {
+                    "booking_id": checkout_booking.id,
+                    "booking_reference": checkout_booking.reference,
+                    "check_out": checkout_booking.check_out,
+                    "released_at": checkout_assignment.released_at,
+                }
+            base.update({
+                "text": "Check-out",
+                "checkout": checkout_data,
+            })
+            return base
+
+        if display_status == "available":
+            if next_assignment:
+                next_booking = next_assignment.booking_room.booking
+                vacant_days = max((next_booking.check_in - target_date).days, 0)
+                reserved_nights = max(next_booking.nights, 0)
+                base.update({
+                    "text": f"Vacant: {vacant_days} {_pluralize_day_label(vacant_days)} | Reserved: {reserved_nights} {_pluralize_night_label(reserved_nights)}",
+                    "vacant_days": vacant_days,
+                    "reserved_nights": reserved_nights,
+                    "next_reserved": {
+                        "booking_id": next_booking.id,
+                        "booking_reference": next_booking.reference,
+                        "check_in": next_booking.check_in,
+                        "check_out": next_booking.check_out,
+                        "nights": reserved_nights,
+                    },
+                })
+            else:
+                base["text"] = "Vacant"
+            return base
+
+        if display_status == "out_of_service":
+            base["text"] = "Out of service"
+            return base
+
+        base["text"] = display_status.replace("_", " ").title()
+        return base
+
+    def serialize_room_board_room_type(self, room_type):
+        rate_plans = list(getattr(room_type, "room_board_rate_plans", None) or room_type.rate_plans.filter(is_active=True).order_by("-is_default", "guest_market", "id"))
+        primary_rate_plan = next((rate_plan for rate_plan in rate_plans if rate_plan.is_default), None) or (rate_plans[0] if rate_plans else None)
+
+        return {
+            "id": room_type.id,
+            "core_room_type_id": room_type.core_room_type_id,
+            "name": room_type.name,
+            "description": room_type.description,
+            "cover_image_url": room_type.cover_image_url,
+            "max_adults": room_type.max_adults,
+            "max_children": room_type.max_children,
+            "max_occupancy": room_type.max_occupancy,
+            "default_inventory": room_type.default_inventory,
+            "booking_enabled": room_type.booking_enabled,
+            "price": self.serialize_room_board_rate_plan(primary_rate_plan),
+            "rate_plans": [self.serialize_room_board_rate_plan(rate_plan) for rate_plan in rate_plans],
+        }
+
+    def serialize_room_board_rate_plan(self, rate_plan):
+        if not rate_plan:
+            return None
+        return {
+            "id": rate_plan.id,
+            "code": rate_plan.code,
+            "name": rate_plan.name,
+            "guest_market": rate_plan.guest_market,
+            "currency": rate_plan.currency,
+            "base_price": rate_plan.base_price,
+            "usd_display_price": rate_plan.usd_display_price,
+            "default_price": rate_plan.default_price,
+            "extra_bed_base_price": rate_plan.extra_bed_base_price,
+            "extra_bed_usd_display_price": rate_plan.extra_bed_usd_display_price,
+            "breakfast_included": rate_plan.breakfast_included,
+            "refundable": rate_plan.refundable,
+            "is_default": rate_plan.is_default,
+        }
 
 
 class IntegrationStatusView(APIView):

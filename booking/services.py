@@ -1,6 +1,7 @@
 from collections import defaultdict
 from datetime import timedelta
 from decimal import Decimal
+import re
 
 from django.conf import settings
 from django.db import transaction
@@ -442,6 +443,132 @@ def validate_assignment_preferences(booking_room, physical_room):
     constraints = (booking_room.preference_snapshot or {}).get("guaranteed_constraints") or {}
     if constraints and not physical_room_matches_constraints(physical_room, constraints):
         raise ValidationError("The selected physical room does not match this booking room's guaranteed preferences.")
+
+
+def _natural_sort_key(value):
+    return [
+        int(part) if part.isdigit() else part.lower()
+        for part in re.split(r"(\d+)", str(value or ""))
+    ]
+
+
+def _floor_rank(value):
+    raw = str(value or "").strip().upper()
+    if raw in {"G", "GF", "GROUND", "GROUND FLOOR"}:
+        return 0
+    basement = re.fullmatch(r"B(\d+)", raw)
+    if basement:
+        return -int(basement.group(1))
+    number = re.search(r"-?\d+", raw)
+    if number:
+        return int(number.group())
+    return 9999
+
+
+def _physical_room_assignment_sort_key(room):
+    return (
+        _floor_rank(room.floor),
+        str(room.building or "").lower(),
+        _natural_sort_key(room.room_number),
+        room.id,
+    )
+
+
+def _preference_match_score(booking_room, physical_room):
+    preference_snapshot = booking_room.preference_snapshot or {}
+    selected = preference_snapshot.get("selected") or {}
+    constraints = preference_snapshot.get("guaranteed_constraints") or {}
+    if not selected and not constraints:
+        return 0
+
+    def preferred_value(kind, field="core_value_id"):
+        if constraints.get(kind):
+            return constraints[kind]
+        selected_payload = selected.get(kind) or {}
+        return selected_payload.get(field)
+
+    def same_id(left, right):
+        return left is not None and right is not None and str(left) == str(right)
+
+    score = 0
+    snapshot = physical_room.core_snapshot or {}
+    bed_preference = preferred_value("bed")
+    if bed_preference and str(bed_preference) in {str(item) for item in _physical_room_bed_ids(physical_room)}:
+        score += 10
+    view_preference = preferred_value("view")
+    if view_preference and same_id(_nested_id(snapshot, "room_view"), view_preference):
+        score += 10
+    bath_preference = preferred_value("bath")
+    if bath_preference and same_id(_nested_id(snapshot, "bath_type"), bath_preference):
+        score += 10
+    smoking_preference = preferred_value("smoking", "value")
+    if smoking_preference and snapshot.get("smoking_type") == smoking_preference:
+        score += 10
+    custom_constraints = constraints.get("custom_options") or [
+        item.get("core_value_id")
+        for item in selected.get("custom_options", []) or []
+        if item.get("core_value_id")
+    ]
+    custom_constraints = {str(item) for item in custom_constraints}
+    if custom_constraints:
+        matched_custom_constraints = custom_constraints.intersection(
+            {str(item) for item in _physical_room_custom_option_ids(physical_room)}
+        )
+        score += len(matched_custom_constraints)
+    return score
+
+
+def _available_physical_rooms_for_booking_room(booking_room):
+    booking = booking_room.booking
+    overlapping_statuses = [Booking.Status.PENDING_PAYMENT, Booking.Status.CONFIRMED, Booking.Status.CHECKED_IN]
+    overlapping_room_ids = RoomAssignment.objects.filter(
+        released_at__isnull=True,
+        booking_room__booking__status__in=overlapping_statuses,
+        booking_room__booking__check_in__lt=booking.check_out,
+        booking_room__booking__check_out__gt=booking.check_in,
+    ).values_list("physical_room_id", flat=True)
+    return list(
+        PhysicalRoom.objects.select_for_update()
+        .filter(
+            hotel=booking.hotel,
+            room_type=booking_room.room_type,
+            is_active=True,
+            status=PhysicalRoom.Status.VACANT,
+        )
+        .exclude(id__in=overlapping_room_ids)
+    )
+
+
+def auto_assign_physical_rooms_for_booking(booking):
+    """Assign confirmed booking rooms to vacant physical rooms.
+
+    The assignment is intentionally a reservation-level RoomAssignment only.
+    PhysicalRoom.status stays VACANT until check-in changes it to OCCUPIED.
+    """
+    booking = Booking.objects.select_for_update().prefetch_related("rooms__assignments").get(pk=booking.pk)
+    if booking.status != Booking.Status.CONFIRMED:
+        return []
+
+    created_assignments = []
+    booking_rooms = booking.rooms.select_related("room_type").order_by("id")
+    for booking_room in booking_rooms:
+        assigned_count = booking_room.assignments.filter(released_at__isnull=True).count()
+        missing_count = max(booking_room.quantity - assigned_count, 0)
+        if missing_count <= 0:
+            continue
+
+        candidates = _available_physical_rooms_for_booking_room(booking_room)
+        candidates.sort(key=lambda room: (
+            -_preference_match_score(booking_room, room),
+            *_physical_room_assignment_sort_key(room),
+        ))
+        for room in candidates[:missing_count]:
+            created_assignments.append(RoomAssignment.objects.create(
+                booking_room=booking_room,
+                physical_room=room,
+            ))
+
+    return created_assignments
 
 
 def _reference(prefix):
@@ -978,6 +1105,8 @@ def record_payment(booking, data):
             booking.status = Booking.Status.CONFIRMED
             booking.hold_expires_at = None
         booking.save(update_fields=["amount_paid", "status", "hold_expires_at", "updated_at"])
+        if payment.amount > 0 and was_pending and booking.status == Booking.Status.CONFIRMED:
+            auto_assign_physical_rooms_for_booking(booking)
     return payment
 
 
