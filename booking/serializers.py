@@ -521,6 +521,8 @@ class RequestedGuestSerializer(serializers.Serializer):
     nationality = serializers.CharField(max_length=100, required=False, allow_blank=True)
     nrc_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
     passport_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    identity_type = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    identity_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
     is_primary = serializers.BooleanField(default=False)
 
 
@@ -609,16 +611,16 @@ class WalkInBookingCreateSerializer(serializers.Serializer):
             primary_guest = guests[0]
         guest_market = attrs.get("guest_market", RatePlan.GuestMarket.LOCAL)
         nrc_number = ((primary_guest or {}).get("nrc_number") or "").strip()
-        passport_number = ((primary_guest or {}).get("passport_number") or "").strip()
-        nationality = ((primary_guest or {}).get("nationality") or "").strip()
+        identity_type = ((primary_guest or {}).get("identity_type") or "").strip()
+        identity_number = ((primary_guest or {}).get("identity_number") or "").strip()
         if guest_market == RatePlan.GuestMarket.LOCAL and not nrc_number:
             raise serializers.ValidationError({"guests": [{"nrc_number": "NRC number is required for local walk-in guests."}]})
         if guest_market == RatePlan.GuestMarket.FOREIGNER:
             errors = {}
-            if not nationality:
-                errors["nationality"] = "Nationality is required for foreigner walk-in guests."
-            if not passport_number:
-                errors["passport_number"] = "Passport number is required for foreigner walk-in guests."
+            if not identity_type:
+                errors["identity_type"] = "Identity type is required for foreigner walk-in guests."
+            if not identity_number:
+                errors["identity_number"] = "Identity number is required for foreigner walk-in guests."
             if errors:
                 raise serializers.ValidationError({"guests": [errors]})
         return attrs

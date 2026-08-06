@@ -496,6 +496,8 @@ class Guest(models.Model):
     nationality = models.CharField(max_length=100, blank=True)
     nrc_number = models.CharField(max_length=100, blank=True)
     passport_number = models.CharField(max_length=100, blank=True)
+    identity_type = models.CharField(max_length=50, blank=True)
+    identity_number = models.CharField(max_length=100, blank=True)
     is_primary = models.BooleanField(default=False)
 
 
