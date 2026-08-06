@@ -614,7 +614,7 @@ class WalkInBookingCreateSerializer(serializers.Serializer):
         )
         if guest_market == RatePlan.GuestMarket.LOCAL and not has_nrc_guest:
             raise serializers.ValidationError({"guests": [{"nrc_number": "At least one guest NRC number is required for local walk-in bookings."}]})
-        if guest_market == RatePlan.GuestMarket.FOREIGNER:
+        if guest_market == RatePlan.GuestMarket.FOREIGN:
             if not has_identity_guest:
                 raise serializers.ValidationError(
                     {
