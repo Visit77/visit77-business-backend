@@ -202,6 +202,18 @@ X-Booking-Business-ID: <core-business-id>
 
 Never ship the service secret in frontend or mobile builds.
 
+Room board supports two purpose-built response shapes:
+
+```text
+GET /api/v1/admin/room-board/?date=2026-08-06&building_id=7001&view=compact
+GET /api/v1/admin/room-board/?date=2026-08-06&building_id=7001&view=detail
+```
+
+- `view=compact` (default) is for the small-icon grid and returns only room identity and status.
+- `view=detail` is for large cards and adds the room type, one display price, timeline and minimal assignment indicators.
+- `include_flat_rooms=true` adds the legacy flat `rooms` list; otherwise rooms only appear inside `floors[].rooms`.
+- `include_unassigned=true` adds unassigned confirmed bookings. Keep it off unless that panel is visible.
+
 Hotels manage prices in their own `base_currency` (currently synced/stored on `Hotel.base_currency`). USD is a display amount only. RatePlans should be split by guest market and policy, not by currency:
 
 - Local / Foreigner / All market
