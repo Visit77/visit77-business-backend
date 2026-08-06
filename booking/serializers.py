@@ -100,9 +100,6 @@ class AvailabilitySearchQuerySerializer(serializers.Serializer):
 class RoomBoardQuerySerializer(serializers.Serializer):
     core_business_id = serializers.IntegerField(min_value=1, required=False)
     date = serializers.DateField(required=False)
-    view = serializers.ChoiceField(choices=["compact", "detail"], default="compact")
-    include_flat_rooms = serializers.BooleanField(default=False)
-    include_unassigned = serializers.BooleanField(default=False)
     building_id = serializers.IntegerField(min_value=1, required=False)
     floor_id = serializers.IntegerField(min_value=1, required=False)
     building = serializers.CharField(required=False, allow_blank=True, max_length=120)

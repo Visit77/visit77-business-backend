@@ -1014,13 +1014,7 @@ class BookingApiTests(BookingServiceTests):
         }
         board = self.client.get(
             "/api/v1/admin/room-board/",
-            {
-                "date": str(self.check_in),
-                "building_id": 7001,
-                "view": "detail",
-                "include_flat_rooms": "true",
-                "include_unassigned": "true",
-            },
+            {"date": str(self.check_in), "building_id": 7001},
             **headers,
         )
         self.assertEqual(board.status_code, 200, board.data)
@@ -1043,22 +1037,6 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(available_with_next["display_status"], "available")
         self.assertEqual(available_with_next["timeline"]["text"], "Vacant: 2 Days | Reserved: 1 Night")
         self.assertEqual(available_with_next["timeline"]["next_reserved"]["booking_reference"], future_booking.reference)
-
-        compact_board = self.client.get(
-            "/api/v1/admin/room-board/",
-            {"date": str(self.check_in), "building_id": 7001, "view": "compact"},
-            **headers,
-        )
-        self.assertEqual(compact_board.status_code, 200, compact_board.data)
-        compact_data = compact_board.data["data"]
-        self.assertEqual(compact_data["view"], "compact")
-        self.assertNotIn("rooms", compact_data)
-        self.assertNotIn("unassigned", compact_data)
-        compact_room = compact_data["floors"][0]["rooms"][0]
-        self.assertEqual(
-            set(compact_room),
-            {"id", "core_physical_room_id", "room_number", "operational_status", "display_status"},
-        )
 
     def test_assignment_requires_confirmed_booking_and_vacant_room(self):
         room = PhysicalRoom.objects.create(
