@@ -1,9 +1,14 @@
 services:
   web:
     build: .
-    command: sh -c "python manage.py migrate && python manage.py collectstatic --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:8080 --workers ${GUNICORN_WORKERS:-3} --timeout ${GUNICORN_TIMEOUT:-60}"
+    command: sh -c "python manage.py migrate && python manage.py collectstatic --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:8080 --workers ${GUNICORN_WORKERS:-3} --timeout ${GUNICORN_TIMEOUT:-60} --access-logfile - --error-logfile -"
     restart: unless-stopped
     network_mode: host
+    logging:
+      driver: json-file
+      options:
+        max-size: ${DOCKER_LOG_MAX_SIZE:-50m}
+        max-file: "${DOCKER_LOG_MAX_FILE:-5}"
     env_file:
       - .env
     environment:
@@ -22,6 +27,11 @@ services:
     command: celery -A config worker -l ${CELERY_LOG_LEVEL:-INFO} --concurrency ${CELERY_CONCURRENCY:-4}
     restart: unless-stopped
     network_mode: host
+    logging:
+      driver: json-file
+      options:
+        max-size: ${DOCKER_LOG_MAX_SIZE:-50m}
+        max-file: "${DOCKER_LOG_MAX_FILE:-5}"
     env_file:
       - .env
     environment:
@@ -40,6 +50,11 @@ services:
     command: celery -A config beat -l ${CELERY_LOG_LEVEL:-INFO}
     restart: unless-stopped
     network_mode: host
+    logging:
+      driver: json-file
+      options:
+        max-size: ${DOCKER_LOG_MAX_SIZE:-50m}
+        max-file: "${DOCKER_LOG_MAX_FILE:-5}"
     env_file:
       - .env
     environment:
@@ -58,6 +73,11 @@ services:
     command: daphne -b 0.0.0.0 -p 8081 config.asgi:application
     restart: unless-stopped
     network_mode: host
+    logging:
+      driver: json-file
+      options:
+        max-size: ${DOCKER_LOG_MAX_SIZE:-50m}
+        max-file: "${DOCKER_LOG_MAX_FILE:-5}"
     profiles:
       - asgi
     env_file:

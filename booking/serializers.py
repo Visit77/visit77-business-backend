@@ -606,23 +606,26 @@ class WalkInBookingCreateSerializer(serializers.Serializer):
         if (attrs["check_out"] - attrs["check_in"]).days > 90:
             raise serializers.ValidationError({"check_out": "A stay cannot exceed 90 nights."})
         guests = attrs.get("guests") or []
-        primary_guest = next((guest for guest in guests if guest.get("is_primary")), None)
-        if primary_guest is None and guests:
-            primary_guest = guests[0]
         guest_market = attrs.get("guest_market", RatePlan.GuestMarket.LOCAL)
-        nrc_number = ((primary_guest or {}).get("nrc_number") or "").strip()
-        identity_type = ((primary_guest or {}).get("identity_type") or "").strip()
-        identity_number = ((primary_guest or {}).get("identity_number") or "").strip()
-        if guest_market == RatePlan.GuestMarket.LOCAL and not nrc_number:
-            raise serializers.ValidationError({"guests": [{"nrc_number": "NRC number is required for local walk-in guests."}]})
+        has_nrc_guest = any((guest.get("nrc_number") or "").strip() for guest in guests)
+        has_identity_guest = any(
+            (guest.get("identity_type") or "").strip() and (guest.get("identity_number") or "").strip()
+            for guest in guests
+        )
+        if guest_market == RatePlan.GuestMarket.LOCAL and not has_nrc_guest:
+            raise serializers.ValidationError({"guests": [{"nrc_number": "At least one guest NRC number is required for local walk-in bookings."}]})
         if guest_market == RatePlan.GuestMarket.FOREIGNER:
-            errors = {}
-            if not identity_type:
-                errors["identity_type"] = "Identity type is required for foreigner walk-in guests."
-            if not identity_number:
-                errors["identity_number"] = "Identity number is required for foreigner walk-in guests."
-            if errors:
-                raise serializers.ValidationError({"guests": [errors]})
+            if not has_identity_guest:
+                raise serializers.ValidationError(
+                    {
+                        "guests": [
+                            {
+                                "identity_type": "At least one guest identity type is required for foreigner walk-in bookings.",
+                                "identity_number": "At least one guest identity number is required for foreigner walk-in bookings.",
+                            }
+                        ]
+                    }
+                )
         return attrs
 
 
