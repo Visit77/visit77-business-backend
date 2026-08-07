@@ -153,6 +153,8 @@ class RoomTypeMealPlanSerializer(serializers.ModelSerializer):
 
 
 class PhysicalRoomSerializer(serializers.ModelSerializer):
+    hotel_id = serializers.IntegerField(source='hote.id')
+    room_type_id = serializers.IntegerField(source='room_type.id')
     class Meta:
         model = PhysicalRoom
         fields = "__all__"
