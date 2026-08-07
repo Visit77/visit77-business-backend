@@ -486,7 +486,7 @@ class RoomBoardView(APIView):
                 "room_number": room.room_number,
                 "building": room.building,
                 "floor": room.floor,
-                "core_snapshot": room.core_snapshot,
+                # "core_snapshot": room.core_snapshot,
                 "operational_status": room.status,
                 "display_status": display_status,
                 "timeline": timeline,
@@ -495,7 +495,7 @@ class RoomBoardView(APIView):
                 "assignment": assignment_data,
             }
             floor_summary["rooms"].append(room_data)
-            room_rows.append(room_data)
+            # room_rows.append(room_data)
 
         room_type_ids = {room.room_type_id for room in rooms}
         confirmed_rooms = BookingRoom.objects.filter(
@@ -535,7 +535,7 @@ class RoomBoardView(APIView):
                 "unassigned_bookings": sum(item["quantity_unassigned"] for item in unassigned),
             },
             "floors": list(floors.values()),
-            "rooms": room_rows,
+            # "rooms": room_rows,
             "unassigned": unassigned,
         })
 
