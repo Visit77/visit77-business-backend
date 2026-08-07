@@ -488,7 +488,7 @@ class BookingSerializer(serializers.ModelSerializer):
     hotel_name = serializers.CharField(source="hotel.name", read_only=True)
     nights = serializers.IntegerField(read_only=True)
     hotel_id = serializers.IntegerField(source='hotel.id')
-    room_type_id = serializers.IntegerField(source='room_type.id')
+
     class Meta:
         model = Booking
         # fields = "__all__"
