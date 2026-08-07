@@ -461,7 +461,7 @@ class BookingRoomSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = BookingRoom
-        fields = "__all__"
+        # fields = "__all__"
         exclude = ["room_type"]
 
 
