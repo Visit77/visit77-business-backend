@@ -485,10 +485,12 @@ class BookingSerializer(serializers.ModelSerializer):
     core_business_id = serializers.IntegerField(source="hotel.core_business_id", read_only=True)
     hotel_name = serializers.CharField(source="hotel.name", read_only=True)
     nights = serializers.IntegerField(read_only=True)
-
+    hotel_id = serializers.IntegerField(source='hotel.id')
     class Meta:
         model = Booking
         fields = "__all__"
+        exclude = ["hotel"]
+        
 
 
 class RequestedRoomPreferenceSerializer(serializers.Serializer):
