@@ -456,11 +456,13 @@ class BookingRoomNightSerializer(serializers.ModelSerializer):
 class BookingRoomSerializer(serializers.ModelSerializer):
     nights = BookingRoomNightSerializer(many=True, read_only=True)
     room_type_name = serializers.CharField(source="room_type.name", read_only=True)
+    room_type_id = serializers.CharField(source="room_type.id", read_only=True)
     rate_plan_name = serializers.CharField(source="rate_plan.name", read_only=True)
 
     class Meta:
         model = BookingRoom
         fields = "__all__"
+        exclude = ["room_type"]
 
 
 class BookingAddOnSerializer(serializers.ModelSerializer):
@@ -490,7 +492,7 @@ class BookingSerializer(serializers.ModelSerializer):
     class Meta:
         model = Booking
         # fields = "__all__"
-        exclude = ["hotel","room_type"]
+        exclude = ["hotel"]
         
 
 
