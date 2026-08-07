@@ -374,6 +374,8 @@ class RoomBoardView(APIView):
             "physical_room",
             "booking_room__room_type",
             "booking_room__rate_plan",
+            "booking_room__meal_plan_link",
+            "booking_room__meal_plan_link__meal_plan",
             "booking_room__booking",
         ).prefetch_related(
             "booking_room__nights",
@@ -481,6 +483,7 @@ class RoomBoardView(APIView):
             room_data = {
                 "id": room.id,
                 "core_physical_room_id": room.core_physical_room_id,
+                "booking_id": assignment.booking_room.booking_id if assignment else None,
                 "building_id": room.core_building_id,
                 "floor_id": room.core_floor_id,
                 "room_number": room.room_number,
@@ -493,6 +496,7 @@ class RoomBoardView(APIView):
                 "timeline_text": timeline["text"],
                 "room_type": self.serialize_room_board_room_type(room.room_type),
                 "assignment": assignment_data,
+                "current_booking": self.serialize_room_board_current_booking(assignment) if assignment else None,
             }
             floor_summary["rooms"].append(room_data)
             # room_rows.append(room_data)
@@ -640,6 +644,74 @@ class RoomBoardView(APIView):
             "booking_enabled": room_type.booking_enabled,
             "price": self.serialize_room_board_rate_plan(primary_rate_plan),
             "rate_plans": [self.serialize_room_board_rate_plan(rate_plan) for rate_plan in rate_plans],
+        }
+
+    def serialize_room_board_current_booking(self, assignment):
+        booking_room = assignment.booking_room
+        booking = booking_room.booking
+        meal_plan_link = booking_room.meal_plan_link
+        meal_plan = meal_plan_link.meal_plan if meal_plan_link else None
+
+        if booking.amount_paid <= 0:
+            payment_status = "unpaid"
+        elif booking.amount_paid >= booking.grand_total:
+            payment_status = "paid"
+        else:
+            payment_status = "partially_paid"
+
+        return {
+            "id": booking.id,
+            "reference": booking.reference,
+            "public_token": booking.public_token,
+            "status": booking.status,
+            "payment_status": payment_status,
+            "check_in": booking.check_in,
+            "check_out": booking.check_out,
+            "nights": booking.nights,
+            "guest_market": booking.guest_market,
+            "contact": {
+                "name": booking.contact_name,
+                "phone": booking.contact_phone,
+                "email": booking.contact_email,
+            },
+            "booking_room": {
+                "id": booking_room.id,
+                "quantity": booking_room.quantity,
+                "adults": booking_room.adults,
+                "children": booking_room.children,
+                "extra_beds": booking_room.extra_beds,
+                "preference_snapshot": booking_room.preference_snapshot,
+                "room_type": {
+                    "id": booking_room.room_type_id,
+                    "core_room_type_id": booking_room.room_type.core_room_type_id,
+                    "name": booking_room.room_type.name,
+                },
+                "rate_plan": {
+                    "id": booking_room.rate_plan_id,
+                    "code": booking_room.rate_plan.code,
+                    "name": booking_room.rate_plan.name,
+                    "guest_market": booking_room.rate_plan.guest_market,
+                },
+                "meal_plan": {
+                    "id": meal_plan.id,
+                    "name": meal_plan.name,
+                    "is_included": meal_plan_link.is_included,
+                    "is_default": meal_plan_link.is_default,
+                } if meal_plan else None,
+            },
+            "amount": {
+                "currency": booking.currency,
+                "room_total": booking.room_total,
+                "add_on_total": booking.add_on_total,
+                "tax_total": booking.tax_total,
+                "discount_total": booking.discount_total,
+                "grand_total": booking.grand_total,
+                "amount_paid": booking.amount_paid,
+                "amount_due": max(booking.grand_total - booking.amount_paid, 0),
+            },
+            "special_request": booking.special_request,
+            "assignment_id": assignment.id,
+            "assigned_at": assignment.assigned_at,
         }
 
     def serialize_room_board_rate_plan(self, rate_plan):
