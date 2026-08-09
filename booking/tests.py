@@ -212,6 +212,37 @@ class BookingServiceTests(TestCase):
         self.assertEqual(booking_room.meal_plan_snapshot["name"], "Breakfast")
         self.assertEqual(list(booking_room.nights.values_list("meal_plan_total", flat=True)), [Decimal("40000"), Decimal("40000")])
 
+    def test_selected_custom_breakfast_uses_local_price_and_is_snapshotted(self):
+        MealPlan.objects.create(
+            hotel=self.hotel,
+            core_meal_plan_id=450,
+            name="Default Breakfast",
+            included_meals=["breakfast"],
+            local_base_price=Decimal("10000"),
+            foreign_base_price=Decimal("20000"),
+            is_default_for_room_type_breakfast=True,
+        )
+        self.room_type.breakfast_plan_type = RoomType.BreakfastPlanType.CUSTOM_PRICE
+        self.room_type.breakfast_custom_local_base_price = Decimal("12000")
+        self.room_type.breakfast_custom_local_usd_display_price = Decimal("3")
+        self.room_type.breakfast_custom_foreign_base_price = Decimal("25000")
+        self.room_type.breakfast_custom_foreign_usd_display_price = Decimal("6")
+        self.room_type.save()
+        payload = self.payload()
+        payload["rooms"][0]["breakfast_selected"] = True
+
+        booking, _ = create_booking(payload)
+
+        booking_room = booking.rooms.get()
+        self.assertEqual(booking.grand_total, Decimal("368000"))
+        self.assertEqual(booking_room.breakfast_total, Decimal("48000"))
+        self.assertEqual(booking_room.breakfast_snapshot["type"], "custom_price")
+        self.assertEqual(booking_room.breakfast_snapshot["base_price"], "12000.00")
+        self.assertEqual(
+            list(booking_room.nights.values_list("breakfast_total", flat=True)),
+            [Decimal("24000"), Decimal("24000")],
+        )
+
     def test_default_included_meal_plan_is_attached_without_charge(self):
         meal_plan = MealPlan.objects.create(
             hotel=self.hotel,

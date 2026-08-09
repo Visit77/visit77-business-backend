@@ -222,6 +222,51 @@ def _meal_plan_nightly_total(link, guest_market, quantity):
     return base_price * quantity
 
 
+def _resolve_booking_breakfast(room_type, requested, guest_market):
+    plan_type = room_type.breakfast_plan_type
+    included = plan_type == RoomType.BreakfastPlanType.INCLUDED_IN_ROOM_PRICE
+    selected = included or requested.get("breakfast_selected", False)
+    if requested.get("breakfast_selected") and plan_type == RoomType.BreakfastPlanType.NO_BREAKFAST:
+        raise ValidationError({"rooms": f"Breakfast is unavailable for {room_type.name}."})
+    plan = None
+    if plan_type in {
+        RoomType.BreakfastPlanType.HOTEL_DEFAULT_PRICE,
+        RoomType.BreakfastPlanType.CUSTOM_PRICE,
+    }:
+        plan = room_type.hotel.meal_plans.filter(
+            is_default_for_room_type_breakfast=True,
+            core_active=True,
+        ).first()
+        if not plan:
+            raise ValidationError({"rooms": f"The default breakfast plan is unavailable for {room_type.name}."})
+    unit_price = Decimal("0")
+    usd_display_price = None
+    if selected and plan_type == RoomType.BreakfastPlanType.HOTEL_DEFAULT_PRICE:
+        if guest_market == RatePlan.GuestMarket.FOREIGN:
+            unit_price, usd_display_price = plan.foreign_base_price, plan.foreign_usd_display_price
+        else:
+            unit_price, usd_display_price = plan.local_base_price, plan.local_usd_display_price
+    elif selected and plan_type == RoomType.BreakfastPlanType.CUSTOM_PRICE:
+        if guest_market == RatePlan.GuestMarket.FOREIGN:
+            unit_price = room_type.breakfast_custom_foreign_base_price
+            usd_display_price = room_type.breakfast_custom_foreign_usd_display_price
+        else:
+            unit_price = room_type.breakfast_custom_local_base_price
+            usd_display_price = room_type.breakfast_custom_local_usd_display_price
+    snapshot = {
+        "type": plan_type,
+        "selected": selected,
+        "included": included,
+        "meal_plan_id": plan.id if plan else None,
+        "core_meal_plan_id": plan.core_meal_plan_id if plan else None,
+        "name": plan.name if plan else "Breakfast",
+        "meal_windows": plan.meal_windows if plan else {},
+        "base_price": str(unit_price),
+        "usd_display_price": str(usd_display_price) if usd_display_price is not None else None,
+    }
+    return snapshot, unit_price
+
+
 def _rate_amounts(rule, rate_plan):
     if rule is None:
         return rate_plan.base_price, rate_plan.usd_display_price
@@ -673,6 +718,18 @@ def availability_for_hotels(hotels, check_in, check_out, adults=1, children=0, g
                 "cancellation_policy": plan.cancellation_policy,
             })
         if room_plans and available > 0:
+            breakfast, _breakfast_unit_price = _resolve_booking_breakfast(
+                room_type,
+                {"breakfast_selected": room_type.breakfast_plan_type in {
+                    RoomType.BreakfastPlanType.HOTEL_DEFAULT_PRICE,
+                    RoomType.BreakfastPlanType.CUSTOM_PRICE,
+                }},
+                guest_market,
+            )
+            breakfast["selectable"] = room_type.breakfast_plan_type in {
+                RoomType.BreakfastPlanType.HOTEL_DEFAULT_PRICE,
+                RoomType.BreakfastPlanType.CUSTOM_PRICE,
+            }
             results[room_type.hotel_id].append({
                 "core_room_type_id": room_type.core_room_type_id,
                 "name": room_type.name,
@@ -682,6 +739,7 @@ def availability_for_hotels(hotels, check_in, check_out, adults=1, children=0, g
                 "max_children": room_type.max_children,
                 "available_rooms": available,
                 "booking_options": room_type_booking_options(room_type),
+                "breakfast": breakfast,
                 "meal_plans": [
                     _meal_plan_link_payload(link, guest_market, display_currency)
                     for link in room_type.meal_plan_links.all()
@@ -753,6 +811,7 @@ def estimate_booking(data):
         )
         meal_plan_link = _resolve_booking_meal_plan(room_type, requested)
         meal_plan_snapshot = _meal_plan_booking_snapshot(meal_plan_link, guest_market)
+        breakfast_snapshot, breakfast_unit_price = _resolve_booking_breakfast(room_type, requested, guest_market)
         ensure_preference_capacity(
             room_type,
             dates,
@@ -766,12 +825,14 @@ def estimate_booking(data):
         item_total = Decimal("0")
         extra_bed_stay_total = Decimal("0")
         meal_plan_stay_total = Decimal("0")
+        breakfast_stay_total = Decimal("0")
         for day in dates:
             rule = daily_rate_rows.get(day) or periods.get(day)
             unit_price, usd_display_price = _rate_amounts(rule, rate_plan)
             extra_bed_total = rate_plan.extra_bed_base_price * extra_beds
             meal_plan_night_total = _meal_plan_nightly_total(meal_plan_link, guest_market, quantity)
-            night_total = unit_price * quantity + extra_bed_total + nightly_option_total + meal_plan_night_total
+            breakfast_night_total = breakfast_unit_price * quantity
+            night_total = unit_price * quantity + extra_bed_total + nightly_option_total + meal_plan_night_total + breakfast_night_total
             nights.append({
                 "stay_date": day,
                 "unit_price": unit_price,
@@ -780,15 +841,17 @@ def estimate_booking(data):
                 "extra_bed_total": extra_bed_total,
                 "option_total": nightly_option_total,
                 "meal_plan_total": meal_plan_night_total,
+                "breakfast_total": breakfast_night_total,
                 "total": night_total,
             })
             item_total += night_total
             extra_bed_stay_total += extra_bed_total
             meal_plan_stay_total += meal_plan_night_total
+            breakfast_stay_total += breakfast_night_total
         room_total += item_total
         selected_room_count += quantity
         selected_extra_bed_count += extra_beds
-        room_stay_total = item_total - extra_bed_stay_total - option_total - meal_plan_stay_total
+        room_stay_total = item_total - extra_bed_stay_total - option_total - meal_plan_stay_total - breakfast_stay_total
         summary_items.append({
             "type": "room",
             "label": f"{quantity} x {room_type.name}",
@@ -834,6 +897,16 @@ def estimate_booking(data):
                 "amount": meal_plan_stay_total,
                 "formatted_amount": format_money(meal_plan_stay_total, hotel.base_currency),
             })
+        if breakfast_stay_total:
+            summary_items.append({
+                "type": "breakfast",
+                "label": f"{quantity} x Breakfast x {len(dates)} Night{'s' if len(dates) != 1 else ''}",
+                "room_type_id": room_type.id,
+                "core_room_type_id": room_type.core_room_type_id,
+                "quantity": quantity,
+                "amount": breakfast_stay_total,
+                "formatted_amount": format_money(breakfast_stay_total, hotel.base_currency),
+            })
         rooms.append({
             "core_room_type_id": room_type.core_room_type_id,
             "room_type_id": room_type.id,
@@ -846,6 +919,8 @@ def estimate_booking(data):
             "option_total": option_total,
             "meal_plan": meal_plan_snapshot,
             "meal_plan_total": meal_plan_stay_total,
+            "breakfast": breakfast_snapshot,
+            "breakfast_total": breakfast_stay_total,
             "nights": nights,
             "total": item_total,
             "formatted_total": format_money(item_total, hotel.base_currency),
@@ -933,6 +1008,7 @@ def create_booking(data, idempotency_key=None):
         )
         meal_plan_link = _resolve_booking_meal_plan(room_type, requested)
         meal_plan_snapshot = _meal_plan_booking_snapshot(meal_plan_link, guest_market)
+        breakfast_snapshot, breakfast_unit_price = _resolve_booking_breakfast(room_type, requested, guest_market)
         ensure_preference_capacity(
             room_type,
             dates,
@@ -967,6 +1043,7 @@ def create_booking(data, idempotency_key=None):
                 "cancellation_policy": rate_plan.cancellation_policy,
             },
             meal_plan_snapshot=meal_plan_snapshot,
+            breakfast_snapshot=breakfast_snapshot,
             preference_snapshot=preference_snapshot,
             option_total=option_total,
         )
@@ -984,13 +1061,15 @@ def create_booking(data, idempotency_key=None):
             raise ValidationError({"rooms": f"{rate_plan.name} minimum-stay requirement is not met."})
         item_total = Decimal("0")
         meal_plan_stay_total = Decimal("0")
+        breakfast_stay_total = Decimal("0")
         nightly_option_total = (option_total / len(dates)) if dates else Decimal("0")
         for day in dates:
             rule = daily_rate_rows.get(day) or periods.get(day)
             unit_price, _usd_display_price = _rate_amounts(rule, rate_plan)
             extra_bed_total = rate_plan.extra_bed_base_price * requested.get("extra_beds", 0)
             meal_plan_night_total = _meal_plan_nightly_total(meal_plan_link, guest_market, quantity)
-            night_total = unit_price * quantity + extra_bed_total + nightly_option_total + meal_plan_night_total
+            breakfast_night_total = breakfast_unit_price * quantity
+            night_total = unit_price * quantity + extra_bed_total + nightly_option_total + meal_plan_night_total + breakfast_night_total
             BookingRoomNight.objects.create(
                 booking_room=booking_room,
                 stay_date=day,
@@ -999,13 +1078,16 @@ def create_booking(data, idempotency_key=None):
                 extra_bed_total=extra_bed_total,
                 option_total=nightly_option_total,
                 meal_plan_total=meal_plan_night_total,
+                breakfast_total=breakfast_night_total,
                 total=night_total,
             )
             item_total += night_total
             meal_plan_stay_total += meal_plan_night_total
+            breakfast_stay_total += breakfast_night_total
         booking_room.total = item_total
         booking_room.meal_plan_total = meal_plan_stay_total
-        booking_room.save(update_fields=["meal_plan_total", "total"])
+        booking_room.breakfast_total = breakfast_stay_total
+        booking_room.save(update_fields=["meal_plan_total", "breakfast_total", "total"])
         room_total += item_total
         policy_snapshot[str(rate_plan.id)] = rate_plan.cancellation_policy
 

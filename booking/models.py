@@ -41,6 +41,12 @@ class Hotel(models.Model):
 class RoomType(models.Model):
     """Core owns descriptive data; this service owns sellability and inventory."""
 
+    class BreakfastPlanType(models.TextChoices):
+        NO_BREAKFAST = "no_breakfast", "No Breakfast"
+        INCLUDED_IN_ROOM_PRICE = "included_in_room_price", "Breakfast Included In Room Price"
+        HOTEL_DEFAULT_PRICE = "hotel_default_price", "Use Hotel Default Breakfast Price"
+        CUSTOM_PRICE = "custom_price", "Use Custom Breakfast Price"
+
     hotel = models.ForeignKey(Hotel, on_delete=models.CASCADE, related_name="room_types")
     core_room_type_id = models.PositiveBigIntegerField()
     name = models.CharField(max_length=255)
@@ -49,6 +55,11 @@ class RoomType(models.Model):
     max_adults = models.PositiveSmallIntegerField(default=1)
     max_children = models.PositiveSmallIntegerField(default=0)
     max_occupancy = models.PositiveSmallIntegerField(default=1)
+    breakfast_plan_type = models.CharField(max_length=32, choices=BreakfastPlanType.choices, default=BreakfastPlanType.NO_BREAKFAST)
+    breakfast_custom_local_base_price = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    breakfast_custom_local_usd_display_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    breakfast_custom_foreign_base_price = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    breakfast_custom_foreign_usd_display_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     default_inventory = models.PositiveSmallIntegerField(default=0)
     booking_enabled = models.BooleanField(default=True)
     core_active = models.BooleanField(default=True)
@@ -78,6 +89,7 @@ class MealPlan(models.Model):
     local_usd_display_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     foreign_base_price = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     foreign_usd_display_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    is_default_for_room_type_breakfast = models.BooleanField(default=False)
     core_active = models.BooleanField(default=True)
     core_snapshot = models.JSONField(default=dict, blank=True)
     synced_at = models.DateTimeField(null=True, blank=True)
@@ -86,6 +98,7 @@ class MealPlan(models.Model):
         ordering = ["name", "id"]
         constraints = [
             models.UniqueConstraint(fields=["hotel", "core_meal_plan_id"], name="uniq_core_meal_plan_per_hotel"),
+            models.UniqueConstraint(fields=["hotel"], condition=models.Q(is_default_for_room_type_breakfast=True), name="uniq_booking_default_breakfast_per_hotel"),
         ]
 
     def __str__(self):
@@ -468,9 +481,11 @@ class BookingRoom(models.Model):
     room_type_snapshot = models.JSONField(default=dict)
     rate_plan_snapshot = models.JSONField(default=dict)
     meal_plan_snapshot = models.JSONField(default=dict, blank=True)
+    breakfast_snapshot = models.JSONField(default=dict, blank=True)
     preference_snapshot = models.JSONField(default=dict, blank=True)
     option_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     meal_plan_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    breakfast_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
 
 
@@ -482,6 +497,7 @@ class BookingRoomNight(models.Model):
     extra_bed_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     option_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     meal_plan_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    breakfast_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     total = models.DecimalField(max_digits=14, decimal_places=2)
 
     class Meta:

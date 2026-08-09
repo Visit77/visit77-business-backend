@@ -109,10 +109,43 @@ class RoomBoardQuerySerializer(serializers.Serializer):
 class RoomTypeSerializer(serializers.ModelSerializer):
     core_business_id = serializers.IntegerField(source="hotel.core_business_id", read_only=True)
     meal_plans = serializers.SerializerMethodField()
+    breakfast = serializers.SerializerMethodField()
 
     def get_meal_plans(self, obj):
         links = obj.meal_plan_links.select_related("meal_plan").all()
         return RoomTypeMealPlanSerializer(links, many=True).data
+
+    def get_breakfast(self, obj):
+        selectable = obj.breakfast_plan_type in {
+            RoomType.BreakfastPlanType.HOTEL_DEFAULT_PRICE,
+            RoomType.BreakfastPlanType.CUSTOM_PRICE,
+        }
+        plan = obj.hotel.meal_plans.filter(
+            is_default_for_room_type_breakfast=True,
+            core_active=True,
+        ).first() if selectable else None
+        price = None
+        if obj.breakfast_plan_type == RoomType.BreakfastPlanType.HOTEL_DEFAULT_PRICE and plan:
+            price = {
+                "local_base_price": plan.local_base_price,
+                "local_usd_display_price": plan.local_usd_display_price,
+                "foreign_base_price": plan.foreign_base_price,
+                "foreign_usd_display_price": plan.foreign_usd_display_price,
+            }
+        elif obj.breakfast_plan_type == RoomType.BreakfastPlanType.CUSTOM_PRICE:
+            price = {
+                "local_base_price": obj.breakfast_custom_local_base_price,
+                "local_usd_display_price": obj.breakfast_custom_local_usd_display_price,
+                "foreign_base_price": obj.breakfast_custom_foreign_base_price,
+                "foreign_usd_display_price": obj.breakfast_custom_foreign_usd_display_price,
+            }
+        return {
+            "type": obj.breakfast_plan_type,
+            "included": obj.breakfast_plan_type == RoomType.BreakfastPlanType.INCLUDED_IN_ROOM_PRICE,
+            "selectable": selectable,
+            "meal_plan": MealPlanSerializer(plan).data if plan else None,
+            "price": price,
+        }
 
     class Meta:
         model = RoomType
@@ -514,6 +547,7 @@ class RequestedRoomSerializer(serializers.Serializer):
     core_room_type_id = serializers.IntegerField(min_value=1)
     rate_plan_id = serializers.IntegerField(min_value=1)
     meal_plan_link_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    breakfast_selected = serializers.BooleanField(required=False, default=False)
     quantity = serializers.IntegerField(min_value=1, max_value=20)
     adults = serializers.IntegerField(min_value=1, max_value=100, default=1)
     children = serializers.IntegerField(min_value=0, max_value=100, default=0)

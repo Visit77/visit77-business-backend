@@ -158,6 +158,9 @@ def sync_business_from_core(core_business_id: int, client=None):
     core_room_type_ids = []
     meal_plan_by_core_id = {}
     synced_core_meal_plan_ids = []
+    hotel.meal_plans.filter(is_default_for_room_type_breakfast=True).update(
+        is_default_for_room_type_breakfast=False,
+    )
     for payload in bundle.get("meal_plans", []) or []:
         synced_core_meal_plan_ids.append(payload["id"])
         meal_plan, _ = MealPlan.objects.update_or_create(
@@ -173,6 +176,7 @@ def sync_business_from_core(core_business_id: int, client=None):
                 "local_usd_display_price": payload.get("local_usd_display_price"),
                 "foreign_base_price": payload.get("foreign_base_price") or 0,
                 "foreign_usd_display_price": payload.get("foreign_usd_display_price"),
+                "is_default_for_room_type_breakfast": payload.get("is_default_for_room_type_breakfast", False),
                 "core_active": payload.get("is_active", True),
                 "core_snapshot": payload,
                 "synced_at": now,
@@ -195,6 +199,15 @@ def sync_business_from_core(core_business_id: int, client=None):
                 "max_adults": payload.get("max_adults") or 1,
                 "max_children": payload.get("max_children") or 0,
                 "max_occupancy": payload.get("max_occupancy") or 1,
+                "breakfast_plan_type": payload.get("breakfast_plan_type") or (
+                    RoomType.BreakfastPlanType.INCLUDED_IN_ROOM_PRICE
+                    if payload.get("breakfast_included")
+                    else RoomType.BreakfastPlanType.NO_BREAKFAST
+                ),
+                "breakfast_custom_local_base_price": payload.get("breakfast_custom_local_base_price") or 0,
+                "breakfast_custom_local_usd_display_price": payload.get("breakfast_custom_local_usd_display_price"),
+                "breakfast_custom_foreign_base_price": payload.get("breakfast_custom_foreign_base_price") or 0,
+                "breakfast_custom_foreign_usd_display_price": payload.get("breakfast_custom_foreign_usd_display_price"),
                 "booking_enabled": payload.get("is_active", True),
                 "core_active": payload.get("is_active", True),
                 "core_snapshot": payload,
