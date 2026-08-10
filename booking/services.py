@@ -1223,7 +1223,7 @@ def _has_overlapping_room_assignment(physical_room, check_in, check_out, exclude
 
 
 @transaction.atomic
-def create_walk_in_booking(data, idempotency_key=None, core_business_id=None):
+def create_walk_in_booking(data, idempotency_key=None, core_business_id=None, check_in_immediately=True):
     physical_room = PhysicalRoom.objects.select_for_update().select_related(
         "hotel",
         "room_type",
@@ -1334,9 +1334,12 @@ def create_walk_in_booking(data, idempotency_key=None, core_business_id=None):
     booking_room = booking.rooms.select_related("room_type").get()
     validate_assignment_preferences(booking_room, physical_room)
     RoomAssignment.objects.create(booking_room=booking_room, physical_room=physical_room)
-    # Walk-ins now use the same admin verification form and final check-in action
-    # as OTA/direct/phone reservations. Assignment reserves the room; it remains
-    # VACANT until the verified check-in transition.
+    if check_in_immediately:
+        physical_room.status = PhysicalRoom.Status.OCCUPIED
+        physical_room.save(update_fields=["status"])
+        booking.status = Booking.Status.CHECKED_IN
+        booking.hold_expires_at = None
+        booking.save(update_fields=["status", "hold_expires_at", "updated_at"])
     return booking
 
 

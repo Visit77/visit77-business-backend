@@ -29,7 +29,7 @@
       ]}}]
     },
     {
-      "name": "02 - Create Walk-in Reservation",
+      "name": "02 - Legacy Walk-in (Immediate Check-in)",
       "request": {
         "method": "POST",
         "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Idempotency-Key", "value": "walkin-{{$guid}}"}],
@@ -37,16 +37,29 @@
         "url": "{{booking_base_url}}/api/v1/admin/walk-in-bookings/"
       },
       "event": [{"listen": "test", "script": {"exec": [
-        "pm.test('Walk-in stops at confirmed', () => { pm.response.to.have.status(201); pm.expect(pm.response.json().data.booking.status).to.eql('confirmed'); });",
+        "pm.test('Walk-in checks in immediately', () => { pm.response.to.have.status(201); pm.expect(pm.response.json().data.status).to.eql('checked_in'); });",
+        "const d = pm.response.json().data; pm.environment.set('booking_id', d.id); if (d.guests.length) pm.environment.set('guest_id', d.guests[0].id);"
+      ]}}]
+    },
+    {
+      "name": "03 - Create Walk-in V2 Reservation",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Idempotency-Key", "value": "walkin-v2-{{$guid}}"}],
+        "body": {"mode": "raw", "raw": "{\n  \"physical_room_id\": {{physical_room_id}},\n  \"rate_plan_id\": {{rate_plan_id}},\n  \"check_in\": \"{{check_in}}\",\n  \"check_out\": \"{{check_out}}\",\n  \"contact_name\": \"Walk-in V2 Guest\",\n  \"contact_phone\": \"092222222\",\n  \"guest_market\": \"local\",\n  \"adults\": 1,\n  \"children\": 0,\n  \"guests\": [{\"name\": \"Walk-in V2 Guest\", \"is_primary\": true}],\n  \"payment\": {\"provider\": \"cash\", \"status\": \"paid\"}\n}", "options": {"raw": {"language": "json"}}},
+        "url": "{{booking_base_url}}/api/v1/admin/walk-in-booking-v2/"
+      },
+      "event": [{"listen": "test", "script": {"exec": [
+        "pm.test('Walk-in V2 stops at confirmed', () => { pm.response.to.have.status(201); pm.expect(pm.response.json().data.booking.status).to.eql('confirmed'); });",
         "const d = pm.response.json().data; pm.environment.set('booking_id', d.booking.id); if (d.booking.guests.length) pm.environment.set('guest_id', d.booking.guests[0].id);"
       ]}}]
     },
     {
-      "name": "03 - Get OTA/Phone/Walk-in Check-in Form",
+      "name": "04 - Get OTA/Phone/Walk-in V2 Check-in Form",
       "request": {"method": "GET", "url": "{{booking_base_url}}/api/v1/admin/bookings/{{booking_id}}/check-in-form/"}
     },
     {
-      "name": "04 - Update Check-in Form",
+      "name": "05 - Update Check-in Form",
       "request": {
         "method": "PATCH",
         "header": [{"key": "Content-Type", "value": "application/json"}],
@@ -55,12 +68,12 @@
       }
     },
     {
-      "name": "05 - Upload NRC Front",
+      "name": "06 - Upload Identity Photo",
       "request": {
         "method": "POST",
         "body": {"mode": "formdata", "formdata": [
           {"key": "guest_id", "value": "{{guest_id}}", "type": "text"},
-          {"key": "document_type", "value": "nrc_front", "type": "text"},
+          {"key": "document_type", "value": "identity_photo", "type": "text"},
           {"key": "document_number", "value": "12/ABC(N)123456", "type": "text"},
           {"key": "file", "type": "file", "src": []}
         ]},
@@ -68,38 +81,12 @@
       }
     },
     {
-      "name": "06 - Upload NRC Back",
-      "request": {
-        "method": "POST",
-        "body": {"mode": "formdata", "formdata": [
-          {"key": "guest_id", "value": "{{guest_id}}", "type": "text"},
-          {"key": "document_type", "value": "nrc_back", "type": "text"},
-          {"key": "document_number", "value": "12/ABC(N)123456", "type": "text"},
-          {"key": "file", "type": "file", "src": []}
-        ]},
-        "url": "{{booking_base_url}}/api/v1/admin/bookings/{{booking_id}}/guest-identity-document/"
-      }
-    },
-    {
-      "name": "07 - Upload Passport (Foreign Guest)",
-      "request": {
-        "method": "POST",
-        "body": {"mode": "formdata", "formdata": [
-          {"key": "guest_id", "value": "{{guest_id}}", "type": "text"},
-          {"key": "document_type", "value": "passport", "type": "text"},
-          {"key": "document_number", "value": "P12345678", "type": "text"},
-          {"key": "file", "type": "file", "src": []}
-        ]},
-        "url": "{{booking_base_url}}/api/v1/admin/bookings/{{booking_id}}/guest-identity-document/"
-      }
-    },
-    {
-      "name": "08 - Verify Readiness",
+      "name": "07 - Verify Readiness",
       "request": {"method": "GET", "url": "{{booking_base_url}}/api/v1/admin/bookings/{{booking_id}}/check-in-form/"},
       "event": [{"listen": "test", "script": {"exec": ["pm.test('Ready to check in', () => pm.expect(pm.response.json().data.verification.can_check_in).to.eql(true));"]}}]
     },
     {
-      "name": "09 - Final Verified Check-in",
+      "name": "08 - Final Verified Check-in",
       "request": {
         "method": "POST",
         "header": [{"key": "Content-Type", "value": "application/json"}],
@@ -109,7 +96,7 @@
       "event": [{"listen": "test", "script": {"exec": ["pm.test('Booking checked in', () => pm.expect(pm.response.json().data.status).to.eql('checked_in'));"]}}]
     },
     {
-      "name": "10 - Physical Room with Current Booking",
+      "name": "09 - Physical Room with Current Booking",
       "request": {"method": "GET", "url": "{{booking_base_url}}/api/v1/admin/physical-rooms/{{physical_room_id}}/?date={{check_in}}"}
     }
   ]

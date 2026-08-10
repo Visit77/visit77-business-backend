@@ -531,11 +531,7 @@ class Guest(models.Model):
 
 class GuestIdentityDocument(models.Model):
     class DocumentType(models.TextChoices):
-        NRC_FRONT = "nrc_front", "NRC Front"
-        NRC_BACK = "nrc_back", "NRC Back"
-        PASSPORT = "passport", "Passport"
-        VISA = "visa", "Visa"
-        OTHER = "other", "Other"
+        IDENTITY_PHOTO = "identity_photo", "Identity Photo"
 
     guest = models.ForeignKey(Guest, on_delete=models.CASCADE, related_name="identity_documents")
     document_type = models.CharField(max_length=24, choices=DocumentType.choices)

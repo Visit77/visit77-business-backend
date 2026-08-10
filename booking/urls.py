@@ -32,6 +32,7 @@ from booking.views import (
     SuperAdminAddOnTemplateRequestViewSet,
     SuperAdminAddOnTemplateViewSet,
     WalkInBookingView,
+    WalkInBookingV2View,
 )
 
 
@@ -56,6 +57,7 @@ urlpatterns = [
     path("admin/add-on-templates/", AddOnTemplateView.as_view()),
     path("admin/room-board/", RoomBoardView.as_view()),
     path("admin/walk-in-bookings/", WalkInBookingView.as_view()),
+    path("admin/walk-in-booking-v2/", WalkInBookingV2View.as_view()),
     path("admin/reservations/", AdminReservationView.as_view()),
     path("public/search/availability/", PublicGlobalAvailabilityView.as_view()),
     path("public/hotels/<int:core_business_id>/availability/", PublicAvailabilityView.as_view()),

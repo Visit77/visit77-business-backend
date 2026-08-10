@@ -91,7 +91,7 @@ class BookingServiceTests(TestCase):
         room_801.refresh_from_db()
         self.assertEqual(room_801.status, PhysicalRoom.Status.VACANT)
 
-    def test_walk_in_booking_stops_at_confirmed_until_admin_verifies_check_in(self):
+    def test_walk_in_booking_checks_in_immediately_and_occupies_room(self):
         physical_room = PhysicalRoom.objects.create(
             hotel=self.hotel,
             room_type=self.room_type,
@@ -119,10 +119,10 @@ class BookingServiceTests(TestCase):
 
         booking.refresh_from_db()
         physical_room.refresh_from_db()
-        self.assertEqual(booking.status, Booking.Status.CONFIRMED)
+        self.assertEqual(booking.status, Booking.Status.CHECKED_IN)
         self.assertEqual(booking.source, Booking.Source.WALK_IN)
         self.assertEqual(booking.amount_paid, booking.grand_total)
-        self.assertEqual(physical_room.status, PhysicalRoom.Status.VACANT)
+        self.assertEqual(physical_room.status, PhysicalRoom.Status.OCCUPIED)
         self.assertTrue(
             RoomAssignment.objects.filter(
                 booking_room__booking=booking,
@@ -544,6 +544,35 @@ class BookingServiceTests(TestCase):
 
 @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key", CORE_JWT_SIGNING_KEY="test-core-jwt-key")
 class BookingApiTests(BookingServiceTests):
+    def test_legacy_walk_in_api_checks_in_immediately_without_identity_verification(self):
+        room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="304")
+        response = self.client.post(
+            "/api/v1/admin/walk-in-bookings/",
+            {
+                "physical_room_id": room.id,
+                "rate_plan_id": self.rate_plan.id,
+                "check_in": str(self.check_in),
+                "check_out": str(self.check_out),
+                "contact_name": "Legacy Walk In",
+                "contact_phone": "091111111",
+                "guest_market": "local",
+                "adults": 1,
+                "children": 0,
+                "guests": [{"name": "Legacy Walk In", "is_primary": True}],
+                "payment": {"provider": "cash", "status": "paid"},
+            },
+            format="json",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["data"]["status"], Booking.Status.CHECKED_IN)
+        booking = Booking.objects.get(id=response.data["data"]["id"])
+        room.refresh_from_db()
+        self.assertEqual(booking.status, Booking.Status.CHECKED_IN)
+        self.assertEqual(room.status, PhysicalRoom.Status.OCCUPIED)
+        self.assertFalse(booking.guests.filter(identity_documents__isnull=False).exists())
+
     def setUp(self):
         super().setUp()
         self.client = APIClient()
@@ -641,7 +670,7 @@ class BookingApiTests(BookingServiceTests):
             "HTTP_X_CORE_USER_ID": "501",
         }
         created = self.client.post(
-            "/api/v1/admin/walk-in-bookings/",
+            "/api/v1/admin/walk-in-booking-v2/",
             {
                 "physical_room_id": room.id,
                 "rate_plan_id": self.rate_plan.id,
@@ -670,19 +699,28 @@ class BookingApiTests(BookingServiceTests):
         guest = booking.guests.get(is_primary=True)
         self.assertEqual(booking.status, Booking.Status.CONFIRMED)
 
-        for document_type in ["nrc_front", "nrc_back"]:
-            uploaded = self.client.post(
-                f"/api/v1/admin/bookings/{booking_id}/guest-identity-document/",
-                {
-                    "guest_id": guest.id,
-                    "document_type": document_type,
-                    "document_number": guest.nrc_number,
-                    "file": SimpleUploadedFile(f"{document_type}.jpg", b"test-image", content_type="image/jpeg"),
-                },
-                format="multipart",
-                **headers,
-            )
-            self.assertEqual(uploaded.status_code, 201, uploaded.data)
+        blocked = self.client.post(
+            f"/api/v1/admin/bookings/{booking_id}/check-in/",
+            {"verification_confirmed": True},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(blocked.status_code, 400, blocked.data)
+        self.assertIn("Missing fields - guests.", blocked.data["error"][1])
+        self.assertIn(".identity_photo", blocked.data["error"][1])
+
+        uploaded = self.client.post(
+            f"/api/v1/admin/bookings/{booking_id}/guest-identity-document/",
+            {
+                "guest_id": guest.id,
+                "document_type": "identity_photo",
+                "document_number": guest.nrc_number,
+                "file": SimpleUploadedFile("identity-photo.jpg", b"test-image", content_type="image/jpeg"),
+            },
+            format="multipart",
+            **headers,
+        )
+        self.assertEqual(uploaded.status_code, 201, uploaded.data)
 
         form = self.client.get(f"/api/v1/admin/bookings/{booking_id}/check-in-form/", **headers)
         self.assertEqual(form.status_code, 200, form.data)

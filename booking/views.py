@@ -79,20 +79,10 @@ def _check_in_readiness(booking):
     primary_guest = next((guest for guest in guests if guest.is_primary), None)
     if not primary_guest:
         missing.append("primary_guest")
-    elif booking.guest_market == RatePlan.GuestMarket.LOCAL:
-        if not (primary_guest.nrc_number or primary_guest.identity_number):
-            missing.append(f"guests.{primary_guest.id}.nrc_number")
+    else:
         document_types = {doc.document_type for doc in primary_guest.identity_documents.all()}
-        if GuestIdentityDocument.DocumentType.NRC_FRONT not in document_types:
-            missing.append(f"guests.{primary_guest.id}.nrc_front")
-        if GuestIdentityDocument.DocumentType.NRC_BACK not in document_types:
-            missing.append(f"guests.{primary_guest.id}.nrc_back")
-    elif primary_guest:
-        if not (primary_guest.passport_number or primary_guest.identity_number):
-            missing.append(f"guests.{primary_guest.id}.passport_number")
-        document_types = {doc.document_type for doc in primary_guest.identity_documents.all()}
-        if GuestIdentityDocument.DocumentType.PASSPORT not in document_types:
-            missing.append(f"guests.{primary_guest.id}.passport")
+        if GuestIdentityDocument.DocumentType.IDENTITY_PHOTO not in document_types:
+            missing.append(f"guests.{primary_guest.id}.identity_photo")
 
     unassigned = []
     non_vacant = []
@@ -117,7 +107,7 @@ def _check_in_readiness(booking):
         payment_status = "partially_paid"
     return {
         "guest_information_complete": primary_guest is not None,
-        "identity_documents_complete": not any("nrc" in item or "passport" in item for item in missing),
+        "identity_documents_complete": not any("identity_photo" in item for item in missing),
         "all_rooms_assigned": not unassigned,
         "assigned_rooms_vacant": not non_vacant,
         "payment_status": payment_status,
@@ -1607,7 +1597,10 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
             raise ValidationError("Only a confirmed booking can check in.")
         readiness = _check_in_readiness(booking)
         if not readiness["can_check_in"]:
-            raise ValidationError({"check_in": readiness})
+            raise ValidationError({
+                "check_in": "Required guest documents or room assignments are incomplete.",
+                "missing_fields": readiness["missing_fields"],
+            })
         assignments = RoomAssignment.objects.filter(booking_room__booking=booking, released_at__isnull=True).select_related("physical_room")
         if assignments.count() < sum(booking.rooms.values_list("quantity", flat=True)):
             raise ValidationError("Assign all physical rooms before check-in.")
@@ -1655,6 +1648,27 @@ class WalkInBookingView(APIView):
             serializer.validated_data,
             idempotency_key=request.headers.get("Idempotency-Key"),
             core_business_id=getattr(request, "booking_core_business_id", None),
+            check_in_immediately=True,
+        )
+        return success(
+            BookingSerializer(booking, context={"request": request}).data,
+            status_code=status.HTTP_201_CREATED,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class WalkInBookingV2View(APIView):
+    permission_classes = [HasBookingAdminKey]
+    business_scoped = True
+
+    def post(self, request):
+        serializer = WalkInBookingCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        booking = create_walk_in_booking(
+            serializer.validated_data,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            core_business_id=getattr(request, "booking_core_business_id", None),
+            check_in_immediately=False,
         )
         return success(
             {
