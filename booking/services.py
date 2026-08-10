@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from decimal import Decimal
 import re
 
@@ -1341,6 +1341,14 @@ def create_walk_in_booking(data, idempotency_key=None, core_business_id=None):
 @transaction.atomic
 def refund_payment(payment, amount, provider_reference=""):
     payment = Payment.objects.select_for_update().select_related("booking").get(pk=payment.pk)
+    quote = refund_quote(payment.booking)
+    if amount > quote["refundable_remaining"]:
+        raise ValidationError({
+            "amount": (
+                f"Refund exceeds the cancellation policy allowance of "
+                f"{quote['refundable_remaining']} {payment.booking.currency}."
+            )
+        })
     remaining = payment.amount - payment.refunded_amount
     if payment.status not in [Payment.Status.PAID, Payment.Status.PARTIALLY_REFUNDED] or amount <= 0 or amount > remaining:
         raise ValidationError("Refund amount exceeds the refundable payment balance.")
@@ -1353,6 +1361,88 @@ def refund_payment(payment, amount, provider_reference=""):
     booking.amount_paid = max(booking.amount_paid - amount, Decimal("0"))
     booking.save(update_fields=["amount_paid", "updated_at"])
     return payment
+
+
+def _refund_percent(policy, hours_before_check_in):
+    policy = policy or {}
+    policy_type = policy.get("type")
+    if policy_type == "free_full_refund":
+        return Decimal("100")
+    if policy_type != "partial_refund":
+        return Decimal("0")
+
+    less_rule = policy.get("less_than_rule") or {}
+    more_rules = policy.get("more_than_rules") or []
+    try:
+        cutoff = Decimal(str(less_rule["hours_before_check_in"]))
+        less_percent = Decimal(str(less_rule["refund_percent"]))
+    except (KeyError, TypeError, ValueError):
+        # Read legacy snapshots safely while old bookings are still active.
+        legacy = sorted(
+            policy.get("refund_rules") or [],
+            key=lambda rule: Decimal(str(rule.get("within_hours", 0))),
+        )
+        if not legacy:
+            return Decimal("0")
+        cutoff = Decimal(str(legacy[0].get("within_hours", 0)))
+        less_percent = Decimal(str(legacy[0].get("refund_percent", 0)))
+        more_rules = [
+            {
+                "hours_before_check_in": rule.get("within_hours"),
+                "refund_percent": rule.get("refund_percent"),
+            }
+            for rule in legacy
+        ]
+    if hours_before_check_in < cutoff:
+        return less_percent
+    eligible = [
+        rule for rule in more_rules
+        if hours_before_check_in >= Decimal(str(rule.get("hours_before_check_in", 0)))
+    ]
+    if not eligible:
+        return less_percent
+    selected = max(eligible, key=lambda rule: Decimal(str(rule["hours_before_check_in"])))
+    return Decimal(str(selected.get("refund_percent", 0)))
+
+
+def refund_quote(booking, at=None):
+    booking = Booking.objects.select_related("hotel").prefetch_related("rooms", "payments").get(pk=booking.pk)
+    at = at or timezone.now()
+    check_in_time = booking.hotel.check_in_time or time.min
+    check_in_at = datetime.combine(booking.check_in, check_in_time)
+    if timezone.is_aware(at):
+        check_in_at = timezone.make_aware(check_in_at, timezone.get_current_timezone())
+    hours_before = Decimal(str((check_in_at - at).total_seconds())) / Decimal("3600")
+    room_items = []
+    eligible_total = Decimal("0")
+    for room in booking.rooms.all():
+        policy = (booking.cancellation_policy_snapshot or {}).get(str(room.rate_plan_id), {})
+        percent = _refund_percent(policy, hours_before)
+        amount = (room.total * percent / Decimal("100")).quantize(Decimal("0.01"))
+        eligible_total += amount
+        room_items.append({
+            "booking_room_id": room.id,
+            "rate_plan_id": room.rate_plan_id,
+            "policy_type": policy.get("type", "non_refundable"),
+            "refund_percent": percent,
+            "eligible_amount": amount,
+            "description": policy.get("description", ""),
+        })
+    already_refunded = sum((payment.refunded_amount for payment in booking.payments.all()), Decimal("0"))
+    originally_paid = booking.amount_paid + already_refunded
+    eligible_total = min(eligible_total, originally_paid)
+    refundable_remaining = max(eligible_total - already_refunded, Decimal("0"))
+    return {
+        "booking_id": booking.id,
+        "currency": booking.currency,
+        "calculated_at": at,
+        "check_in_at": check_in_at,
+        "hours_before_check_in": max(hours_before, Decimal("0")).quantize(Decimal("0.01")),
+        "eligible_refund_total": eligible_total,
+        "already_refunded": already_refunded,
+        "refundable_remaining": refundable_remaining,
+        "rooms": room_items,
+    }
 
 
 @transaction.atomic

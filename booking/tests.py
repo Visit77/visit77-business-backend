@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from io import StringIO
 import uuid
@@ -12,7 +12,7 @@ from rest_framework_simplejwt.backends import TokenBackend
 
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, CoreIntegrationEvent, DailyInventory, DailyRate, Hotel, MealPlan, Payment, PhysicalRoom, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import sync_business_from_core
-from booking.services import availability_for_hotel, cancel_booking, create_booking, create_walk_in_booking, ensure_daily_inventory_for_room_type, record_payment, refund_payment
+from booking.services import availability_for_hotel, cancel_booking, create_booking, create_walk_in_booking, ensure_daily_inventory_for_room_type, record_payment, refund_payment, refund_quote
 
 
 class BookingServiceTests(TestCase):
@@ -270,6 +270,8 @@ class BookingServiceTests(TestCase):
         self.assertIn("pricing_mode", booking_room.meal_plan_snapshot)
 
     def test_deposit_confirms_and_refund_updates_paid_balance(self):
+        self.rate_plan.cancellation_policy = {"type": "free_full_refund"}
+        self.rate_plan.save(update_fields=["cancellation_policy"])
         booking, _ = create_booking(self.payload())
         payment = record_payment(booking, {"provider": "cash", "amount": Decimal("50000"), "status": Payment.Status.PAID})
         booking.refresh_from_db()
@@ -279,6 +281,34 @@ class BookingServiceTests(TestCase):
         payment.refresh_from_db()
         self.assertEqual(booking.amount_paid, Decimal("30000"))
         self.assertEqual(payment.status, Payment.Status.PARTIALLY_REFUNDED)
+
+    def test_refund_quote_uses_less_than_and_highest_more_than_rule(self):
+        self.rate_plan.cancellation_policy = {
+            "type": "partial_refund",
+            "less_than_rule": {"hours_before_check_in": 24, "refund_percent": 0},
+            "more_than_rules": [
+                {"hours_before_check_in": 24, "refund_percent": 50},
+                {"hours_before_check_in": 72, "refund_percent": 100},
+            ],
+            "description": "Refunds return to the original payment method.",
+        }
+        self.rate_plan.save(update_fields=["cancellation_policy"])
+        booking, _ = create_booking(self.payload())
+        record_payment(booking, {"provider": "cash", "amount": booking.grand_total, "status": Payment.Status.PAID})
+        check_in_at = timezone.make_aware(datetime.combine(self.check_in, self.hotel.check_in_time or datetime.min.time()))
+
+        within_24 = refund_quote(booking, at=check_in_at - timedelta(hours=12))
+        between_24_and_72 = refund_quote(booking, at=check_in_at - timedelta(hours=48))
+        over_72 = refund_quote(booking, at=check_in_at - timedelta(hours=96))
+
+        self.assertEqual(within_24["rooms"][0]["refund_percent"], Decimal("0"))
+        self.assertEqual(between_24_and_72["rooms"][0]["refund_percent"], Decimal("50"))
+        self.assertEqual(over_72["rooms"][0]["refund_percent"], Decimal("100"))
+        self.assertEqual(between_24_and_72["refundable_remaining"], Decimal("160000.00"))
+        self.assertEqual(
+            between_24_and_72["rooms"][0]["description"],
+            "Refunds return to the original payment method.",
+        )
 
     def test_effective_rate_period_and_daily_override_price_each_stay_date(self):
         RatePeriod.objects.create(
@@ -1068,6 +1098,43 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(available_with_next["display_status"], "available")
         self.assertEqual(available_with_next["timeline"]["text"], "Vacant: 2 Days | Reserved: 1 Night")
         self.assertEqual(available_with_next["timeline"]["next_reserved"]["booking_reference"], future_booking.reference)
+
+    def test_physical_room_detail_includes_current_booking(self):
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            core_physical_room_id=901,
+            room_number="303",
+            building="Main Building",
+            floor="3",
+            core_snapshot={"room_view": {"name": "City View"}, "room_area": 301, "area_unit": "sqft"},
+        )
+        payload = self.payload()
+        payload["rooms"][0]["quantity"] = 1
+        payload["rooms"][0]["adults"] = 2
+        payload["rooms"][0]["children"] = 1
+        booking, _ = create_booking(payload)
+        record_payment(booking, {"provider": "cash", "amount": booking.grand_total, "status": Payment.Status.PAID})
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        response = self.client.get(
+            f"/api/v1/admin/physical-rooms/{room.id}/",
+            {"date": str(self.check_in)},
+            **headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.data["data"]
+        self.assertEqual(data["room_number"], "303")
+        self.assertEqual(data["display_status"], "reserved")
+        self.assertEqual(data["room_type"]["name"], self.room_type.name)
+        self.assertEqual(data["current_booking"]["reference"], booking.reference)
+        self.assertEqual(data["current_booking"]["payment_status"], "paid")
+        self.assertEqual(data["current_booking"]["guest_count"], {"adults": 2, "children": 1, "total": 3})
+        self.assertEqual(data["current_booking"]["amount"]["grand_total"], booking.grand_total)
 
     def test_assignment_requires_confirmed_booking_and_vacant_room(self):
         room = PhysicalRoom.objects.create(

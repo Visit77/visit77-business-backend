@@ -50,7 +50,7 @@ from booking.serializers import (
     RoomTypeSerializer,
     WalkInBookingCreateSerializer,
 )
-from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_booking, create_walk_in_booking, deprovision_hotel, estimate_booking, record_payment, refund_payment, validate_assignment_preferences
+from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_booking, create_walk_in_booking, deprovision_hotel, estimate_booking, record_payment, refund_payment, refund_quote as calculate_refund_quote, validate_assignment_preferences
 from config.response_formatter import success
 
 
@@ -380,6 +380,7 @@ class RoomBoardView(APIView):
         ).prefetch_related(
             "booking_room__nights",
             "booking_room__booking__payments",
+            "booking_room__booking__guests",
         ).order_by("assigned_at", "id")
         assignment_by_room = {assignment.physical_room_id: assignment for assignment in active_assignments}
 
@@ -658,6 +659,9 @@ class RoomBoardView(APIView):
             payment_status = "paid"
         else:
             payment_status = "partially_paid"
+        guests = list(booking.guests.all())
+        primary_guest = next((guest for guest in guests if guest.is_primary), guests[0] if guests else None)
+        payments = list(booking.payments.all())
 
         return {
             "id": booking.id,
@@ -673,6 +677,29 @@ class RoomBoardView(APIView):
                 "name": booking.contact_name,
                 "phone": booking.contact_phone,
                 "email": booking.contact_email,
+            },
+            "primary_guest": {
+                "id": primary_guest.id,
+                "name": primary_guest.name,
+                "phone": primary_guest.phone,
+                "email": primary_guest.email,
+                "nationality": primary_guest.nationality,
+            } if primary_guest else None,
+            "guests": [
+                {
+                    "id": guest.id,
+                    "name": guest.name,
+                    "phone": guest.phone,
+                    "email": guest.email,
+                    "nationality": guest.nationality,
+                    "is_primary": guest.is_primary,
+                }
+                for guest in guests
+            ],
+            "guest_count": {
+                "adults": booking_room.adults,
+                "children": booking_room.children,
+                "total": booking_room.adults + booking_room.children,
             },
             "booking_room": {
                 "id": booking_room.id,
@@ -698,6 +725,8 @@ class RoomBoardView(APIView):
                     "is_included": meal_plan_link.is_included,
                     "is_default": meal_plan_link.is_default,
                 } if meal_plan else None,
+                "breakfast": booking_room.breakfast_snapshot,
+                "breakfast_total": booking_room.breakfast_total,
             },
             "amount": {
                 "currency": booking.currency,
@@ -709,6 +738,17 @@ class RoomBoardView(APIView):
                 "amount_paid": booking.amount_paid,
                 "amount_due": max(booking.grand_total - booking.amount_paid, 0),
             },
+            "payments": [
+                {
+                    "id": payment.id,
+                    "provider": payment.provider,
+                    "status": payment.status,
+                    "amount": payment.amount,
+                    "refunded_amount": payment.refunded_amount,
+                    "paid_at": payment.paid_at,
+                }
+                for payment in payments
+            ],
             "special_request": booking.special_request,
             "assignment_id": assignment.id,
             "assigned_at": assignment.assigned_at,
@@ -904,6 +944,52 @@ class PhysicalRoomViewSet(AdminModelViewSet):
     ]
     http_method_names = ["get", "patch", "head", "options"]
     business_lookup = "hotel__core_business_id"
+
+    def retrieve(self, request, *args, **kwargs):
+        room = self.get_object()
+        query = RoomBoardQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        target_date = query.validated_data.get("date") or timezone.localdate()
+        assignment = RoomAssignment.objects.filter(
+            physical_room=room,
+            released_at__isnull=True,
+            booking_room__booking__status__in=[Booking.Status.CONFIRMED, Booking.Status.CHECKED_IN],
+            booking_room__booking__check_in__lte=target_date,
+            booking_room__booking__check_out__gt=target_date,
+        ).select_related(
+            "booking_room__room_type",
+            "booking_room__rate_plan",
+            "booking_room__meal_plan_link",
+            "booking_room__meal_plan_link__meal_plan",
+            "booking_room__booking",
+        ).prefetch_related(
+            "booking_room__nights",
+            "booking_room__booking__payments",
+            "booking_room__booking__guests",
+        ).order_by("assigned_at", "id").first()
+
+        if room.status == PhysicalRoom.Status.OUT_OF_SERVICE:
+            display_status = "out_of_service"
+        elif room.status == PhysicalRoom.Status.CLEANING:
+            display_status = "cleaning"
+        elif assignment and assignment.booking_room.booking.status == Booking.Status.CHECKED_IN:
+            display_status = "occupied"
+        elif assignment:
+            display_status = "reserved"
+        elif room.status == PhysicalRoom.Status.OCCUPIED:
+            display_status = "occupied"
+        else:
+            display_status = "available"
+
+        board = RoomBoardView()
+        data = PhysicalRoomSerializer(room, context={"request": request}).data
+        data.update({
+            "date": target_date,
+            "display_status": display_status,
+            "room_type": board.serialize_room_board_room_type(room.room_type),
+            "current_booking": board.serialize_room_board_current_booking(assignment) if assignment else None,
+        })
+        return success(data)
 
 
 class RatePlanViewSet(AdminModelViewSet):
@@ -1249,6 +1335,10 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
             raise NotFound("Payment not found for this booking.")
         payment = refund_payment(payment, serializer.validated_data["amount"], serializer.validated_data.get("provider_reference", ""))
         return success(PaymentSerializer(payment).data)
+
+    @action(detail=True, methods=["get"], url_path="refund-quote")
+    def refund_quote(self, request, pk=None):
+        return success(calculate_refund_quote(self.get_object()))
 
     @action(detail=True, methods=["post"], url_path="assign-room")
     @transaction.atomic
