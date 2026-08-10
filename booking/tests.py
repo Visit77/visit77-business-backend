@@ -5,6 +5,7 @@ import uuid
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -90,7 +91,7 @@ class BookingServiceTests(TestCase):
         room_801.refresh_from_db()
         self.assertEqual(room_801.status, PhysicalRoom.Status.VACANT)
 
-    def test_walk_in_booking_assigns_selected_room_and_checks_in_immediately(self):
+    def test_walk_in_booking_stops_at_confirmed_until_admin_verifies_check_in(self):
         physical_room = PhysicalRoom.objects.create(
             hotel=self.hotel,
             room_type=self.room_type,
@@ -118,9 +119,10 @@ class BookingServiceTests(TestCase):
 
         booking.refresh_from_db()
         physical_room.refresh_from_db()
-        self.assertEqual(booking.status, Booking.Status.CHECKED_IN)
+        self.assertEqual(booking.status, Booking.Status.CONFIRMED)
+        self.assertEqual(booking.source, Booking.Source.WALK_IN)
         self.assertEqual(booking.amount_paid, booking.grand_total)
-        self.assertEqual(physical_room.status, PhysicalRoom.Status.OCCUPIED)
+        self.assertEqual(physical_room.status, PhysicalRoom.Status.VACANT)
         self.assertTrue(
             RoomAssignment.objects.filter(
                 booking_room__booking=booking,
@@ -416,6 +418,7 @@ class BookingServiceTests(TestCase):
                                 "currency": "MMK",
                                 "base_price": self.local_price,
                                 "usd_display_price": 40,
+                                "refundable": None,
                             },
                             {
                                 "core_rate_plan_id": "room-901-foreign",
@@ -494,6 +497,7 @@ class BookingServiceTests(TestCase):
         self.assertEqual(local_default.default_price, Decimal("90000"))
         self.assertEqual(local_default.base_price, Decimal("90000"))
         self.assertEqual(local_default.usd_display_price, Decimal("40"))
+        self.assertTrue(local_default.refundable)
         foreign_default = RatePlan.objects.get(core_rate_plan_id="room-901-foreign")
         self.assertEqual(foreign_default.base_price, Decimal("100000"))
         self.assertEqual(foreign_default.usd_display_price, Decimal("50"))
@@ -591,6 +595,112 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(data["summary_text"], "2 Rooms x 2 Nights x 1 Extra Bed")
         self.assertEqual(data["summary_items"][0]["label"], "2 x Double Room")
         self.assertEqual(data["summary_items"][1]["label"], "1 x Extra Bed(s)")
+
+    def test_phone_reservation_creates_confirmed_booking_without_checking_in(self):
+        room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="305")
+        response = self.client.post(
+            "/api/v1/admin/reservations/",
+            {
+                "core_business_id": self.hotel.core_business_id,
+                "source": "phone",
+                "source_name": "Hotel hotline",
+                "check_in": str(self.check_in),
+                "check_out": str(self.check_out),
+                "contact_name": "Phone Guest",
+                "contact_phone": "091111111",
+                "guest_market": "local",
+                "rooms": [{
+                    "core_room_type_id": self.room_type.core_room_type_id,
+                    "rate_plan_id": self.rate_plan.id,
+                    "quantity": 1,
+                    "adults": 2,
+                    "children": 0,
+                    "physical_room_ids": [room.id],
+                }],
+                "guests": [{"name": "Phone Guest", "is_primary": True}],
+                "deposit": {"provider": "cash", "amount": "50000.00"},
+            },
+            format="json",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        booking = Booking.objects.get(id=response.data["data"]["booking"]["id"])
+        room.refresh_from_db()
+        self.assertEqual(booking.source, Booking.Source.PHONE)
+        self.assertEqual(booking.status, Booking.Status.CONFIRMED)
+        self.assertEqual(booking.amount_paid, Decimal("50000"))
+        self.assertEqual(room.status, PhysicalRoom.Status.VACANT)
+        self.assertFalse(response.data["data"]["verification"]["can_check_in"])
+
+    def test_walk_in_uses_check_in_form_documents_and_verified_final_check_in(self):
+        room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="306")
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+            "HTTP_X_CORE_USER_ID": "501",
+        }
+        created = self.client.post(
+            "/api/v1/admin/walk-in-bookings/",
+            {
+                "physical_room_id": room.id,
+                "rate_plan_id": self.rate_plan.id,
+                "check_in": str(self.check_in),
+                "check_out": str(self.check_out),
+                "contact_name": "Walk In Guest",
+                "contact_phone": "092222222",
+                "guest_market": "local",
+                "adults": 1,
+                "children": 0,
+                "guests": [{
+                    "name": "Walk In Guest",
+                    "nrc_number": "12/ABC(N)123456",
+                    "identity_type": "nrc",
+                    "identity_number": "12/ABC(N)123456",
+                    "is_primary": True,
+                }],
+                "payment": {"provider": "cash", "status": "paid"},
+            },
+            format="json",
+            **headers,
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        booking_id = created.data["data"]["booking"]["id"]
+        booking = Booking.objects.get(id=booking_id)
+        guest = booking.guests.get(is_primary=True)
+        self.assertEqual(booking.status, Booking.Status.CONFIRMED)
+
+        for document_type in ["nrc_front", "nrc_back"]:
+            uploaded = self.client.post(
+                f"/api/v1/admin/bookings/{booking_id}/guest-identity-document/",
+                {
+                    "guest_id": guest.id,
+                    "document_type": document_type,
+                    "document_number": guest.nrc_number,
+                    "file": SimpleUploadedFile(f"{document_type}.jpg", b"test-image", content_type="image/jpeg"),
+                },
+                format="multipart",
+                **headers,
+            )
+            self.assertEqual(uploaded.status_code, 201, uploaded.data)
+
+        form = self.client.get(f"/api/v1/admin/bookings/{booking_id}/check-in-form/", **headers)
+        self.assertEqual(form.status_code, 200, form.data)
+        self.assertTrue(form.data["data"]["verification"]["can_check_in"])
+
+        checked_in = self.client.post(
+            f"/api/v1/admin/bookings/{booking_id}/check-in/",
+            {"verification_confirmed": True, "verification_note": "NRC checked."},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(checked_in.status_code, 200, checked_in.data)
+        booking.refresh_from_db()
+        room.refresh_from_db()
+        self.assertEqual(booking.status, Booking.Status.CHECKED_IN)
+        self.assertEqual(booking.checked_in_by_core_user_id, 501)
+        self.assertEqual(room.status, PhysicalRoom.Status.OCCUPIED)
+        self.assertFalse(booking.guests.filter(identity_documents__is_verified=False).exists())
 
     def test_public_booking_estimate_includes_paid_meal_plan_supplement(self):
         meal_plan = MealPlan.objects.create(

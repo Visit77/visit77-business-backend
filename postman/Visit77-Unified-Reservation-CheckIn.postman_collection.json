@@ -1,0 +1,116 @@
+{
+  "info": {
+    "_postman_id": "d6b5d91e-1ce8-46ba-9832-7a51c7c4e901",
+    "name": "Visit77 - Unified Reservation & Check-in",
+    "description": "Phone/PMS reservation, walk-in reservation, OTA/existing booking verification, identity document upload, and final check-in.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {"type": "noauth"},
+  "event": [{
+    "listen": "prerequest",
+    "script": {"exec": [
+      "pm.request.headers.upsert({key: 'X-Booking-Admin-Key', value: pm.environment.get('booking_admin_key')});",
+      "pm.request.headers.upsert({key: 'X-Booking-Business-ID', value: pm.environment.get('core_business_id')});",
+      "pm.request.headers.upsert({key: 'X-Core-User-ID', value: pm.environment.get('core_user_id') || '501'});"
+    ]}
+  }],
+  "item": [
+    {
+      "name": "01 - Create Phone Reservation",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Idempotency-Key", "value": "phone-{{$guid}}"}],
+        "body": {"mode": "raw", "raw": "{\n  \"core_business_id\": {{core_business_id}},\n  \"source\": \"phone\",\n  \"source_name\": \"Hotel hotline\",\n  \"check_in\": \"{{check_in}}\",\n  \"check_out\": \"{{check_out}}\",\n  \"contact_name\": \"Phone Guest\",\n  \"contact_phone\": \"091111111\",\n  \"guest_market\": \"local\",\n  \"rooms\": [{\n    \"core_room_type_id\": {{core_room_type_id}},\n    \"rate_plan_id\": {{rate_plan_id}},\n    \"quantity\": 1,\n    \"adults\": 2,\n    \"children\": 0,\n    \"physical_room_ids\": [{{physical_room_id}}]\n  }],\n  \"guests\": [{\"name\": \"Phone Guest\", \"is_primary\": true}],\n  \"deposit\": {\"provider\": \"cash\", \"amount\": \"50000.00\"}\n}", "options": {"raw": {"language": "json"}}},
+        "url": "{{booking_base_url}}/api/v1/admin/reservations/"
+      },
+      "event": [{"listen": "test", "script": {"exec": [
+        "pm.test('Reservation created', () => pm.response.to.have.status(201));",
+        "const d = pm.response.json().data; pm.environment.set('booking_id', d.booking.id); if (d.booking.guests.length) pm.environment.set('guest_id', d.booking.guests[0].id);"
+      ]}}]
+    },
+    {
+      "name": "02 - Create Walk-in Reservation",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Idempotency-Key", "value": "walkin-{{$guid}}"}],
+        "body": {"mode": "raw", "raw": "{\n  \"physical_room_id\": {{physical_room_id}},\n  \"rate_plan_id\": {{rate_plan_id}},\n  \"check_in\": \"{{check_in}}\",\n  \"check_out\": \"{{check_out}}\",\n  \"contact_name\": \"Walk-in Guest\",\n  \"contact_phone\": \"092222222\",\n  \"guest_market\": \"local\",\n  \"adults\": 1,\n  \"children\": 0,\n  \"guests\": [{\n    \"name\": \"Walk-in Guest\",\n    \"nrc_number\": \"12/ABC(N)123456\",\n    \"identity_type\": \"nrc\",\n    \"identity_number\": \"12/ABC(N)123456\",\n    \"is_primary\": true\n  }],\n  \"payment\": {\"provider\": \"cash\", \"status\": \"paid\"}\n}", "options": {"raw": {"language": "json"}}},
+        "url": "{{booking_base_url}}/api/v1/admin/walk-in-bookings/"
+      },
+      "event": [{"listen": "test", "script": {"exec": [
+        "pm.test('Walk-in stops at confirmed', () => { pm.response.to.have.status(201); pm.expect(pm.response.json().data.booking.status).to.eql('confirmed'); });",
+        "const d = pm.response.json().data; pm.environment.set('booking_id', d.booking.id); if (d.booking.guests.length) pm.environment.set('guest_id', d.booking.guests[0].id);"
+      ]}}]
+    },
+    {
+      "name": "03 - Get OTA/Phone/Walk-in Check-in Form",
+      "request": {"method": "GET", "url": "{{booking_base_url}}/api/v1/admin/bookings/{{booking_id}}/check-in-form/"}
+    },
+    {
+      "name": "04 - Update Check-in Form",
+      "request": {
+        "method": "PATCH",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {"mode": "raw", "raw": "{\n  \"contact_phone\": \"099999999\",\n  \"special_request\": \"Identity checked at front desk\",\n  \"guests\": [{\n    \"id\": {{guest_id}},\n    \"name\": \"Verified Guest\",\n    \"nationality\": \"Myanmar\",\n    \"nrc_number\": \"12/ABC(N)123456\",\n    \"identity_type\": \"nrc\",\n    \"identity_number\": \"12/ABC(N)123456\",\n    \"is_primary\": true\n  }]\n}", "options": {"raw": {"language": "json"}}},
+        "url": "{{booking_base_url}}/api/v1/admin/bookings/{{booking_id}}/check-in-form/"
+      }
+    },
+    {
+      "name": "05 - Upload NRC Front",
+      "request": {
+        "method": "POST",
+        "body": {"mode": "formdata", "formdata": [
+          {"key": "guest_id", "value": "{{guest_id}}", "type": "text"},
+          {"key": "document_type", "value": "nrc_front", "type": "text"},
+          {"key": "document_number", "value": "12/ABC(N)123456", "type": "text"},
+          {"key": "file", "type": "file", "src": []}
+        ]},
+        "url": "{{booking_base_url}}/api/v1/admin/bookings/{{booking_id}}/guest-identity-document/"
+      }
+    },
+    {
+      "name": "06 - Upload NRC Back",
+      "request": {
+        "method": "POST",
+        "body": {"mode": "formdata", "formdata": [
+          {"key": "guest_id", "value": "{{guest_id}}", "type": "text"},
+          {"key": "document_type", "value": "nrc_back", "type": "text"},
+          {"key": "document_number", "value": "12/ABC(N)123456", "type": "text"},
+          {"key": "file", "type": "file", "src": []}
+        ]},
+        "url": "{{booking_base_url}}/api/v1/admin/bookings/{{booking_id}}/guest-identity-document/"
+      }
+    },
+    {
+      "name": "07 - Upload Passport (Foreign Guest)",
+      "request": {
+        "method": "POST",
+        "body": {"mode": "formdata", "formdata": [
+          {"key": "guest_id", "value": "{{guest_id}}", "type": "text"},
+          {"key": "document_type", "value": "passport", "type": "text"},
+          {"key": "document_number", "value": "P12345678", "type": "text"},
+          {"key": "file", "type": "file", "src": []}
+        ]},
+        "url": "{{booking_base_url}}/api/v1/admin/bookings/{{booking_id}}/guest-identity-document/"
+      }
+    },
+    {
+      "name": "08 - Verify Readiness",
+      "request": {"method": "GET", "url": "{{booking_base_url}}/api/v1/admin/bookings/{{booking_id}}/check-in-form/"},
+      "event": [{"listen": "test", "script": {"exec": ["pm.test('Ready to check in', () => pm.expect(pm.response.json().data.verification.can_check_in).to.eql(true));"]}}]
+    },
+    {
+      "name": "09 - Final Verified Check-in",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {"mode": "raw", "raw": "{\n  \"verification_confirmed\": true,\n  \"verification_note\": \"Guest identity and room assignment verified.\"\n}", "options": {"raw": {"language": "json"}}},
+        "url": "{{booking_base_url}}/api/v1/admin/bookings/{{booking_id}}/check-in/"
+      },
+      "event": [{"listen": "test", "script": {"exec": ["pm.test('Booking checked in', () => pm.expect(pm.response.json().data.status).to.eql('checked_in'));"]}}]
+    },
+    {
+      "name": "10 - Physical Room with Current Booking",
+      "request": {"method": "GET", "url": "{{booking_base_url}}/api/v1/admin/physical-rooms/{{physical_room_id}}/?date={{check_in}}"}
+    }
+  ]
+}

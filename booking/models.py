@@ -425,6 +425,13 @@ class AddOn(models.Model):
 
 
 class Booking(models.Model):
+    class Source(models.TextChoices):
+        OTA = "ota", "OTA"
+        DIRECT = "direct", "Direct Booking"
+        PHONE = "phone", "Phone / On-call"
+        WALK_IN = "walk_in", "Walk-in"
+        PMS = "pms", "PMS"
+
     class Status(models.TextChoices):
         PENDING_PAYMENT = "pending_payment", "Pending payment"
         CONFIRMED = "confirmed", "Confirmed"
@@ -440,6 +447,8 @@ class Booking(models.Model):
     core_customer_user_id = models.PositiveBigIntegerField(null=True, blank=True)
     idempotency_key = models.CharField(max_length=128, null=True, blank=True)
     status = models.CharField(max_length=32, choices=Status.choices, default=Status.PENDING_PAYMENT)
+    source = models.CharField(max_length=24, choices=Source.choices, default=Source.DIRECT)
+    source_name = models.CharField(max_length=120, blank=True)
     check_in = models.DateField()
     check_out = models.DateField()
     contact_name = models.CharField(max_length=255)
@@ -456,6 +465,9 @@ class Booking(models.Model):
     cancellation_policy_snapshot = models.JSONField(default=dict, blank=True)
     special_request = models.TextField(blank=True)
     hold_expires_at = models.DateTimeField(null=True, blank=True)
+    checked_in_at = models.DateTimeField(null=True, blank=True)
+    checked_in_by_core_user_id = models.PositiveBigIntegerField(null=True, blank=True)
+    check_in_verification_note = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -515,6 +527,30 @@ class Guest(models.Model):
     identity_type = models.CharField(max_length=50, blank=True)
     identity_number = models.CharField(max_length=100, blank=True)
     is_primary = models.BooleanField(default=False)
+
+
+class GuestIdentityDocument(models.Model):
+    class DocumentType(models.TextChoices):
+        NRC_FRONT = "nrc_front", "NRC Front"
+        NRC_BACK = "nrc_back", "NRC Back"
+        PASSPORT = "passport", "Passport"
+        VISA = "visa", "Visa"
+        OTHER = "other", "Other"
+
+    guest = models.ForeignKey(Guest, on_delete=models.CASCADE, related_name="identity_documents")
+    document_type = models.CharField(max_length=24, choices=DocumentType.choices)
+    document_number = models.CharField(max_length=100, blank=True)
+    file = models.FileField(upload_to="booking/guest-identities/%Y/%m/")
+    is_verified = models.BooleanField(default=False)
+    verified_at = models.DateTimeField(null=True, blank=True)
+    verified_by_core_user_id = models.PositiveBigIntegerField(null=True, blank=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["document_type", "id"]
+        constraints = [
+            models.UniqueConstraint(fields=["guest", "document_type"], name="uniq_guest_identity_document_type"),
+        ]
 
 
 class BookingAddOn(models.Model):

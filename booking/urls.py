@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from booking.views import (
     AddOnTemplateView,
+    AdminReservationView,
     AddOnTemplateRequestViewSet,
     AddOnViewSet,
     BookingViewSet,
@@ -55,6 +56,7 @@ urlpatterns = [
     path("admin/add-on-templates/", AddOnTemplateView.as_view()),
     path("admin/room-board/", RoomBoardView.as_view()),
     path("admin/walk-in-bookings/", WalkInBookingView.as_view()),
+    path("admin/reservations/", AdminReservationView.as_view()),
     path("public/search/availability/", PublicGlobalAvailabilityView.as_view()),
     path("public/hotels/<int:core_business_id>/availability/", PublicAvailabilityView.as_view()),
     path("public/hotels/<int:core_business_id>/add-ons/", PublicHotelAddOnsView.as_view()),

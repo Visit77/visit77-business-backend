@@ -52,6 +52,8 @@ tmp/
 output/
 *.log
 postman/*
+!postman/Visit77-Unified-Reservation-CheckIn.postman_collection.json
+!postman/Visit77-Unified-Reservation-CheckIn.postman_environment.json
 *.bak.*
 *.bak
 config/settings/*.bak.*

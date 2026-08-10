@@ -248,6 +248,12 @@ def sync_business_from_core(core_business_id: int, client=None):
                 "extra_bed_usd_price",
                 default=extra_bed_price if rate_currency == "USD" else None,
             )
+            cancellation_policy = rate_payload.get("cancellation_policy") or {}
+            refundable = rate_payload.get("refundable")
+            if cancellation_policy:
+                refundable = cancellation_policy.get("type") != "non_refundable"
+            elif refundable is None:
+                refundable = True
             RatePlan.objects.update_or_create(
                 core_rate_plan_id=external_id,
                 defaults={
@@ -265,8 +271,8 @@ def sync_business_from_core(core_business_id: int, client=None):
                     "default_price": base_price,
                     "extra_bed_price": extra_bed_base_price,
                     "breakfast_included": rate_payload.get("breakfast_included", False),
-                    "refundable": rate_payload.get("refundable", True),
-                    "cancellation_policy": rate_payload.get("cancellation_policy") or {},
+                    "refundable": refundable,
+                    "cancellation_policy": cancellation_policy,
                     "is_active": rate_payload.get("is_active", True),
                 },
             )

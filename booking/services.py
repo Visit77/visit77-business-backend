@@ -972,6 +972,8 @@ def create_booking(data, idempotency_key=None):
         hotel=hotel,
         core_customer_user_id=data.get("core_customer_user_id"),
         idempotency_key=idempotency_key,
+        source=data.get("source", Booking.Source.DIRECT),
+        source_name=data.get("source_name", ""),
         check_in=check_in,
         check_out=check_out,
         contact_name=data["contact_name"],
@@ -1257,6 +1259,8 @@ def create_walk_in_booking(data, idempotency_key=None, core_business_id=None):
         {
             "core_business_id": physical_room.hotel.core_business_id,
             "core_customer_user_id": data.get("core_customer_user_id"),
+            "source": Booking.Source.WALK_IN,
+            "source_name": "Walk-in",
             "check_in": check_in,
             "check_out": check_out,
             "contact_name": data["contact_name"],
@@ -1330,11 +1334,55 @@ def create_walk_in_booking(data, idempotency_key=None, core_business_id=None):
     booking_room = booking.rooms.select_related("room_type").get()
     validate_assignment_preferences(booking_room, physical_room)
     RoomAssignment.objects.create(booking_room=booking_room, physical_room=physical_room)
-    physical_room.status = PhysicalRoom.Status.OCCUPIED
-    physical_room.save(update_fields=["status"])
-    booking.status = Booking.Status.CHECKED_IN
-    booking.hold_expires_at = None
-    booking.save(update_fields=["status", "hold_expires_at", "updated_at"])
+    # Walk-ins now use the same admin verification form and final check-in action
+    # as OTA/direct/phone reservations. Assignment reserves the room; it remains
+    # VACANT until the verified check-in transition.
+    return booking
+
+
+@transaction.atomic
+def create_admin_reservation(data, idempotency_key=None, core_business_id=None):
+    if core_business_id and data["core_business_id"] != core_business_id:
+        raise ValidationError({"core_business_id": "Does not match X-Booking-Business-ID."})
+    booking_data = dict(data)
+    payment_data = booking_data.pop("deposit", None)
+    requested_rooms = booking_data["rooms"]
+    physical_room_ids_by_index = [item.pop("physical_room_ids", []) for item in requested_rooms]
+    booking, _created = create_booking(booking_data, idempotency_key=idempotency_key)
+    booking = Booking.objects.select_for_update().prefetch_related("rooms").get(pk=booking.pk)
+
+    if payment_data and payment_data.get("amount", 0) > 0:
+        record_payment(booking, {
+            "provider": payment_data.get("provider", Payment.Provider.CASH),
+            "provider_reference": payment_data.get("provider_reference", ""),
+            "status": Payment.Status.PAID,
+            "amount": payment_data["amount"],
+            "metadata": {**(payment_data.get("metadata") or {}), "source": "admin_reservation"},
+        }, auto_assign=False)
+        booking.refresh_from_db()
+    elif booking.status == Booking.Status.PENDING_PAYMENT:
+        _move_inventory(booking, "held_rooms", "reserved_rooms")
+        booking.status = Booking.Status.CONFIRMED
+        booking.hold_expires_at = None
+        booking.save(update_fields=["status", "hold_expires_at", "updated_at"])
+
+    for booking_room, physical_room_ids in zip(booking.rooms.order_by("id"), physical_room_ids_by_index):
+        if len(physical_room_ids) > booking_room.quantity:
+            raise ValidationError({"rooms": "Assigned physical rooms cannot exceed room quantity."})
+        rooms = list(PhysicalRoom.objects.select_for_update().filter(
+            id__in=physical_room_ids,
+            hotel=booking.hotel,
+            room_type=booking_room.room_type,
+            is_active=True,
+            status=PhysicalRoom.Status.VACANT,
+        ))
+        if len(rooms) != len(set(physical_room_ids)):
+            raise ValidationError({"rooms": "Every assigned physical room must be active, vacant, and match its room type."})
+        for room in rooms:
+            if _has_overlapping_room_assignment(room, booking.check_in, booking.check_out, exclude_booking=booking):
+                raise ValidationError({"rooms": f"Room {room.room_number} has an overlapping assignment."})
+            validate_assignment_preferences(booking_room, room)
+            RoomAssignment.objects.create(booking_room=booking_room, physical_room=room)
     return booking
 
 

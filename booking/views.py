@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from django.conf import settings
+from django.http import FileResponse
 from django.db import transaction
 from django.db.models import Max, Prefetch, Q
 from django.utils import timezone
@@ -14,7 +15,7 @@ from rest_framework.views import APIView
 
 from booking.authentication import CoreJWTAuthentication
 from booking.integrations.core import CoreClient, sync_business_from_core
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Hotel, MealPlan, Payment, PhysicalRoom, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, MealPlan, Payment, PhysicalRoom, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
 from booking.serializers import (
     AddOnSerializer,
@@ -23,9 +24,12 @@ from booking.serializers import (
     AddOnTemplateRequestSerializer,
     AddOnTemplateSerializer,
     AvailabilitySearchQuerySerializer,
+    AdminReservationCreateSerializer,
     BookingCreateSerializer,
     BookingEstimateSerializer,
     BookingSerializer,
+    CheckInConfirmSerializer,
+    CheckInFormUpdateSerializer,
     CorePaymentSuccessSerializer,
     CoreEventSerializer,
     DailyInventorySerializer,
@@ -33,6 +37,8 @@ from booking.serializers import (
     DailyRateSerializer,
     DailyRateBulkUpsertSerializer,
     HotelSerializer,
+    GuestIdentityDocumentSerializer,
+    GuestIdentityDocumentUploadSerializer,
     MealPlanSerializer,
     PaymentCreateSerializer,
     PaymentSerializer,
@@ -50,7 +56,7 @@ from booking.serializers import (
     RoomTypeSerializer,
     WalkInBookingCreateSerializer,
 )
-from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_booking, create_walk_in_booking, deprovision_hotel, estimate_booking, record_payment, refund_payment, refund_quote as calculate_refund_quote, validate_assignment_preferences
+from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_walk_in_booking, deprovision_hotel, estimate_booking, record_payment, refund_payment, refund_quote as calculate_refund_quote, validate_assignment_preferences
 from config.response_formatter import success
 
 
@@ -60,6 +66,66 @@ def _pluralize_day_label(days):
 
 def _pluralize_night_label(nights):
     return "Night" if nights == 1 else "Nights"
+
+
+def _check_in_readiness(booking):
+    booking = Booking.objects.prefetch_related(
+        "rooms__assignments__physical_room",
+        "guests__identity_documents",
+        "payments",
+    ).get(pk=booking.pk)
+    missing = []
+    guests = list(booking.guests.all())
+    primary_guest = next((guest for guest in guests if guest.is_primary), None)
+    if not primary_guest:
+        missing.append("primary_guest")
+    elif booking.guest_market == RatePlan.GuestMarket.LOCAL:
+        if not (primary_guest.nrc_number or primary_guest.identity_number):
+            missing.append(f"guests.{primary_guest.id}.nrc_number")
+        document_types = {doc.document_type for doc in primary_guest.identity_documents.all()}
+        if GuestIdentityDocument.DocumentType.NRC_FRONT not in document_types:
+            missing.append(f"guests.{primary_guest.id}.nrc_front")
+        if GuestIdentityDocument.DocumentType.NRC_BACK not in document_types:
+            missing.append(f"guests.{primary_guest.id}.nrc_back")
+    elif primary_guest:
+        if not (primary_guest.passport_number or primary_guest.identity_number):
+            missing.append(f"guests.{primary_guest.id}.passport_number")
+        document_types = {doc.document_type for doc in primary_guest.identity_documents.all()}
+        if GuestIdentityDocument.DocumentType.PASSPORT not in document_types:
+            missing.append(f"guests.{primary_guest.id}.passport")
+
+    unassigned = []
+    non_vacant = []
+    for room in booking.rooms.all():
+        assignments = [item for item in room.assignments.all() if item.released_at is None]
+        if len(assignments) < room.quantity:
+            unassigned.append({"booking_room_id": room.id, "quantity_unassigned": room.quantity - len(assignments)})
+        non_vacant.extend(
+            assignment.physical_room.room_number
+            for assignment in assignments
+            if assignment.physical_room.status != PhysicalRoom.Status.VACANT
+        )
+    if unassigned:
+        missing.append("room_assignments")
+    if non_vacant:
+        missing.append("assigned_rooms_not_vacant")
+    if booking.amount_paid <= 0:
+        payment_status = "unpaid"
+    elif booking.amount_paid >= booking.grand_total:
+        payment_status = "paid"
+    else:
+        payment_status = "partially_paid"
+    return {
+        "guest_information_complete": primary_guest is not None,
+        "identity_documents_complete": not any("nrc" in item or "passport" in item for item in missing),
+        "all_rooms_assigned": not unassigned,
+        "assigned_rooms_vacant": not non_vacant,
+        "payment_status": payment_status,
+        "can_check_in": not missing and booking.status == Booking.Status.CONFIRMED,
+        "missing_fields": missing,
+        "unassigned_booking_rooms": unassigned,
+        "non_vacant_room_numbers": non_vacant,
+    }
 
 
 class PublicAvailabilityView(APIView):
@@ -500,7 +566,7 @@ class RoomBoardView(APIView):
                 "current_booking": self.serialize_room_board_current_booking(assignment) if assignment else None,
             }
             floor_summary["rooms"].append(room_data)
-            # room_rows.append(room_data)
+            room_rows.append(room_data)
 
         room_type_ids = {room.room_type_id for room in rooms}
         confirmed_rooms = BookingRoom.objects.filter(
@@ -540,7 +606,7 @@ class RoomBoardView(APIView):
                 "unassigned_bookings": sum(item["quantity_unassigned"] for item in unassigned),
             },
             "floors": list(floors.values()),
-            # "rooms": room_rows,
+            "rooms": room_rows,
             "unassigned": unassigned,
         })
 
@@ -1308,7 +1374,93 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
 
     def get_queryset(self):
         return self.scope_queryset(
-            Booking.objects.select_related("hotel").prefetch_related("rooms__nights", "rooms__assignments", "guests", "add_ons", "payments")
+            Booking.objects.select_related("hotel").prefetch_related(
+                "rooms__nights", "rooms__assignments", "guests__identity_documents", "add_ons", "payments"
+            )
+        )
+
+    @action(detail=True, methods=["get", "patch"], url_path="check-in-form")
+    @transaction.atomic
+    def check_in_form(self, request, pk=None):
+        booking = Booking.objects.select_for_update().get(pk=self.get_object().pk)
+        if booking.status not in [Booking.Status.CONFIRMED, Booking.Status.PENDING_PAYMENT]:
+            raise ValidationError("Only pending or confirmed reservations can use the check-in form.")
+        if request.method == "PATCH":
+            serializer = CheckInFormUpdateSerializer(data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            data = serializer.validated_data
+            for field in ["contact_name", "contact_phone", "contact_email", "special_request"]:
+                if field in data:
+                    setattr(booking, field, data[field])
+            booking.save(update_fields=[
+                field for field in ["contact_name", "contact_phone", "contact_email", "special_request"]
+                if field in data
+            ] + ["updated_at"])
+            for guest_data in data.get("guests", []):
+                guest_id = guest_data.pop("id", None)
+                if guest_data.get("is_primary"):
+                    booking.guests.update(is_primary=False)
+                if guest_id:
+                    guest = booking.guests.filter(id=guest_id).first()
+                    if not guest:
+                        raise ValidationError({"guests": f"Guest {guest_id} does not belong to this booking."})
+                    for field, value in guest_data.items():
+                        setattr(guest, field, value)
+                    guest.save()
+                else:
+                    Guest.objects.create(booking=booking, **guest_data)
+        booking = self.get_queryset().prefetch_related("guests__identity_documents").get(pk=booking.pk)
+        return success({
+            "booking": BookingSerializer(booking, context={"request": request}).data,
+            "verification": _check_in_readiness(booking),
+        })
+
+    @action(detail=True, methods=["post"], url_path="guest-identity-document")
+    @transaction.atomic
+    def guest_identity_document(self, request, pk=None):
+        booking = self.get_object()
+        if booking.status not in [Booking.Status.PENDING_PAYMENT, Booking.Status.CONFIRMED]:
+            raise ValidationError("Identity documents can only be updated before check-in.")
+        serializer = GuestIdentityDocumentUploadSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        guest = booking.guests.filter(id=data["guest_id"]).first()
+        if not guest:
+            raise ValidationError({"guest_id": "Guest does not belong to this booking."})
+        document, _created = GuestIdentityDocument.objects.update_or_create(
+            guest=guest,
+            document_type=data["document_type"],
+            defaults={
+                "document_number": data.get("document_number", ""),
+                "file": data["file"],
+                "is_verified": False,
+                "verified_at": None,
+                "verified_by_core_user_id": None,
+            },
+        )
+        return success(
+            GuestIdentityDocumentSerializer(document, context={"request": request}).data,
+            status_code=status.HTTP_201_CREATED,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path=r"identity-documents/(?P<document_id>[^/.]+)/download",
+    )
+    def download_identity_document(self, request, pk=None, document_id=None):
+        booking = self.get_object()
+        document = GuestIdentityDocument.objects.filter(
+            id=document_id,
+            guest__booking=booking,
+        ).first()
+        if not document or not document.file:
+            raise NotFound("Identity document not found.")
+        return FileResponse(
+            document.file.open("rb"),
+            as_attachment=False,
+            filename=document.file.name.rsplit("/", 1)[-1],
         )
 
     @action(detail=True, methods=["post"])
@@ -1444,9 +1596,16 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
     @action(detail=True, methods=["post"], url_path="check-in")
     @transaction.atomic
     def check_in(self, request, pk=None):
+        serializer = CheckInConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        if not serializer.validated_data["verification_confirmed"]:
+            raise ValidationError({"verification_confirmed": "Hotel admin verification is required."})
         booking = Booking.objects.select_for_update().get(pk=self.get_object().pk)
         if booking.status != Booking.Status.CONFIRMED:
             raise ValidationError("Only a confirmed booking can check in.")
+        readiness = _check_in_readiness(booking)
+        if not readiness["can_check_in"]:
+            raise ValidationError({"check_in": readiness})
         assignments = RoomAssignment.objects.filter(booking_room__booking=booking, released_at__isnull=True).select_related("physical_room")
         if assignments.count() < sum(booking.rooms.values_list("quantity", flat=True)):
             raise ValidationError("Assign all physical rooms before check-in.")
@@ -1454,7 +1613,18 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
             raise ValidationError("All assigned physical rooms must be vacant before check-in.")
         PhysicalRoom.objects.filter(assignments__in=assignments).update(status=PhysicalRoom.Status.OCCUPIED)
         booking.status = Booking.Status.CHECKED_IN
-        booking.save(update_fields=["status", "updated_at"])
+        booking.checked_in_at = timezone.now()
+        booking.checked_in_by_core_user_id = _core_user_id(request)
+        booking.check_in_verification_note = serializer.validated_data.get("verification_note", "")
+        GuestIdentityDocument.objects.filter(guest__booking=booking).update(
+            is_verified=True,
+            verified_at=booking.checked_in_at,
+            verified_by_core_user_id=booking.checked_in_by_core_user_id,
+        )
+        booking.save(update_fields=[
+            "status", "checked_in_at", "checked_in_by_core_user_id",
+            "check_in_verification_note", "updated_at",
+        ])
         return success(BookingSerializer(booking).data)
 
 
@@ -1485,7 +1655,40 @@ class WalkInBookingView(APIView):
             core_business_id=getattr(request, "booking_core_business_id", None),
         )
         return success(
-            BookingSerializer(booking).data,
+            {
+                "booking": BookingSerializer(booking, context={"request": request}).data,
+                "verification": _check_in_readiness(booking),
+                "next_action": {
+                    "type": "complete_check_in",
+                    "url": f"/api/v1/admin/bookings/{booking.id}/check-in-form/",
+                },
+            },
+            status_code=status.HTTP_201_CREATED,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class AdminReservationView(APIView):
+    permission_classes = [HasBookingAdminKey]
+    business_scoped = True
+
+    def post(self, request):
+        serializer = AdminReservationCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        booking = create_admin_reservation(
+            serializer.validated_data,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            core_business_id=getattr(request, "booking_core_business_id", None),
+        )
+        return success(
+            {
+                "booking": BookingSerializer(booking, context={"request": request}).data,
+                "verification": _check_in_readiness(booking),
+                "next_action": {
+                    "type": "complete_check_in",
+                    "url": f"/api/v1/admin/bookings/{booking.id}/check-in-form/",
+                },
+            },
             status_code=status.HTTP_201_CREATED,
             status=status.HTTP_201_CREATED,
         )

@@ -15,6 +15,7 @@ from booking.models import (
     DailyInventory,
     DailyRate,
     Guest,
+    GuestIdentityDocument,
     Hotel,
     MealPlan,
     Payment,
@@ -477,6 +478,25 @@ class AddOnTemplateRejectionSerializer(serializers.Serializer):
 
 
 class GuestSerializer(serializers.ModelSerializer):
+    documents = serializers.SerializerMethodField()
+
+    def get_documents(self, obj):
+        request = self.context.get("request")
+        return [
+            {
+                "id": document.id,
+                "document_type": document.document_type,
+                "document_number": document.document_number,
+                "file_url": request.build_absolute_uri(
+                    f"/api/v1/admin/bookings/{obj.booking_id}/identity-documents/{document.id}/download/"
+                ) if request else f"/api/v1/admin/bookings/{obj.booking_id}/identity-documents/{document.id}/download/",
+                "is_verified": document.is_verified,
+                "verified_at": document.verified_at,
+                "uploaded_at": document.uploaded_at,
+            }
+            for document in obj.identity_documents.all()
+        ]
+
     class Meta:
         model = Guest
         exclude = ["booking"]
@@ -567,6 +587,72 @@ class RequestedGuestSerializer(serializers.Serializer):
     is_primary = serializers.BooleanField(default=False)
 
 
+class GuestIdentityDocumentSerializer(serializers.ModelSerializer):
+    file_url = serializers.SerializerMethodField()
+
+    def get_file_url(self, obj):
+        path = f"/api/v1/admin/bookings/{obj.guest.booking_id}/identity-documents/{obj.id}/download/"
+        request = self.context.get("request")
+        return request.build_absolute_uri(path) if request else path
+
+    class Meta:
+        model = GuestIdentityDocument
+        fields = [
+            "id", "guest", "document_type", "document_number", "file", "file_url",
+            "is_verified", "verified_at", "verified_by_core_user_id", "uploaded_at",
+        ]
+        read_only_fields = ["id", "guest", "file_url", "is_verified", "verified_at", "verified_by_core_user_id", "uploaded_at"]
+        extra_kwargs = {"file": {"write_only": True}}
+
+
+class GuestIdentityDocumentUploadSerializer(serializers.Serializer):
+    guest_id = serializers.IntegerField(min_value=1)
+    document_type = serializers.ChoiceField(choices=GuestIdentityDocument.DocumentType.choices)
+    document_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    file = serializers.FileField()
+
+
+class AdminReservationRoomSerializer(RequestedRoomSerializer):
+    physical_room_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+        default=list,
+    )
+
+
+class AdminDepositSerializer(serializers.Serializer):
+    provider = serializers.ChoiceField(choices=Payment.Provider.choices, default=Payment.Provider.CASH)
+    provider_reference = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.01"))
+    metadata = serializers.JSONField(required=False, default=dict)
+
+
+class CheckInGuestUpdateSerializer(serializers.Serializer):
+    id = serializers.IntegerField(min_value=1, required=False)
+    name = serializers.CharField(max_length=255)
+    phone = serializers.CharField(max_length=64, required=False, allow_blank=True)
+    email = serializers.EmailField(required=False, allow_blank=True)
+    nationality = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    nrc_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    passport_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    identity_type = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    identity_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    is_primary = serializers.BooleanField(required=False, default=False)
+
+
+class CheckInFormUpdateSerializer(serializers.Serializer):
+    contact_name = serializers.CharField(max_length=255, required=False)
+    contact_phone = serializers.CharField(max_length=64, required=False)
+    contact_email = serializers.EmailField(required=False, allow_blank=True)
+    special_request = serializers.CharField(required=False, allow_blank=True)
+    guests = CheckInGuestUpdateSerializer(many=True, required=False)
+
+
+class CheckInConfirmSerializer(serializers.Serializer):
+    verification_confirmed = serializers.BooleanField()
+    verification_note = serializers.CharField(required=False, allow_blank=True)
+
+
 class RequestedAddOnSerializer(serializers.Serializer):
     add_on_id = serializers.IntegerField(min_value=1)
     quantity = serializers.IntegerField(min_value=1, max_value=100, default=1)
@@ -593,6 +679,16 @@ class BookingCreateSerializer(serializers.Serializer):
         if (attrs["check_out"] - attrs["check_in"]).days > 90:
             raise serializers.ValidationError({"check_out": "A stay cannot exceed 90 nights."})
         return attrs
+
+
+class AdminReservationCreateSerializer(BookingCreateSerializer):
+    source = serializers.ChoiceField(
+        choices=[Booking.Source.PHONE, Booking.Source.PMS, Booking.Source.WALK_IN],
+        default=Booking.Source.PHONE,
+    )
+    source_name = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    rooms = AdminReservationRoomSerializer(many=True, allow_empty=False)
+    deposit = AdminDepositSerializer(required=False, allow_null=True)
 
 
 class BookingEstimateSerializer(serializers.Serializer):
@@ -646,27 +742,6 @@ class WalkInBookingCreateSerializer(serializers.Serializer):
             raise serializers.ValidationError({"check_out": "Must be after check_in."})
         if (attrs["check_out"] - attrs["check_in"]).days > 90:
             raise serializers.ValidationError({"check_out": "A stay cannot exceed 90 nights."})
-        guests = attrs.get("guests") or []
-        guest_market = attrs.get("guest_market", RatePlan.GuestMarket.LOCAL)
-        has_nrc_guest = any((guest.get("nrc_number") or "").strip() for guest in guests)
-        has_identity_guest = any(
-            (guest.get("identity_type") or "").strip() and (guest.get("identity_number") or "").strip()
-            for guest in guests
-        )
-        if guest_market == RatePlan.GuestMarket.LOCAL and not has_nrc_guest:
-            raise serializers.ValidationError({"guests": [{"nrc_number": "At least one guest NRC number is required for local walk-in bookings."}]})
-        if guest_market == RatePlan.GuestMarket.FOREIGN:
-            if not has_identity_guest:
-                raise serializers.ValidationError(
-                    {
-                        "guests": [
-                            {
-                                "identity_type": "At least one guest identity type is required for foreigner walk-in bookings.",
-                                "identity_number": "At least one guest identity number is required for foreigner walk-in bookings.",
-                            }
-                        ]
-                    }
-                )
         return attrs
 
 
