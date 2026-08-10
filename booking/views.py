@@ -640,13 +640,14 @@ class RoomBoardView(APIView):
             base.update({
                 "text": f"Reserved: {reserved_nights} {_pluralize_night_label(reserved_nights)}",
                 "reserved_nights": reserved_nights,
-                "next_reserved": {
-                    "booking_id": booking.id,
-                    "booking_reference": booking.reference,
-                    "check_in": booking.check_in,
-                    "check_out": booking.check_out,
-                    "nights": reserved_nights,
-                },
+                "next_reserved": "",
+                # "next_reserved": {
+                #     "booking_id": booking.id,
+                #     "booking_reference": booking.reference,
+                #     "check_in": booking.check_in,
+                #     "check_out": booking.check_out,
+                #     "nights": reserved_nights,
+                # },
             })
             return base
 
@@ -675,13 +676,14 @@ class RoomBoardView(APIView):
                     "text": f"Vacant: {vacant_days} {_pluralize_day_label(vacant_days)} | Reserved: {reserved_nights} {_pluralize_night_label(reserved_nights)}",
                     "vacant_days": vacant_days,
                     "reserved_nights": reserved_nights,
-                    "next_reserved": {
-                        "booking_id": next_booking.id,
-                        "booking_reference": next_booking.reference,
-                        "check_in": next_booking.check_in,
-                        "check_out": next_booking.check_out,
-                        "nights": reserved_nights,
-                    },
+                    "next_reserved": ""
+                    # "next_reserved": {
+                    #     "booking_id": next_booking.id,
+                    #     "booking_reference": next_booking.reference,
+                    #     "check_in": next_booking.check_in,
+                    #     "check_out": next_booking.check_out,
+                    #     "nights": reserved_nights,
+                    # },
                 })
             else:
                 base["text"] = "Vacant"
