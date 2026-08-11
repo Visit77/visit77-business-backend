@@ -53,7 +53,20 @@ def inventory_window_dates(start_date=None, days=None):
 
 
 def active_sellable_room_count(room_type):
-    return room_type.physical_rooms.filter(is_active=True).exclude(status=PhysicalRoom.Status.OUT_OF_SERVICE).count()
+    return room_type.physical_rooms.filter(is_active=True).exclude(
+        status__in=[PhysicalRoom.Status.OUT_OF_SERVICE, PhysicalRoom.Status.BLOCKED],
+    ).count()
+
+
+def sellable_room_count_for_date(room_type, stay_date, base_total=None):
+    base_total = active_sellable_room_count(room_type) if base_total is None else base_total
+    scheduled_blocks = room_type.physical_rooms.filter(
+        is_active=True,
+        block_after_checkout=True,
+        blocked_from__isnull=False,
+        blocked_from__lte=stay_date,
+    ).exclude(status__in=[PhysicalRoom.Status.OUT_OF_SERVICE, PhysicalRoom.Status.BLOCKED]).count()
+    return max(base_total - scheduled_blocks, 0)
 
 
 @transaction.atomic
@@ -73,14 +86,19 @@ def ensure_daily_inventory_for_room_type(room_type, start_date=None, days=None, 
     }
     missing_dates = [day for day in dates if day not in existing]
     DailyInventory.objects.bulk_create([
-        DailyInventory(room_type=room_type, stay_date=day, total_rooms=total_rooms)
+        DailyInventory(
+            room_type=room_type,
+            stay_date=day,
+            total_rooms=sellable_room_count_for_date(room_type, day, total_rooms),
+        )
         for day in missing_dates
     ], ignore_conflicts=True)
 
     updated = 0
     for row in existing.values():
         committed_rooms = row.held_rooms + row.reserved_rooms
-        safe_total_rooms = max(total_rooms, committed_rooms)
+        date_total_rooms = sellable_room_count_for_date(room_type, row.stay_date, total_rooms)
+        safe_total_rooms = max(date_total_rooms, committed_rooms)
         if row.total_rooms != safe_total_rooms:
             row.total_rooms = safe_total_rooms
             row.save(update_fields=["total_rooms"])
@@ -457,7 +475,9 @@ def ensure_preference_capacity(room_type, dates, constraints, quantity):
         return
     matching_room_ids = [
         room.id
-        for room in PhysicalRoom.objects.filter(room_type=room_type, is_active=True).exclude(status=PhysicalRoom.Status.OUT_OF_SERVICE)
+        for room in PhysicalRoom.objects.filter(room_type=room_type, is_active=True).exclude(
+            status__in=[PhysicalRoom.Status.OUT_OF_SERVICE, PhysicalRoom.Status.BLOCKED],
+        )
         if physical_room_matches_constraints(room, constraints)
     ]
     if len(matching_room_ids) < quantity:

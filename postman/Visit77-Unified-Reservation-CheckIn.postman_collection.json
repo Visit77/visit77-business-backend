@@ -116,6 +116,24 @@
     {
       "name": "11 - Physical Room with Current Booking",
       "request": {"method": "GET", "url": "{{booking_base_url}}/api/v1/admin/physical-rooms/{{physical_room_id}}/?date={{check_in}}"}
+    },
+    {
+      "name": "12 - Block Physical Room",
+      "request": {
+        "method": "PATCH",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {"mode": "raw", "raw": "{\n  \"status\": \"blocked\",\n  \"note\": \"Held for VIP guest\"\n}", "options": {"raw": {"language": "json"}}},
+        "url": "{{booking_base_url}}/api/v1/admin/physical-rooms/{{physical_room_id}}/"
+      }
+    },
+    {
+      "name": "13 - Mark Physical Room Out of Service",
+      "request": {
+        "method": "PATCH",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {"mode": "raw", "raw": "{\n  \"status\": \"out_of_service\",\n  \"note\": \"Maintenance required\"\n}", "options": {"raw": {"language": "json"}}},
+        "url": "{{booking_base_url}}/api/v1/admin/physical-rooms/{{physical_room_id}}/"
+      }
     }
   ]
 }

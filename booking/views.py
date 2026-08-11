@@ -466,13 +466,15 @@ class RoomBoardView(APIView):
         for released_assignment in released_assignments:
             last_checkout_assignment_by_room.setdefault(released_assignment.physical_room_id, released_assignment)
 
-        counts = {status_name: 0 for status_name in ["available", "reserved", "occupied", "cleaning", "out_of_service"]}
+        counts = {status_name: 0 for status_name in ["available", "reserved", "occupied", "cleaning", "out_of_service", "blocked"]}
         floors = {}
         room_rows = []
         for room in rooms:
             assignment = assignment_by_room.get(room.id)
             if room.status == PhysicalRoom.Status.OUT_OF_SERVICE:
                 display_status = "out_of_service"
+            elif room.status == PhysicalRoom.Status.BLOCKED:
+                display_status = "blocked"
             elif room.status == PhysicalRoom.Status.CLEANING:
                 display_status = "cleaning"
             elif assignment and assignment.booking_room.booking.status == Booking.Status.CHECKED_IN:
@@ -549,6 +551,9 @@ class RoomBoardView(APIView):
                 # "core_snapshot": room.core_snapshot,
                 "operational_status": room.status,
                 "display_status": display_status,
+                "block_after_checkout": room.block_after_checkout,
+                "blocked_from": room.blocked_from,
+                "status_note": room.note,
                 "timeline": timeline,
                 "timeline_text": timeline["text"],
                 "room_type": self.serialize_room_board_room_type(room.room_type),
@@ -679,6 +684,10 @@ class RoomBoardView(APIView):
 
         if display_status == "out_of_service":
             base["text"] = "Out of service"
+            return base
+
+        if display_status == "blocked":
+            base["text"] = "Blocked"
             return base
 
         base["text"] = display_status.replace("_", " ").title()
@@ -1001,6 +1010,19 @@ class PhysicalRoomViewSet(AdminModelViewSet):
     http_method_names = ["get", "patch", "head", "options"]
     business_lookup = "hotel__core_business_id"
 
+    def perform_update(self, serializer):
+        previous_status = serializer.instance.status
+        previous_block_after_checkout = serializer.instance.block_after_checkout
+        previous_blocked_from = serializer.instance.blocked_from
+        room = serializer.save()
+        if (
+            room.status != previous_status
+            or room.block_after_checkout != previous_block_after_checkout
+            or room.blocked_from != previous_blocked_from
+        ):
+            from booking.services import ensure_daily_inventory_for_room_type
+            ensure_daily_inventory_for_room_type(room.room_type)
+
     def retrieve(self, request, *args, **kwargs):
         room = self.get_object()
         query = RoomBoardQuerySerializer(data=request.query_params)
@@ -1026,6 +1048,8 @@ class PhysicalRoomViewSet(AdminModelViewSet):
 
         if room.status == PhysicalRoom.Status.OUT_OF_SERVICE:
             display_status = "out_of_service"
+        elif room.status == PhysicalRoom.Status.BLOCKED:
+            display_status = "blocked"
         elif room.status == PhysicalRoom.Status.CLEANING:
             display_status = "cleaning"
         elif assignment and assignment.booking_room.booking.status == Booking.Status.CHECKED_IN:
@@ -1642,11 +1666,27 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
         booking = Booking.objects.select_for_update().get(pk=self.get_object().pk)
         if booking.status != Booking.Status.CHECKED_IN:
             raise ValidationError("Only a checked-in booking can check out.")
-        assignments = RoomAssignment.objects.filter(booking_room__booking=booking, released_at__isnull=True)
-        PhysicalRoom.objects.filter(assignments__in=assignments).update(status=PhysicalRoom.Status.CLEANING)
+        assignments = RoomAssignment.objects.filter(
+            booking_room__booking=booking, released_at__isnull=True,
+        ).select_related("physical_room", "physical_room__room_type")
+        affected_room_types = set()
+        for assignment in assignments:
+            room = assignment.physical_room
+            room.status = (
+                PhysicalRoom.Status.BLOCKED
+                if room.block_after_checkout
+                else PhysicalRoom.Status.CLEANING
+            )
+            room.block_after_checkout = False
+            room.blocked_from = None
+            room.save(update_fields=["status", "block_after_checkout", "blocked_from"])
+            affected_room_types.add(room.room_type_id)
         assignments.update(released_at=timezone.now())
         booking.status = Booking.Status.CHECKED_OUT
         booking.save(update_fields=["status", "updated_at"])
+        from booking.services import ensure_daily_inventory_for_room_type
+        for room_type_id in affected_room_types:
+            ensure_daily_inventory_for_room_type(RoomType.objects.get(pk=room_type_id))
         return success(BookingSerializer(booking).data)
 
 

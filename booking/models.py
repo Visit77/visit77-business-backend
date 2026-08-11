@@ -170,6 +170,7 @@ class PhysicalRoom(models.Model):
         OCCUPIED = "occupied", "Occupied"
         CLEANING = "cleaning", "Cleaning"
         OUT_OF_SERVICE = "out_of_service", "Out of service"
+        BLOCKED = "blocked", "Blocked"
 
     hotel = models.ForeignKey(Hotel, on_delete=models.CASCADE, related_name="physical_rooms")
     room_type = models.ForeignKey(RoomType, on_delete=models.PROTECT, related_name="physical_rooms")
@@ -180,6 +181,8 @@ class PhysicalRoom(models.Model):
     floor = models.CharField(max_length=50, blank=True)
     building = models.CharField(max_length=120, blank=True)
     status = models.CharField(max_length=32, choices=Status.choices, default=Status.VACANT)
+    block_after_checkout = models.BooleanField(default=False)
+    blocked_from = models.DateField(null=True, blank=True)
     note = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
     core_snapshot = models.JSONField(default=dict, blank=True)
