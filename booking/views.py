@@ -630,14 +630,13 @@ class RoomBoardView(APIView):
             base.update({
                 "text": f"Reserved: {reserved_nights} {_pluralize_night_label(reserved_nights)}",
                 "reserved_nights": reserved_nights,
-                "next_reserved": "",
-                # "next_reserved": {
-                #     "booking_id": booking.id,
-                #     "booking_reference": booking.reference,
-                #     "check_in": booking.check_in,
-                #     "check_out": booking.check_out,
-                #     "nights": reserved_nights,
-                # },
+                "next_reserved": {
+                    "booking_id": booking.id,
+                    "booking_reference": booking.reference,
+                    "check_in": booking.check_in,
+                    "check_out": booking.check_out,
+                    "nights": reserved_nights,
+                },
             })
             return base
 
@@ -666,14 +665,13 @@ class RoomBoardView(APIView):
                     "text": f"Vacant: {vacant_days} {_pluralize_day_label(vacant_days)} | Reserved: {reserved_nights} {_pluralize_night_label(reserved_nights)}",
                     "vacant_days": vacant_days,
                     "reserved_nights": reserved_nights,
-                    "next_reserved": ""
-                    # "next_reserved": {
-                    #     "booking_id": next_booking.id,
-                    #     "booking_reference": next_booking.reference,
-                    #     "check_in": next_booking.check_in,
-                    #     "check_out": next_booking.check_out,
-                    #     "nights": reserved_nights,
-                    # },
+                    "next_reserved": {
+                        "booking_id": next_booking.id,
+                        "booking_reference": next_booking.reference,
+                        "check_in": next_booking.check_in,
+                        "check_out": next_booking.check_out,
+                        "nights": reserved_nights,
+                    },
                 })
             else:
                 base["text"] = "Vacant"
@@ -1402,9 +1400,23 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
                 else:
                     Guest.objects.create(booking=booking, **guest_data)
         booking = self.get_queryset().prefetch_related("guests__identity_documents").get(pk=booking.pk)
+        amount_due = max(booking.grand_total - booking.amount_paid, 0)
         return success({
             "booking": BookingSerializer(booking, context={"request": request}).data,
             "verification": _check_in_readiness(booking),
+            "payment_summary": {
+                "currency": booking.currency,
+                "grand_total": booking.grand_total,
+                "amount_paid": booking.amount_paid,
+                "amount_due": amount_due,
+                "payment_status": (
+                    "paid" if amount_due == 0
+                    else "partially_paid" if booking.amount_paid > 0
+                    else "unpaid"
+                ),
+                "transaction_url": f"/api/v1/admin/bookings/{booking.id}/payment/",
+                "payment_types": ["deposit", "balance", "full_payment"],
+            },
         })
 
     @action(detail=True, methods=["post"], url_path="guest-identity-document")
@@ -1457,9 +1469,10 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
 
     @action(detail=True, methods=["post"])
     def payment(self, request, pk=None):
-        serializer = PaymentCreateSerializer(data=request.data)
+        booking = self.get_object()
+        serializer = PaymentCreateSerializer(data=request.data, context={"booking": booking})
         serializer.is_valid(raise_exception=True)
-        payment = record_payment(self.get_object(), serializer.validated_data)
+        payment = record_payment(booking, serializer.validated_data)
         return success(
             PaymentSerializer(payment).data,
             status_code=status.HTTP_201_CREATED,

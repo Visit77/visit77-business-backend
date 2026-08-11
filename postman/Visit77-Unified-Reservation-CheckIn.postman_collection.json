@@ -46,7 +46,7 @@
       "request": {
         "method": "POST",
         "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Idempotency-Key", "value": "walkin-v2-{{$guid}}"}],
-        "body": {"mode": "raw", "raw": "{\n  \"physical_room_id\": {{physical_room_id}},\n  \"rate_plan_id\": {{rate_plan_id}},\n  \"check_in\": \"{{check_in}}\",\n  \"check_out\": \"{{check_out}}\",\n  \"contact_name\": \"Walk-in V2 Guest\",\n  \"contact_phone\": \"092222222\",\n  \"guest_market\": \"local\",\n  \"adults\": 1,\n  \"children\": 0,\n  \"guests\": [{\"name\": \"Walk-in V2 Guest\", \"is_primary\": true}],\n  \"payment\": {\"provider\": \"cash\", \"status\": \"paid\"}\n}", "options": {"raw": {"language": "json"}}},
+        "body": {"mode": "raw", "raw": "{\n  \"physical_room_id\": {{physical_room_id}},\n  \"rate_plan_id\": {{rate_plan_id}},\n  \"check_in\": \"{{check_in}}\",\n  \"check_out\": \"{{check_out}}\",\n  \"contact_name\": \"Walk-in V2 Guest\",\n  \"contact_phone\": \"092222222\",\n  \"guest_market\": \"local\",\n  \"adults\": 1,\n  \"children\": 0,\n  \"guests\": [{\"name\": \"Walk-in V2 Guest\", \"is_primary\": true}],\n  \"payment\": {\"provider\": \"cash\", \"status\": \"pending\"}\n}", "options": {"raw": {"language": "json"}}},
         "url": "{{booking_base_url}}/api/v1/admin/walk-in-booking-v2/"
       },
       "event": [{"listen": "test", "script": {"exec": [
@@ -81,12 +81,30 @@
       }
     },
     {
-      "name": "07 - Verify Readiness",
+      "name": "07 - Add Deposit Payment",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {"mode": "raw", "raw": "{\n  \"payment_type\": \"deposit\",\n  \"provider\": \"cash\",\n  \"provider_reference\": \"DEP-{{$timestamp}}\",\n  \"status\": \"paid\",\n  \"amount\": \"10000.00\"\n}", "options": {"raw": {"language": "json"}}},
+        "url": "{{booking_base_url}}/api/v1/admin/bookings/{{booking_id}}/payment/"
+      }
+    },
+    {
+      "name": "08 - Pay Remaining Balance",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "body": {"mode": "raw", "raw": "{\n  \"payment_type\": \"balance\",\n  \"provider\": \"cash\",\n  \"provider_reference\": \"BAL-{{$timestamp}}\",\n  \"status\": \"paid\"\n}", "options": {"raw": {"language": "json"}}},
+        "url": "{{booking_base_url}}/api/v1/admin/bookings/{{booking_id}}/payment/"
+      }
+    },
+    {
+      "name": "09 - Verify Readiness",
       "request": {"method": "GET", "url": "{{booking_base_url}}/api/v1/admin/bookings/{{booking_id}}/check-in-form/"},
       "event": [{"listen": "test", "script": {"exec": ["pm.test('Ready to check in', () => pm.expect(pm.response.json().data.verification.can_check_in).to.eql(true));"]}}]
     },
     {
-      "name": "08 - Final Verified Check-in",
+      "name": "10 - Final Verified Check-in",
       "request": {
         "method": "POST",
         "header": [{"key": "Content-Type", "value": "application/json"}],
@@ -96,7 +114,7 @@
       "event": [{"listen": "test", "script": {"exec": ["pm.test('Booking checked in', () => pm.expect(pm.response.json().data.status).to.eql('checked_in'));"]}}]
     },
     {
-      "name": "09 - Physical Room with Current Booking",
+      "name": "11 - Physical Room with Current Booking",
       "request": {"method": "GET", "url": "{{booking_base_url}}/api/v1/admin/physical-rooms/{{physical_room_id}}/?date={{check_in}}"}
     }
   ]

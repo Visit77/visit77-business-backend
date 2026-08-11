@@ -529,6 +529,11 @@ class BookingAddOnSerializer(serializers.ModelSerializer):
 
 
 class PaymentSerializer(serializers.ModelSerializer):
+    payment_type = serializers.SerializerMethodField()
+
+    def get_payment_type(self, obj):
+        return obj.metadata.get("payment_type", "payment")
+
     class Meta:
         model = Payment
         fields = "__all__"
@@ -746,11 +751,39 @@ class WalkInBookingCreateSerializer(serializers.Serializer):
 
 
 class PaymentCreateSerializer(serializers.Serializer):
+    class PaymentType:
+        DEPOSIT = "deposit"
+        BALANCE = "balance"
+        FULL_PAYMENT = "full_payment"
+        CHOICES = [
+            (DEPOSIT, "Deposit"),
+            (BALANCE, "Remaining balance"),
+            (FULL_PAYMENT, "Full payment"),
+        ]
+
+    payment_type = serializers.ChoiceField(choices=PaymentType.CHOICES, default=PaymentType.DEPOSIT)
     provider = serializers.CharField(max_length=50)
     provider_reference = serializers.CharField(max_length=255, required=False, allow_blank=True)
     status = serializers.ChoiceField(choices=Payment.Status.choices, default=Payment.Status.PAID)
-    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=0)
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.01"), required=False)
     metadata = serializers.JSONField(required=False, default=dict)
+
+    def validate(self, attrs):
+        booking = self.context.get("booking")
+        payment_type = attrs["payment_type"]
+        amount_due = max(booking.grand_total - booking.amount_paid, Decimal("0")) if booking else None
+        if amount_due is not None and amount_due <= 0:
+            raise serializers.ValidationError({"amount": "This booking is already fully paid."})
+        if payment_type == self.PaymentType.DEPOSIT:
+            if "amount" not in attrs:
+                raise serializers.ValidationError({"amount": "Amount is required for a deposit."})
+        else:
+            if "amount" not in attrs:
+                attrs["amount"] = amount_due
+            elif amount_due is not None and attrs["amount"] != amount_due:
+                raise serializers.ValidationError({"amount": "Balance/full payment must equal the remaining amount due."})
+        attrs["metadata"] = {**attrs.get("metadata", {}), "payment_type": payment_type}
+        return attrs
 
 
 class CorePaymentSuccessSerializer(serializers.Serializer):

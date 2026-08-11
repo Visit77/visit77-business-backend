@@ -1168,6 +1168,10 @@ def record_payment(booking, data, auto_assign=True):
         and booking.hold_expires_at <= timezone.now()
     ):
         raise ValidationError("The booking payment hold has expired.")
+    if data.get("status", Payment.Status.PAID) == Payment.Status.PAID:
+        amount_due = max(booking.grand_total - booking.amount_paid, Decimal("0"))
+        if data["amount"] > amount_due:
+            raise ValidationError({"amount": f"Payment exceeds the remaining balance of {amount_due} {booking.currency}."})
     payment = Payment.objects.create(
         booking=booking,
         provider=data["provider"],

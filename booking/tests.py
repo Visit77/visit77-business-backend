@@ -544,6 +544,57 @@ class BookingServiceTests(TestCase):
 
 @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key", CORE_JWT_SIGNING_KEY="test-core-jwt-key")
 class BookingApiTests(BookingServiceTests):
+    def test_check_in_form_accepts_deposit_then_remaining_balance_payment(self):
+        booking, _ = create_booking(self.payload())
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+        deposit = self.client.post(
+            f"/api/v1/admin/bookings/{booking.id}/payment/",
+            {
+                "payment_type": "deposit",
+                "provider": "cash",
+                "amount": "50000.00",
+                "provider_reference": "DEP-001",
+                "status": "paid",
+            },
+            format="json",
+            **headers,
+        )
+        self.assertEqual(deposit.status_code, 201, deposit.data)
+        self.assertEqual(deposit.data["data"]["payment_type"], "deposit")
+
+        form = self.client.get(f"/api/v1/admin/bookings/{booking.id}/check-in-form/", **headers)
+        self.assertEqual(form.status_code, 200, form.data)
+        summary = form.data["data"]["payment_summary"]
+        self.assertEqual(summary["amount_paid"], Decimal("50000.00"))
+        self.assertEqual(summary["amount_due"], booking.grand_total - Decimal("50000.00"))
+        self.assertEqual(summary["payment_status"], "partially_paid")
+
+        overpayment = self.client.post(
+            f"/api/v1/admin/bookings/{booking.id}/payment/",
+            {"payment_type": "deposit", "provider": "cash", "amount": str(booking.grand_total)},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(overpayment.status_code, 400, overpayment.data)
+
+        balance = self.client.post(
+            f"/api/v1/admin/bookings/{booking.id}/payment/",
+            {"payment_type": "balance", "provider": "cash", "provider_reference": "BAL-001"},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(balance.status_code, 201, balance.data)
+        self.assertEqual(balance.data["data"]["payment_type"], "balance")
+        booking.refresh_from_db()
+        self.assertEqual(booking.amount_paid, booking.grand_total)
+
+        refreshed = self.client.get(f"/api/v1/admin/bookings/{booking.id}/check-in-form/", **headers)
+        self.assertEqual(refreshed.data["data"]["payment_summary"]["amount_due"], Decimal("0"))
+        self.assertEqual(refreshed.data["data"]["payment_summary"]["payment_status"], "paid")
+
     def test_legacy_walk_in_api_checks_in_immediately_without_identity_verification(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="304")
         response = self.client.post(
