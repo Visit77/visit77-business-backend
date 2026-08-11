@@ -170,7 +170,6 @@ class PhysicalRoom(models.Model):
         OCCUPIED = "occupied", "Occupied"
         CLEANING = "cleaning", "Cleaning"
         OUT_OF_SERVICE = "out_of_service", "Out of service"
-        BLOCKED = "blocked", "Blocked"
 
     hotel = models.ForeignKey(Hotel, on_delete=models.CASCADE, related_name="physical_rooms")
     room_type = models.ForeignKey(RoomType, on_delete=models.PROTECT, related_name="physical_rooms")
@@ -181,8 +180,6 @@ class PhysicalRoom(models.Model):
     floor = models.CharField(max_length=50, blank=True)
     building = models.CharField(max_length=120, blank=True)
     status = models.CharField(max_length=32, choices=Status.choices, default=Status.VACANT)
-    block_after_checkout = models.BooleanField(default=False)
-    blocked_from = models.DateField(null=True, blank=True)
     note = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
     core_snapshot = models.JSONField(default=dict, blank=True)
@@ -198,6 +195,22 @@ class PhysicalRoom(models.Model):
     def clean(self):
         if self.room_type_id and self.hotel_id and self.room_type.hotel_id != self.hotel_id:
             raise ValidationError("Room type must belong to the same hotel.")
+
+
+class PhysicalRoomBlock(models.Model):
+    physical_room = models.ForeignKey(PhysicalRoom, on_delete=models.CASCADE, related_name="blocks")
+    start_date = models.DateField()
+    end_date = models.DateField()
+    note = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["start_date", "end_date", "id"]
+        indexes = [
+            models.Index(fields=["physical_room", "start_date", "end_date"], name="booking_room_block_dates_idx"),
+        ]
 
 
 class RatePlan(models.Model):

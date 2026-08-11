@@ -16,6 +16,7 @@ from booking.views import (
     IntegrationStatusView,
     MealPlanViewSet,
     PhysicalRoomViewSet,
+    PhysicalRoomBlockViewSet,
     PublicAvailabilityView,
     PublicAYAPaymentView,
     PublicBookingCreateView,
@@ -42,6 +43,7 @@ router.register("admin/room-types", RoomTypeViewSet, basename="room-type")
 router.register("admin/meal-plans", MealPlanViewSet, basename="meal-plan")
 router.register("admin/room-type-meal-plans", RoomTypeMealPlanViewSet, basename="room-type-meal-plan")
 router.register("admin/physical-rooms", PhysicalRoomViewSet, basename="physical-room")
+router.register("admin/room-blocks", PhysicalRoomBlockViewSet, basename="room-block")
 router.register("admin/rate-plans", RatePlanViewSet, basename="rate-plan")
 router.register("admin/inventory", DailyInventoryViewSet, basename="inventory")
 router.register("admin/rates", DailyRateViewSet, basename="daily-rate")

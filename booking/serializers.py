@@ -20,6 +20,7 @@ from booking.models import (
     MealPlan,
     Payment,
     PhysicalRoom,
+    PhysicalRoomBlock,
     RatePlan,
     RatePeriod,
     RoomAssignment,
@@ -201,48 +202,63 @@ class PhysicalRoomSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Room type must belong to the selected hotel.")
         new_status = attrs.get("status")
         if self.instance and new_status and new_status != self.instance.status:
-            restricted = {PhysicalRoom.Status.OUT_OF_SERVICE, PhysicalRoom.Status.BLOCKED}
-            allowed_sources = {PhysicalRoom.Status.VACANT, PhysicalRoom.Status.CLEANING}
-            if new_status == PhysicalRoom.Status.BLOCKED and self.instance.status == PhysicalRoom.Status.OCCUPIED:
-                current_assignment = RoomAssignment.objects.filter(
-                    physical_room=self.instance,
-                    released_at__isnull=True,
-                    booking_room__booking__status=Booking.Status.CHECKED_IN,
-                ).select_related("booking_room__booking").first()
-                if not current_assignment:
-                    raise serializers.ValidationError({"status": "The occupied room has no active checked-in stay."})
-                current_booking = current_assignment.booking_room.booking
-                future_assignment_exists = RoomAssignment.objects.filter(
-                    physical_room=self.instance,
-                    released_at__isnull=True,
-                    booking_room__booking__status=Booking.Status.CONFIRMED,
-                    booking_room__booking__check_in__gte=current_booking.check_out,
-                ).exclude(pk=current_assignment.pk).exists()
-                if future_assignment_exists:
-                    raise serializers.ValidationError({
-                        "status": "Cancel or move the future reservation before scheduling this room to be blocked."
-                    })
-                attrs["status"] = PhysicalRoom.Status.OCCUPIED
-                attrs["block_after_checkout"] = True
-                attrs["blocked_from"] = current_booking.check_out
-                new_status = PhysicalRoom.Status.OCCUPIED
-            if new_status in restricted and self.instance.status not in allowed_sources:
+            if new_status == PhysicalRoom.Status.OUT_OF_SERVICE and self.instance.status not in {
+                PhysicalRoom.Status.VACANT, PhysicalRoom.Status.CLEANING,
+            }:
                 raise serializers.ValidationError({
-                    "status": "A room can only be blocked or marked out of service while vacant or cleaning."
+                    "status": "A room can only be marked out of service while vacant or cleaning."
                 })
-            if new_status in restricted and RoomAssignment.objects.filter(
+            if new_status == PhysicalRoom.Status.OUT_OF_SERVICE and RoomAssignment.objects.filter(
                 physical_room=self.instance,
                 released_at__isnull=True,
                 booking_room__booking__status__in=[Booking.Status.CONFIRMED, Booking.Status.CHECKED_IN],
             ).exists():
                 raise serializers.ValidationError({
-                    "status": "A room with an active reservation or stay cannot be blocked or marked out of service."
+                    "status": "A room with an active reservation or stay cannot be marked out of service."
                 })
-            if attrs.get("status") == PhysicalRoom.Status.BLOCKED:
-                attrs["block_after_checkout"] = False
-                attrs["blocked_from"] = None
-        if self.instance and attrs.get("block_after_checkout") is False:
-            attrs["blocked_from"] = None
+        return attrs
+
+
+class PhysicalRoomBlockSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PhysicalRoomBlock
+        fields = "__all__"
+        read_only_fields = ["created_at", "updated_at"]
+
+    def validate(self, attrs):
+        room = attrs.get("physical_room", getattr(self.instance, "physical_room", None))
+        start_date = attrs.get("start_date", getattr(self.instance, "start_date", None))
+        end_date = attrs.get("end_date", getattr(self.instance, "end_date", None))
+        is_active = attrs.get("is_active", getattr(self.instance, "is_active", True))
+        request = self.context.get("request")
+        core_business_id = getattr(request, "booking_core_business_id", None) if request else None
+        if core_business_id and room and room.hotel.core_business_id != core_business_id:
+            raise serializers.ValidationError({"physical_room": "Room does not belong to this business."})
+        if start_date and end_date and end_date < start_date:
+            raise serializers.ValidationError({"end_date": "Must be on or after start_date."})
+        if not (room and start_date and end_date and is_active):
+            return attrs
+        booking_conflict = RoomAssignment.objects.filter(
+            physical_room=room,
+            released_at__isnull=True,
+            booking_room__booking__status__in=[Booking.Status.CONFIRMED, Booking.Status.CHECKED_IN],
+            booking_room__booking__check_in__lte=end_date,
+            booking_room__booking__check_out__gt=start_date,
+        ).exists()
+        if booking_conflict:
+            raise serializers.ValidationError({
+                "date_range": "The room is reserved or occupied within the selected block date range."
+            })
+        overlapping_blocks = PhysicalRoomBlock.objects.filter(
+            physical_room=room,
+            is_active=True,
+            start_date__lte=end_date,
+            end_date__gte=start_date,
+        )
+        if self.instance:
+            overlapping_blocks = overlapping_blocks.exclude(pk=self.instance.pk)
+        if overlapping_blocks.exists():
+            raise serializers.ValidationError({"date_range": "This room already has an overlapping block."})
         return attrs
 
 

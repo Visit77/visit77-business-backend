@@ -118,12 +118,12 @@
       "request": {"method": "GET", "url": "{{booking_base_url}}/api/v1/admin/physical-rooms/{{physical_room_id}}/?date={{check_in}}"}
     },
     {
-      "name": "12 - Block Physical Room",
+      "name": "12 - Block Physical Room Date Range",
       "request": {
-        "method": "PATCH",
+        "method": "POST",
         "header": [{"key": "Content-Type", "value": "application/json"}],
-        "body": {"mode": "raw", "raw": "{\n  \"status\": \"blocked\",\n  \"note\": \"Held for VIP guest\"\n}", "options": {"raw": {"language": "json"}}},
-        "url": "{{booking_base_url}}/api/v1/admin/physical-rooms/{{physical_room_id}}/"
+        "body": {"mode": "raw", "raw": "{\n  \"physical_room\": {{physical_room_id}},\n  \"start_date\": \"{{check_in}}\",\n  \"end_date\": \"{{check_out}}\",\n  \"note\": \"Held for VIP guest\"\n}", "options": {"raw": {"language": "json"}}},
+        "url": "{{booking_base_url}}/api/v1/admin/room-blocks/"
       }
     },
     {

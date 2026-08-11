@@ -22,6 +22,7 @@ from booking.models import (
     Hotel,
     Payment,
     PhysicalRoom,
+    PhysicalRoomBlock,
     RatePlan,
     RatePeriod,
     RoomAssignment,
@@ -54,19 +55,20 @@ def inventory_window_dates(start_date=None, days=None):
 
 def active_sellable_room_count(room_type):
     return room_type.physical_rooms.filter(is_active=True).exclude(
-        status__in=[PhysicalRoom.Status.OUT_OF_SERVICE, PhysicalRoom.Status.BLOCKED],
+        status=PhysicalRoom.Status.OUT_OF_SERVICE,
     ).count()
 
 
 def sellable_room_count_for_date(room_type, stay_date, base_total=None):
     base_total = active_sellable_room_count(room_type) if base_total is None else base_total
-    scheduled_blocks = room_type.physical_rooms.filter(
+    blocked_rooms = PhysicalRoomBlock.objects.filter(
+        physical_room__room_type=room_type,
+        physical_room__is_active=True,
         is_active=True,
-        block_after_checkout=True,
-        blocked_from__isnull=False,
-        blocked_from__lte=stay_date,
-    ).exclude(status__in=[PhysicalRoom.Status.OUT_OF_SERVICE, PhysicalRoom.Status.BLOCKED]).count()
-    return max(base_total - scheduled_blocks, 0)
+        start_date__lte=stay_date,
+        end_date__gte=stay_date,
+    ).values("physical_room_id").distinct().count()
+    return max(base_total - blocked_rooms, 0)
 
 
 @transaction.atomic
@@ -476,7 +478,7 @@ def ensure_preference_capacity(room_type, dates, constraints, quantity):
     matching_room_ids = [
         room.id
         for room in PhysicalRoom.objects.filter(room_type=room_type, is_active=True).exclude(
-            status__in=[PhysicalRoom.Status.OUT_OF_SERVICE, PhysicalRoom.Status.BLOCKED],
+            status=PhysicalRoom.Status.OUT_OF_SERVICE,
         )
         if physical_room_matches_constraints(room, constraints)
     ]
@@ -592,6 +594,11 @@ def _available_physical_rooms_for_booking_room(booking_room):
         booking_room__booking__check_in__lt=booking.check_out,
         booking_room__booking__check_out__gt=booking.check_in,
     ).values_list("physical_room_id", flat=True)
+    blocked_room_ids = PhysicalRoomBlock.objects.filter(
+        is_active=True,
+        start_date__lt=booking.check_out,
+        end_date__gte=booking.check_in,
+    ).values_list("physical_room_id", flat=True)
     return list(
         PhysicalRoom.objects.select_for_update()
         .filter(
@@ -601,6 +608,7 @@ def _available_physical_rooms_for_booking_room(booking_room):
             status=PhysicalRoom.Status.VACANT,
         )
         .exclude(id__in=overlapping_room_ids)
+        .exclude(id__in=blocked_room_ids)
     )
 
 
@@ -1247,6 +1255,15 @@ def _has_overlapping_room_assignment(physical_room, check_in, check_out, exclude
     return queryset.exists()
 
 
+def _has_overlapping_room_block(physical_room, check_in, check_out):
+    return PhysicalRoomBlock.objects.filter(
+        physical_room=physical_room,
+        is_active=True,
+        start_date__lt=check_out,
+        end_date__gte=check_in,
+    ).exists()
+
+
 def _initial_payment_payload(booking, payment_data, *, default_to_full_payment=False, source):
     """Normalize an optional create-time deposit/full-payment object."""
     if not payment_data and not default_to_full_payment:
@@ -1294,6 +1311,8 @@ def create_walk_in_booking(data, idempotency_key=None, core_business_id=None, ch
         raise ValidationError({"check_out": "Must be after check_in."})
     if _has_overlapping_room_assignment(physical_room, check_in, check_out):
         raise ValidationError({"physical_room_id": "Selected physical room is assigned to an overlapping booking."})
+    if _has_overlapping_room_block(physical_room, check_in, check_out):
+        raise ValidationError({"physical_room_id": "Selected physical room is blocked for one or more stay dates."})
 
     guest_market = data.get("guest_market", RatePlan.GuestMarket.LOCAL)
     rate_plan_id = data.get("rate_plan_id")
@@ -1451,6 +1470,8 @@ def create_admin_reservation(data, idempotency_key=None, core_business_id=None):
         for room in rooms:
             if _has_overlapping_room_assignment(room, booking.check_in, booking.check_out, exclude_booking=booking):
                 raise ValidationError({"rooms": f"Room {room.room_number} has an overlapping assignment."})
+            if _has_overlapping_room_block(room, booking.check_in, booking.check_out):
+                raise ValidationError({"rooms": f"Room {room.room_number} is blocked for one or more stay dates."})
             validate_assignment_preferences(booking_room, room)
             RoomAssignment.objects.create(booking_room=booking_room, physical_room=room)
     return booking
