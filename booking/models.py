@@ -567,6 +567,11 @@ class RoomAssignment(models.Model):
 
 
 class Payment(models.Model):
+    class Type(models.TextChoices):
+        DEPOSIT = "deposit", "Deposit"
+        FULL_PAYMENT = "full_payment", "Full payment"
+        BALANCE = "balance", "Remaining balance"
+
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
         PAID = "paid", "Paid"
@@ -583,6 +588,7 @@ class Payment(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     booking = models.ForeignKey(Booking, on_delete=models.PROTECT, related_name="payments")
+    payment_type = models.CharField(max_length=24, choices=Type.choices, default=Type.FULL_PAYMENT)
     provider = models.CharField(max_length=50, choices=Provider.choices)
     provider_reference = models.CharField(max_length=255, blank=True)
     status = models.CharField(max_length=32, choices=Status.choices, default=Status.PENDING)

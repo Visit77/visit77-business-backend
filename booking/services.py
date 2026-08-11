@@ -1174,6 +1174,7 @@ def record_payment(booking, data, auto_assign=True):
             raise ValidationError({"amount": f"Payment exceeds the remaining balance of {amount_due} {booking.currency}."})
     payment = Payment.objects.create(
         booking=booking,
+        payment_type=data.get("payment_type", Payment.Type.FULL_PAYMENT),
         provider=data["provider"],
         provider_reference=data.get("provider_reference", ""),
         status=data.get("status", Payment.Status.PAID),
@@ -1224,6 +1225,35 @@ def _has_overlapping_room_assignment(physical_room, check_in, check_out, exclude
     if exclude_booking is not None:
         queryset = queryset.exclude(booking_room__booking=exclude_booking)
     return queryset.exists()
+
+
+def _initial_payment_payload(booking, payment_data, *, default_to_full_payment=False, source):
+    """Normalize an optional create-time deposit/full-payment object."""
+    if not payment_data and not default_to_full_payment:
+        return None
+    payment_data = dict(payment_data or {})
+    payment_type = payment_data.get("payment_type") or Payment.Type.FULL_PAYMENT
+    status_value = payment_data.get("status", Payment.Status.PAID)
+    amount = payment_data.get("amount")
+    if payment_type == Payment.Type.FULL_PAYMENT:
+        amount_due = max(booking.grand_total - booking.amount_paid, Decimal("0"))
+        if amount is None:
+            amount = amount_due
+        elif amount != amount_due:
+            raise ValidationError({"payment": f"Full payment must equal {amount_due} {booking.currency}."})
+    elif amount is None:
+        raise ValidationError({"payment": "Amount is required for a deposit."})
+    return {
+        "payment_type": payment_type,
+        "provider": payment_data.get("provider", Payment.Provider.CASH),
+        "provider_reference": payment_data.get("provider_reference", ""),
+        "status": status_value,
+        "amount": amount,
+        "metadata": {
+            **(payment_data.get("metadata") or {}),
+            "source": source,
+        },
+    }
 
 
 @transaction.atomic
@@ -1292,33 +1322,28 @@ def create_walk_in_booking(data, idempotency_key=None, core_business_id=None, ch
     if booking.status == Booking.Status.CHECKED_IN:
         return booking
 
-    payment_data = dict(data.get("payment") or {})
-    payment_status = payment_data.get("status", Payment.Status.PAID)
-    payment_amount = payment_data.get("amount")
-    if payment_amount is None:
-        payment_amount = booking.grand_total if payment_status == Payment.Status.PAID else Decimal("0")
-    payment_payload = {
-        "provider": payment_data.get("provider", Payment.Provider.CASH),
-        "provider_reference": payment_data.get("provider_reference", ""),
-        "status": payment_status,
-        "amount": payment_amount,
-        "metadata": {
-            **(payment_data.get("metadata") or {}),
-            "source": "walk_in",
+    payment_payload = _initial_payment_payload(
+        booking,
+        data.get("payment"),
+        default_to_full_payment=check_in_immediately,
+        source="walk_in",
+    )
+    if payment_payload:
+        payment_payload["metadata"].update({
             "physical_room_id": physical_room.id,
             "room_number": physical_room.room_number,
-        },
-    }
-    if payment_status == Payment.Status.PAID:
+        })
+    if payment_payload and payment_payload["status"] == Payment.Status.PAID:
         record_payment(booking, payment_payload, auto_assign=False)
         booking = Booking.objects.select_for_update().prefetch_related("rooms").get(pk=booking.pk)
-    else:
+    elif payment_payload:
         Payment.objects.create(
             booking=booking,
+            payment_type=payment_payload["payment_type"],
             provider=payment_payload["provider"],
             provider_reference=payment_payload["provider_reference"],
             status=Payment.Status.PENDING,
-            amount=payment_amount,
+            amount=payment_payload["amount"],
             currency=booking.currency,
             invoice_number=_reference("IV"),
             metadata=payment_payload["metadata"],
@@ -1328,6 +1353,11 @@ def create_walk_in_booking(data, idempotency_key=None, core_business_id=None, ch
             booking.status = Booking.Status.CONFIRMED
             booking.hold_expires_at = None
             booking.save(update_fields=["status", "hold_expires_at", "updated_at"])
+    elif booking.status == Booking.Status.PENDING_PAYMENT:
+        _move_inventory(booking, "held_rooms", "reserved_rooms")
+        booking.status = Booking.Status.CONFIRMED
+        booking.hold_expires_at = None
+        booking.save(update_fields=["status", "hold_expires_at", "updated_at"])
 
     physical_room = PhysicalRoom.objects.select_for_update().get(pk=physical_room.pk)
     if physical_room.status != PhysicalRoom.Status.VACANT:
@@ -1352,21 +1382,34 @@ def create_admin_reservation(data, idempotency_key=None, core_business_id=None):
     if core_business_id and data["core_business_id"] != core_business_id:
         raise ValidationError({"core_business_id": "Does not match X-Booking-Business-ID."})
     booking_data = dict(data)
-    payment_data = booking_data.pop("deposit", None)
+    payment_data = booking_data.pop("payment", None)
     requested_rooms = booking_data["rooms"]
     physical_room_ids_by_index = [item.pop("physical_room_ids", []) for item in requested_rooms]
     booking, _created = create_booking(booking_data, idempotency_key=idempotency_key)
     booking = Booking.objects.select_for_update().prefetch_related("rooms").get(pk=booking.pk)
 
-    if payment_data and payment_data.get("amount", 0) > 0:
-        record_payment(booking, {
-            "provider": payment_data.get("provider", Payment.Provider.CASH),
-            "provider_reference": payment_data.get("provider_reference", ""),
-            "status": Payment.Status.PAID,
-            "amount": payment_data["amount"],
-            "metadata": {**(payment_data.get("metadata") or {}), "source": "admin_reservation"},
-        }, auto_assign=False)
+    payment_payload = _initial_payment_payload(
+        booking, payment_data, default_to_full_payment=False, source="admin_reservation",
+    )
+    if payment_payload and payment_payload["status"] == Payment.Status.PAID:
+        record_payment(booking, payment_payload, auto_assign=False)
         booking.refresh_from_db()
+    elif payment_payload:
+        Payment.objects.create(
+            booking=booking,
+            payment_type=payment_payload["payment_type"],
+            provider=payment_payload["provider"],
+            provider_reference=payment_payload["provider_reference"],
+            status=Payment.Status.PENDING,
+            amount=payment_payload["amount"],
+            currency=booking.currency,
+            invoice_number=_reference("IV"),
+            metadata=payment_payload["metadata"],
+        )
+        _move_inventory(booking, "held_rooms", "reserved_rooms")
+        booking.status = Booking.Status.CONFIRMED
+        booking.hold_expires_at = None
+        booking.save(update_fields=["status", "hold_expires_at", "updated_at"])
     elif booking.status == Booking.Status.PENDING_PAYMENT:
         _move_inventory(booking, "held_rooms", "reserved_rooms")
         booking.status = Booking.Status.CONFIRMED

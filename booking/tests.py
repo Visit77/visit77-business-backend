@@ -698,7 +698,7 @@ class BookingApiTests(BookingServiceTests):
                     "physical_room_ids": [room.id],
                 }],
                 "guests": [{"name": "Phone Guest", "is_primary": True}],
-                "deposit": {"provider": "cash", "amount": "50000.00"},
+                "payment": {"payment_type": "full_payment", "provider": "cash", "status": "paid"},
             },
             format="json",
             HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
@@ -709,7 +709,8 @@ class BookingApiTests(BookingServiceTests):
         room.refresh_from_db()
         self.assertEqual(booking.source, Booking.Source.PHONE)
         self.assertEqual(booking.status, Booking.Status.CONFIRMED)
-        self.assertEqual(booking.amount_paid, Decimal("50000"))
+        self.assertEqual(booking.amount_paid, booking.grand_total)
+        self.assertEqual(booking.payments.get().payment_type, Payment.Type.FULL_PAYMENT)
         self.assertEqual(room.status, PhysicalRoom.Status.VACANT)
         self.assertFalse(response.data["data"]["verification"]["can_check_in"])
 
@@ -739,7 +740,6 @@ class BookingApiTests(BookingServiceTests):
                     "identity_number": "12/ABC(N)123456",
                     "is_primary": True,
                 }],
-                "payment": {"provider": "cash", "status": "paid"},
             },
             format="json",
             **headers,
@@ -749,6 +749,7 @@ class BookingApiTests(BookingServiceTests):
         booking = Booking.objects.get(id=booking_id)
         guest = booking.guests.get(is_primary=True)
         self.assertEqual(booking.status, Booking.Status.CONFIRMED)
+        self.assertFalse(booking.payments.exists())
 
         blocked = self.client.post(
             f"/api/v1/admin/bookings/{booking_id}/check-in/",

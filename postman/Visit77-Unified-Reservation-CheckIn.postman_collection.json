@@ -20,7 +20,7 @@
       "request": {
         "method": "POST",
         "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Idempotency-Key", "value": "phone-{{$guid}}"}],
-        "body": {"mode": "raw", "raw": "{\n  \"core_business_id\": {{core_business_id}},\n  \"source\": \"phone\",\n  \"source_name\": \"Hotel hotline\",\n  \"check_in\": \"{{check_in}}\",\n  \"check_out\": \"{{check_out}}\",\n  \"contact_name\": \"Phone Guest\",\n  \"contact_phone\": \"091111111\",\n  \"guest_market\": \"local\",\n  \"rooms\": [{\n    \"core_room_type_id\": {{core_room_type_id}},\n    \"rate_plan_id\": {{rate_plan_id}},\n    \"quantity\": 1,\n    \"adults\": 2,\n    \"children\": 0,\n    \"physical_room_ids\": [{{physical_room_id}}]\n  }],\n  \"guests\": [{\"name\": \"Phone Guest\", \"is_primary\": true}],\n  \"deposit\": {\"provider\": \"cash\", \"amount\": \"50000.00\"}\n}", "options": {"raw": {"language": "json"}}},
+        "body": {"mode": "raw", "raw": "{\n  \"core_business_id\": {{core_business_id}},\n  \"source\": \"phone\",\n  \"source_name\": \"Hotel hotline\",\n  \"check_in\": \"{{check_in}}\",\n  \"check_out\": \"{{check_out}}\",\n  \"contact_name\": \"Phone Guest\",\n  \"contact_phone\": \"091111111\",\n  \"guest_market\": \"local\",\n  \"rooms\": [{\n    \"core_room_type_id\": {{core_room_type_id}},\n    \"rate_plan_id\": {{rate_plan_id}},\n    \"quantity\": 1,\n    \"adults\": 2,\n    \"children\": 0,\n    \"physical_room_ids\": [{{physical_room_id}}]\n  }],\n  \"guests\": [{\"name\": \"Phone Guest\", \"is_primary\": true}],\n  \"payment\": {\"payment_type\": \"full_payment\", \"provider\": \"cash\", \"status\": \"paid\"}\n}", "options": {"raw": {"language": "json"}}},
         "url": "{{booking_base_url}}/api/v1/admin/reservations/"
       },
       "event": [{"listen": "test", "script": {"exec": [
@@ -33,7 +33,7 @@
       "request": {
         "method": "POST",
         "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Idempotency-Key", "value": "walkin-{{$guid}}"}],
-        "body": {"mode": "raw", "raw": "{\n  \"physical_room_id\": {{physical_room_id}},\n  \"rate_plan_id\": {{rate_plan_id}},\n  \"check_in\": \"{{check_in}}\",\n  \"check_out\": \"{{check_out}}\",\n  \"contact_name\": \"Walk-in Guest\",\n  \"contact_phone\": \"092222222\",\n  \"guest_market\": \"local\",\n  \"adults\": 1,\n  \"children\": 0,\n  \"guests\": [{\n    \"name\": \"Walk-in Guest\",\n    \"nrc_number\": \"12/ABC(N)123456\",\n    \"identity_type\": \"nrc\",\n    \"identity_number\": \"12/ABC(N)123456\",\n    \"is_primary\": true\n  }],\n  \"payment\": {\"provider\": \"cash\", \"status\": \"paid\"}\n}", "options": {"raw": {"language": "json"}}},
+        "body": {"mode": "raw", "raw": "{\n  \"physical_room_id\": {{physical_room_id}},\n  \"rate_plan_id\": {{rate_plan_id}},\n  \"check_in\": \"{{check_in}}\",\n  \"check_out\": \"{{check_out}}\",\n  \"contact_name\": \"Walk-in Guest\",\n  \"contact_phone\": \"092222222\",\n  \"guest_market\": \"local\",\n  \"adults\": 1,\n  \"children\": 0,\n  \"guests\": [{\n    \"name\": \"Walk-in Guest\",\n    \"is_primary\": true\n  }],\n  \"payment\": {\"payment_type\": \"full_payment\", \"provider\": \"cash\", \"status\": \"paid\"}\n}", "options": {"raw": {"language": "json"}}},
         "url": "{{booking_base_url}}/api/v1/admin/walk-in-bookings/"
       },
       "event": [{"listen": "test", "script": {"exec": [
@@ -46,7 +46,7 @@
       "request": {
         "method": "POST",
         "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Idempotency-Key", "value": "walkin-v2-{{$guid}}"}],
-        "body": {"mode": "raw", "raw": "{\n  \"physical_room_id\": {{physical_room_id}},\n  \"rate_plan_id\": {{rate_plan_id}},\n  \"check_in\": \"{{check_in}}\",\n  \"check_out\": \"{{check_out}}\",\n  \"contact_name\": \"Walk-in V2 Guest\",\n  \"contact_phone\": \"092222222\",\n  \"guest_market\": \"local\",\n  \"adults\": 1,\n  \"children\": 0,\n  \"guests\": [{\"name\": \"Walk-in V2 Guest\", \"is_primary\": true}],\n  \"payment\": {\"provider\": \"cash\", \"status\": \"pending\"}\n}", "options": {"raw": {"language": "json"}}},
+        "body": {"mode": "raw", "raw": "{\n  \"physical_room_id\": {{physical_room_id}},\n  \"rate_plan_id\": {{rate_plan_id}},\n  \"check_in\": \"{{check_in}}\",\n  \"check_out\": \"{{check_out}}\",\n  \"contact_name\": \"Walk-in V2 Guest\",\n  \"contact_phone\": \"092222222\",\n  \"guest_market\": \"local\",\n  \"adults\": 1,\n  \"children\": 0,\n  \"guests\": [{\"name\": \"Walk-in V2 Guest\", \"is_primary\": true}]\n}", "options": {"raw": {"language": "json"}}},
         "url": "{{booking_base_url}}/api/v1/admin/walk-in-booking-v2/"
       },
       "event": [{"listen": "test", "script": {"exec": [

@@ -529,11 +529,6 @@ class BookingAddOnSerializer(serializers.ModelSerializer):
 
 
 class PaymentSerializer(serializers.ModelSerializer):
-    payment_type = serializers.SerializerMethodField()
-
-    def get_payment_type(self, obj):
-        return obj.metadata.get("payment_type", "payment")
-
     class Meta:
         model = Payment
         fields = "__all__"
@@ -625,11 +620,30 @@ class AdminReservationRoomSerializer(RequestedRoomSerializer):
     )
 
 
-class AdminDepositSerializer(serializers.Serializer):
+class InitialPaymentSerializer(serializers.Serializer):
+    payment_type = serializers.ChoiceField(
+        choices=[Payment.Type.DEPOSIT, Payment.Type.FULL_PAYMENT],
+        required=False,
+    )
     provider = serializers.ChoiceField(choices=Payment.Provider.choices, default=Payment.Provider.CASH)
     provider_reference = serializers.CharField(max_length=255, required=False, allow_blank=True)
-    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.01"))
+    status = serializers.ChoiceField(
+        choices=[Payment.Status.PAID, Payment.Status.PENDING],
+        default=Payment.Status.PAID,
+    )
+    amount = serializers.DecimalField(
+        max_digits=14, decimal_places=2, min_value=Decimal("0.01"), required=False,
+    )
     metadata = serializers.JSONField(required=False, default=dict)
+
+    def validate(self, attrs):
+        if "payment_type" not in attrs:
+            attrs["payment_type"] = Payment.Type.DEPOSIT if "amount" in attrs else Payment.Type.FULL_PAYMENT
+        if attrs["payment_type"] == Payment.Type.DEPOSIT and "amount" not in attrs:
+            raise serializers.ValidationError({"amount": "Amount is required for a deposit."})
+        if attrs["status"] == Payment.Status.PENDING and "amount" not in attrs:
+            raise serializers.ValidationError({"amount": "Amount is required for a pending payment transaction."})
+        return attrs
 
 
 class CheckInGuestUpdateSerializer(serializers.Serializer):
@@ -693,7 +707,18 @@ class AdminReservationCreateSerializer(BookingCreateSerializer):
     )
     source_name = serializers.CharField(max_length=120, required=False, allow_blank=True)
     rooms = AdminReservationRoomSerializer(many=True, allow_empty=False)
-    deposit = AdminDepositSerializer(required=False, allow_null=True)
+    payment = InitialPaymentSerializer(required=False, allow_null=True)
+    # Backward compatibility for clients already sending the old field.
+    deposit = InitialPaymentSerializer(required=False, allow_null=True, write_only=True)
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if attrs.get("payment") and attrs.get("deposit"):
+            raise serializers.ValidationError({"payment": "Send either payment or legacy deposit, not both."})
+        legacy_deposit = attrs.pop("deposit", None)
+        if legacy_deposit:
+            attrs["payment"] = {**legacy_deposit, "payment_type": Payment.Type.DEPOSIT}
+        return attrs
 
 
 class BookingEstimateSerializer(serializers.Serializer):
@@ -712,15 +737,8 @@ class BookingEstimateSerializer(serializers.Serializer):
         return attrs
 
 
-class WalkInPaymentSerializer(serializers.Serializer):
-    provider = serializers.ChoiceField(choices=Payment.Provider.choices, default=Payment.Provider.CASH)
-    provider_reference = serializers.CharField(max_length=255, required=False, allow_blank=True)
-    status = serializers.ChoiceField(
-        choices=[Payment.Status.PAID, Payment.Status.PENDING],
-        default=Payment.Status.PAID,
-    )
-    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=0, required=False, allow_null=True)
-    metadata = serializers.JSONField(required=False, default=dict)
+class WalkInPaymentSerializer(InitialPaymentSerializer):
+    pass
 
 
 class WalkInBookingCreateSerializer(serializers.Serializer):
@@ -740,7 +758,7 @@ class WalkInBookingCreateSerializer(serializers.Serializer):
     preferences = RequestedRoomPreferenceSerializer(required=False, default=dict)
     guests = RequestedGuestSerializer(many=True, allow_empty=False)
     special_request = serializers.CharField(required=False, allow_blank=True)
-    payment = WalkInPaymentSerializer(required=False, default=dict)
+    payment = WalkInPaymentSerializer(required=False, allow_null=True)
 
     def validate(self, attrs):
         if attrs["check_out"] <= attrs["check_in"]:
@@ -752,14 +770,10 @@ class WalkInBookingCreateSerializer(serializers.Serializer):
 
 class PaymentCreateSerializer(serializers.Serializer):
     class PaymentType:
-        DEPOSIT = "deposit"
-        BALANCE = "balance"
-        FULL_PAYMENT = "full_payment"
-        CHOICES = [
-            (DEPOSIT, "Deposit"),
-            (BALANCE, "Remaining balance"),
-            (FULL_PAYMENT, "Full payment"),
-        ]
+        DEPOSIT = Payment.Type.DEPOSIT
+        BALANCE = Payment.Type.BALANCE
+        FULL_PAYMENT = Payment.Type.FULL_PAYMENT
+        CHOICES = Payment.Type.choices
 
     payment_type = serializers.ChoiceField(choices=PaymentType.CHOICES, default=PaymentType.DEPOSIT)
     provider = serializers.CharField(max_length=50)
