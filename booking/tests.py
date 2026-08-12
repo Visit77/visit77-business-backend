@@ -870,6 +870,87 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(room.status, PhysicalRoom.Status.OCCUPIED)
         self.assertFalse(booking.guests.filter(identity_documents__is_verified=False).exists())
 
+    def test_walk_in_v2_accepts_guest_identity_photos_in_initial_multipart_request(self):
+        room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="307")
+        response = self.client.post(
+            "/api/v1/admin/walk-in-booking-v2/",
+            {
+                "physical_room_id": room.id,
+                "rate_plan_id": self.rate_plan.id,
+                "check_in": str(self.check_in),
+                "check_out": str(self.check_out),
+                "contact_name": "Multipart Guest",
+                "contact_phone": "093333333",
+                "guest_market": "local",
+                "adults": 1,
+                "children": 0,
+                "guests": '[{"name":"Multipart Guest","identity_type":"nrc","identity_number":"12/ABC(N)123456","is_primary":true}]',
+                "payment": '{"payment_type":"full_payment","provider":"cash","status":"paid"}',
+                "guest_identity_photo_0": SimpleUploadedFile(
+                    "identity-photo.jpg", b"test-image", content_type="image/jpeg"
+                ),
+            },
+            format="multipart",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        booking = Booking.objects.get(id=response.data["data"]["booking"]["id"])
+        guest = booking.guests.get(is_primary=True)
+        document = guest.identity_documents.get(document_type="identity_photo")
+        self.assertEqual(document.document_number, "12/ABC(N)123456")
+        self.assertTrue(response.data["data"]["verification"]["identity_documents_complete"])
+
+    def test_walk_in_v2_accepts_bracket_notation_guest_form_data(self):
+        room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="308")
+        response = self.client.post(
+            "/api/v1/admin/walk-in-booking-v2/",
+            {
+                "physical_room_id": room.id,
+                "rate_plan_id": self.rate_plan.id,
+                "check_in": str(self.check_in),
+                "check_out": str(self.check_out),
+                "contact_name": "Mg Mg",
+                "contact_phone": "094444444",
+                "guest_market": "local",
+                "adults": 2,
+                "children": 0,
+                "guest[0][name]": "Mg Mg",
+                "guest[0][nrc_number]": "12/ABC(N)123456",
+                "guest[0][identity_type]": "nrc",
+                "guest[0][identity_number]": "12/ABC(N)123456",
+                "guest[0][is_primary]": "true",
+                "guest[0][photo]": SimpleUploadedFile(
+                    "mg-mg.jpg", b"first-image", content_type="image/jpeg"
+                ),
+                "guest[1][name]": "Su Su",
+                "guest[1][nrc_number]": "12/ABC(N)654321",
+                "guest[1][identity_type]": "nrc",
+                "guest[1][identity_number]": "12/ABC(N)654321",
+                "guest[1][is_primary]": "false",
+                "guest[1][photo]": SimpleUploadedFile(
+                    "su-su.jpg", b"second-image", content_type="image/jpeg"
+                ),
+                "payment[payment_type]": "deposit",
+                "payment[provider]": "cash",
+                "payment[status]": "paid",
+                "payment[amount]": "100.00",
+            },
+            format="multipart",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        booking = Booking.objects.get(id=response.data["data"]["booking"]["id"])
+        self.assertEqual(booking.guests.count(), 2)
+        self.assertEqual(booking.guests.filter(identity_documents__document_type="identity_photo").count(), 2)
+        self.assertTrue(booking.guests.get(name="Mg Mg").is_primary)
+        payment = booking.payments.get()
+        self.assertEqual(payment.payment_type, Payment.Type.DEPOSIT)
+        self.assertEqual(payment.amount, Decimal("100.00"))
+
     def test_public_booking_estimate_includes_paid_meal_plan_supplement(self):
         meal_plan = MealPlan.objects.create(
             hotel=self.hotel,

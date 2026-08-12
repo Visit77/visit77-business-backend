@@ -1,4 +1,6 @@
 from datetime import timedelta
+import json
+import re
 
 from django.conf import settings
 from django.http import FileResponse
@@ -1747,15 +1749,84 @@ class WalkInBookingV2View(APIView):
     permission_classes = [HasBookingAdminKey]
     business_scoped = True
 
+    @transaction.atomic
     def post(self, request):
-        serializer = WalkInBookingCreateSerializer(data=request.data)
+        data = request.data.dict() if hasattr(request.data, "dict") else request.data.copy()
+        nested_guests = {}
+        nested_identity_photos = {}
+        nested_payment = {}
+        guest_field_pattern = re.compile(
+            r"^guests?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+        )
+        payment_field_pattern = re.compile(
+            r"^payment\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+        )
+        for key, value in request.data.items():
+            match = guest_field_pattern.match(key)
+            if match:
+                index = int(match.group(1))
+                field = match.group(2)
+                if field in {"photo", "identity_photo"}:
+                    if key in request.FILES:
+                        nested_identity_photos[index] = request.FILES[key]
+                    continue
+                nested_guests.setdefault(index, {})[field] = value
+                continue
+
+            payment_match = payment_field_pattern.match(key)
+            if payment_match:
+                nested_payment[payment_match.group(1)] = value
+
+        if nested_guests:
+            indexes = sorted(nested_guests)
+            if indexes != list(range(len(indexes))):
+                raise ValidationError({"guests": "Guest indexes must start at 0 and be consecutive."})
+            data["guests"] = [nested_guests[index] for index in indexes]
+        if nested_payment:
+            data["payment"] = nested_payment
+
+        for field in ("guests", "payment", "preferences"):
+            raw_value = data.get(field)
+            if isinstance(raw_value, str):
+                try:
+                    data[field] = json.loads(raw_value)
+                except (TypeError, ValueError):
+                    raise ValidationError({field: "Must be valid JSON when using multipart/form-data."})
+
+        serializer = WalkInBookingCreateSerializer(data=data)
         serializer.is_valid(raise_exception=True)
+        guests_data = serializer.validated_data["guests"]
+        identity_photos = []
+        for index, guest_data in enumerate(guests_data):
+            file = (
+                nested_identity_photos.get(index)
+                or request.FILES.get(f"guest_identity_photo_{index}")
+                or request.FILES.get(f"guests[{index}][identity_photo]")
+            )
+            if file:
+                identity_photos.append((index, file, guest_data))
+
         booking = create_walk_in_booking(
             serializer.validated_data,
             idempotency_key=request.headers.get("Idempotency-Key"),
             core_business_id=getattr(request, "booking_core_business_id", None),
             check_in_immediately=False,
         )
+        created_guests = list(booking.guests.order_by("id"))
+        for index, file, guest_data in identity_photos:
+            if index >= len(created_guests):
+                raise ValidationError({f"guest_identity_photo_{index}": "Guest index does not exist."})
+            GuestIdentityDocument.objects.create(
+                guest=created_guests[index],
+                document_type=GuestIdentityDocument.DocumentType.IDENTITY_PHOTO,
+                document_number=(
+                    guest_data.get("identity_number")
+                    or guest_data.get("nrc_number")
+                    or guest_data.get("passport_number")
+                    or ""
+                ),
+                file=file,
+            )
         return success(
             {
                 "booking": BookingSerializer(booking, context={"request": request}).data,
