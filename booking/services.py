@@ -1478,6 +1478,140 @@ def create_admin_reservation(data, idempotency_key=None, core_business_id=None):
 
 
 @transaction.atomic
+def update_reservation_for_check_in(booking, data):
+    """Reprice and update every reservation-form field before check-in."""
+    booking = Booking.objects.select_for_update().select_related("hotel").get(pk=booking.pk)
+    if booking.status not in [Booking.Status.PENDING_PAYMENT, Booking.Status.CONFIRMED]:
+        raise ValidationError("Only pending or confirmed reservations can be updated before check-in.")
+
+    existing_rooms = list(
+        booking.rooms.select_related("room_type", "rate_plan", "meal_plan_link")
+        .prefetch_related("assignments")
+        .order_by("id")
+    )
+    requested_rooms = data.get("rooms")
+    if requested_rooms is None:
+        requested_rooms = []
+        for room in existing_rooms:
+            requested_rooms.append({
+                "core_room_type_id": room.room_type.core_room_type_id,
+                "rate_plan_id": room.rate_plan_id,
+                "meal_plan_link_id": room.meal_plan_link_id,
+                "breakfast_selected": bool(room.breakfast_snapshot.get("selected")),
+                "quantity": room.quantity,
+                "adults": room.adults,
+                "children": room.children,
+                "extra_beds": room.extra_beds,
+                "preferences": {},
+                "physical_room_ids": [
+                    assignment.physical_room_id
+                    for assignment in room.assignments.all()
+                    if assignment.released_at is None
+                ],
+            })
+        if len(requested_rooms) == 1:
+            for field in ["adults", "children", "extra_beds"]:
+                if field in data:
+                    requested_rooms[0][field] = data[field]
+
+    assignment_ids_by_index = [list(room.pop("physical_room_ids", [])) for room in requested_rooms]
+    if len(assignment_ids_by_index) != len(requested_rooms):
+        raise ValidationError({"rooms": "Invalid physical room assignments."})
+
+    existing_add_ons = [
+        {"add_on_id": item.add_on_id, "quantity": item.quantity, "configuration": item.configuration}
+        for item in booking.add_ons.all()
+    ]
+    old_inventory_field = (
+        "held_rooms" if booking.status == Booking.Status.PENDING_PAYMENT else "reserved_rooms"
+    )
+    _move_inventory(booking, old_inventory_field)
+
+    replacement, _created = create_booking({
+        "core_business_id": booking.hotel.core_business_id,
+        "core_customer_user_id": booking.core_customer_user_id,
+        "source": booking.source,
+        "source_name": booking.source_name,
+        "check_in": data.get("check_in", booking.check_in),
+        "check_out": data.get("check_out", booking.check_out),
+        "contact_name": data.get("contact_name", booking.contact_name),
+        "contact_phone": data.get("contact_phone", booking.contact_phone),
+        "contact_email": data.get("contact_email", booking.contact_email),
+        "guest_market": data.get("guest_market", booking.guest_market),
+        "special_request": data.get("special_request", booking.special_request),
+        "rooms": requested_rooms,
+        "add_ons": data.get("add_ons", existing_add_ons),
+        "guests": [{"name": data.get("contact_name", booking.contact_name), "is_primary": True}],
+    })
+    replacement.tax_total = booking.tax_total
+    replacement.discount_total = booking.discount_total
+    replacement.grand_total = (
+        replacement.room_total + replacement.add_on_total
+        + replacement.tax_total - replacement.discount_total
+    )
+    replacement.save(update_fields=["tax_total", "discount_total", "grand_total", "updated_at"])
+
+    if booking.amount_paid > replacement.grand_total:
+        raise ValidationError({
+            "grand_total": (
+                f"Updated total {replacement.grand_total} {replacement.currency} is below the already-paid "
+                f"amount {booking.amount_paid} {booking.currency}. Refund or correct the payment first."
+            )
+        })
+
+    replacement_rooms = list(replacement.rooms.order_by("id"))
+    for index, physical_ids in enumerate(assignment_ids_by_index):
+        if len(physical_ids) > replacement_rooms[index].quantity:
+            raise ValidationError({"rooms": "Assigned physical rooms cannot exceed room quantity."})
+        physical_rooms = list(PhysicalRoom.objects.select_for_update().filter(
+            id__in=physical_ids,
+            hotel=booking.hotel,
+            room_type=replacement_rooms[index].room_type,
+            is_active=True,
+            status=PhysicalRoom.Status.VACANT,
+        ))
+        if len(physical_rooms) != len(set(physical_ids)):
+            raise ValidationError({"rooms": "Every assigned physical room must be active, vacant, and match its room type."})
+        for physical_room in physical_rooms:
+            if _has_overlapping_room_assignment(
+                physical_room, replacement.check_in, replacement.check_out, exclude_booking=booking,
+            ):
+                raise ValidationError({"rooms": f"Room {physical_room.room_number} has an overlapping assignment."})
+            if _has_overlapping_room_block(physical_room, replacement.check_in, replacement.check_out):
+                raise ValidationError({"rooms": f"Room {physical_room.room_number} is blocked for one or more stay dates."})
+            validate_assignment_preferences(replacement_rooms[index], physical_room)
+
+    # The replacement currently owns held inventory. Preserve the original reservation state.
+    if booking.status == Booking.Status.CONFIRMED:
+        _move_inventory(replacement, "held_rooms", "reserved_rooms")
+
+    booking.rooms.all().delete()
+    booking.add_ons.all().delete()
+    BookingRoom.objects.filter(booking=replacement).update(booking=booking)
+    BookingAddOn.objects.filter(booking=replacement).update(booking=booking)
+    for index, physical_ids in enumerate(assignment_ids_by_index):
+        target_room = booking.rooms.order_by("id")[index]
+        for physical_room_id in physical_ids:
+            RoomAssignment.objects.create(
+                booking_room=target_room, physical_room_id=physical_room_id,
+            )
+
+    for field in [
+        "check_in", "check_out", "contact_name", "contact_phone", "contact_email",
+        "guest_market", "special_request", "currency", "room_total", "add_on_total",
+        "tax_total", "discount_total", "grand_total", "cancellation_policy_snapshot",
+    ]:
+        setattr(booking, field, getattr(replacement, field))
+    booking.save(update_fields=[
+        "check_in", "check_out", "contact_name", "contact_phone", "contact_email",
+        "guest_market", "special_request", "currency", "room_total", "add_on_total",
+        "tax_total", "discount_total", "grand_total", "cancellation_policy_snapshot", "updated_at",
+    ])
+    replacement.delete()
+    return booking
+
+
+@transaction.atomic
 def refund_payment(payment, amount, provider_reference=""):
     payment = Payment.objects.select_for_update().select_related("booking").get(pk=payment.pk)
     quote = refund_quote(payment.booking)

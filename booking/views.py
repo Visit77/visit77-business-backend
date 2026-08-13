@@ -59,7 +59,7 @@ from booking.serializers import (
     RoomTypeSerializer,
     WalkInBookingCreateSerializer,
 )
-from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_walk_in_booking, deprovision_hotel, estimate_booking, record_payment, refund_payment, refund_quote as calculate_refund_quote, validate_assignment_preferences
+from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_walk_in_booking, deprovision_hotel, estimate_booking, record_payment, refund_payment, refund_quote as calculate_refund_quote, update_reservation_for_check_in, validate_assignment_preferences
 from config.response_formatter import success
 
 
@@ -1522,17 +1522,14 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
         if booking.status not in [Booking.Status.CONFIRMED, Booking.Status.PENDING_PAYMENT]:
             raise ValidationError("Only pending or confirmed reservations can use the check-in form.")
         if request.method == "PATCH":
-            serializer = CheckInFormUpdateSerializer(data=request.data, partial=True)
+            serializer = CheckInFormUpdateSerializer(
+                data=request.data, partial=True, context={"booking": booking},
+            )
             serializer.is_valid(raise_exception=True)
             data = serializer.validated_data
-            for field in ["contact_name", "contact_phone", "contact_email", "special_request"]:
-                if field in data:
-                    setattr(booking, field, data[field])
-            booking.save(update_fields=[
-                field for field in ["contact_name", "contact_phone", "contact_email", "special_request"]
-                if field in data
-            ] + ["updated_at"])
-            for guest_data in data.get("guests", []):
+            guest_updates = data.pop("guests", [])
+            booking = update_reservation_for_check_in(booking, data)
+            for guest_data in guest_updates:
                 guest_id = guest_data.pop("id", None)
                 if guest_data.get("is_primary"):
                     booking.guests.update(is_primary=False)

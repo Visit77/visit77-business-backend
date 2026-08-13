@@ -711,15 +711,43 @@ class CheckInGuestUpdateSerializer(serializers.Serializer):
     passport_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
     identity_type = serializers.CharField(max_length=50, required=False, allow_blank=True)
     identity_number = serializers.CharField(max_length=100, required=False, allow_blank=True)
-    is_primary = serializers.BooleanField(required=False, default=False)
+    is_primary = serializers.BooleanField(required=False)
+
+
+class CheckInAddOnUpdateSerializer(serializers.Serializer):
+    add_on_id = serializers.IntegerField(min_value=1)
+    quantity = serializers.IntegerField(min_value=1, max_value=100, default=1)
+    configuration = serializers.JSONField(required=False, default=dict)
 
 
 class CheckInFormUpdateSerializer(serializers.Serializer):
+    check_in = serializers.DateField(required=False)
+    check_out = serializers.DateField(required=False)
     contact_name = serializers.CharField(max_length=255, required=False)
     contact_phone = serializers.CharField(max_length=64, required=False)
     contact_email = serializers.EmailField(required=False, allow_blank=True)
+    guest_market = serializers.ChoiceField(choices=RatePlan.GuestMarket.choices, required=False)
     special_request = serializers.CharField(required=False, allow_blank=True)
+    adults = serializers.IntegerField(min_value=1, required=False)
+    children = serializers.IntegerField(min_value=0, required=False)
+    extra_beds = serializers.IntegerField(min_value=0, required=False)
+    rooms = AdminReservationRoomSerializer(many=True, required=False)
+    add_ons = CheckInAddOnUpdateSerializer(many=True, required=False)
     guests = CheckInGuestUpdateSerializer(many=True, required=False)
+
+    def validate(self, attrs):
+        booking = self.context.get("booking")
+        check_in = attrs.get("check_in", booking.check_in if booking else None)
+        check_out = attrs.get("check_out", booking.check_out if booking else None)
+        if check_in and check_out and check_out <= check_in:
+            raise serializers.ValidationError({"check_out": "Must be after check_in."})
+        if check_in and check_out and (check_out - check_in).days > 90:
+            raise serializers.ValidationError({"check_out": "A stay cannot exceed 90 nights."})
+        if attrs.get("rooms") and any(key in attrs for key in ["adults", "children", "extra_beds"]):
+            raise serializers.ValidationError({
+                "rooms": "Send guest counts either inside rooms or as top-level fields, not both."
+            })
+        return attrs
 
 
 class CheckInConfirmSerializer(serializers.Serializer):

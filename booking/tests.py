@@ -13,7 +13,7 @@ from rest_framework_simplejwt.backends import TokenBackend
 
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, CoreIntegrationEvent, DailyInventory, DailyRate, Hotel, MealPlan, Payment, PhysicalRoom, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import sync_business_from_core
-from booking.services import availability_for_hotel, cancel_booking, create_booking, create_walk_in_booking, ensure_daily_inventory_for_room_type, record_payment, refund_payment, refund_quote
+from booking.services import availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_walk_in_booking, ensure_daily_inventory_for_room_type, record_payment, refund_payment, refund_quote
 
 
 class BookingServiceTests(TestCase):
@@ -718,6 +718,103 @@ class BookingApiTests(BookingServiceTests):
         refreshed = self.client.get(f"/api/v1/admin/bookings/{booking.id}/check-in-form/", **headers)
         self.assertEqual(refreshed.data["data"]["payment_summary"]["amount_due"], Decimal("0"))
         self.assertEqual(refreshed.data["data"]["payment_summary"]["payment_status"], "paid")
+
+    def test_check_in_form_updates_reservation_dates_capacity_and_guests(self):
+        room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-U")
+        booking = create_admin_reservation({
+            **self.payload(),
+            "source": Booking.Source.PHONE,
+            "rooms": [{
+                "core_room_type_id": self.room_type.core_room_type_id,
+                "rate_plan_id": self.rate_plan.id,
+                "quantity": 1,
+                "adults": 1,
+                "children": 0,
+                "extra_beds": 0,
+                "physical_room_ids": [room.id],
+            }],
+        })
+        primary = booking.guests.get(is_primary=True)
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+        new_check_out = self.check_out + timedelta(days=1)
+
+        response = self.client.patch(
+            f"/api/v1/admin/bookings/{booking.id}/check-in-form/",
+            {
+                "check_in": str(self.check_in),
+                "check_out": str(new_check_out),
+                "adults": 2,
+                "children": 1,
+                "extra_beds": 1,
+                "contact_name": "Updated Contact",
+                "guests": [
+                    {"id": primary.id, "name": "Updated Primary", "identity_number": "NRC-1", "is_primary": True},
+                    {"name": "Second Guest", "identity_number": "PP-2"},
+                ],
+            },
+            format="json",
+            **headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        booking.refresh_from_db()
+        booking_room = booking.rooms.get()
+        self.assertEqual(booking.check_out, new_check_out)
+        self.assertEqual(booking.contact_name, "Updated Contact")
+        self.assertEqual(booking_room.adults, 2)
+        self.assertEqual(booking_room.children, 1)
+        self.assertEqual(booking_room.extra_beds, 1)
+        self.assertEqual(booking_room.nights.count(), 3)
+        self.assertEqual(booking_room.assignments.get().physical_room, room)
+        self.assertEqual(booking.guests.count(), 2)
+        self.assertTrue(booking.guests.filter(name="Updated Primary", identity_number="NRC-1").exists())
+        self.assertTrue(booking.guests.filter(name="Second Guest", identity_number="PP-2").exists())
+
+    def test_check_in_form_rejects_date_update_overlapping_assigned_room(self):
+        room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-O")
+        first = create_admin_reservation({
+            **self.payload(),
+            "source": Booking.Source.PHONE,
+            "rooms": [{
+                "core_room_type_id": self.room_type.core_room_type_id,
+                "rate_plan_id": self.rate_plan.id,
+                "quantity": 1,
+                "adults": 1,
+                "children": 0,
+                "physical_room_ids": [room.id],
+            }],
+        })
+        later_payload = self.payload()
+        later_payload["check_in"] = self.check_out
+        later_payload["check_out"] = self.check_out + timedelta(days=2)
+        later_payload["source"] = Booking.Source.PHONE
+        later_payload["rooms"] = [{
+            "core_room_type_id": self.room_type.core_room_type_id,
+            "rate_plan_id": self.rate_plan.id,
+            "quantity": 1,
+            "adults": 1,
+            "children": 0,
+            "physical_room_ids": [room.id],
+        }]
+        create_admin_reservation(later_payload)
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        response = self.client.patch(
+            f"/api/v1/admin/bookings/{first.id}/check-in-form/",
+            {"check_out": str(self.check_out + timedelta(days=1))},
+            format="json",
+            **headers,
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        first.refresh_from_db()
+        self.assertEqual(first.check_out, self.check_out)
 
     def test_legacy_walk_in_api_checks_in_immediately_without_identity_verification(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="304")
