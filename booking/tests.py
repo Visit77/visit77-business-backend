@@ -638,6 +638,36 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(response.status_code, 400, response.data)
         self.assertFalse(PhysicalRoomBlock.objects.exists())
 
+    def test_room_board_exposes_upcoming_and_current_block_state(self):
+        room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="VIP-02")
+        future_start = self.check_in + timedelta(days=2)
+        future_end = future_start + timedelta(days=5)
+        block = PhysicalRoomBlock.objects.create(
+            physical_room=room,
+            start_date=future_start,
+            end_date=future_end,
+            note="Future VIP hold",
+        )
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        today_board = self.client.get("/api/v1/admin/room-board/", {"date": str(self.check_in)}, **headers)
+        today_room = next(item for item in today_board.data["data"]["rooms"] if item["id"] == room.id)
+        self.assertEqual(today_room["display_status"], "available")
+        self.assertEqual(today_room["block_status"], "upcoming_block")
+        self.assertIsNone(today_room["current_block"])
+        self.assertEqual(today_room["upcoming_block"]["id"], block.id)
+        self.assertEqual(today_room["block_timeline"]["days_until_block"], 2)
+        self.assertEqual(today_room["block_timeline"]["blocked_days"], 6)
+
+        future_board = self.client.get("/api/v1/admin/room-board/", {"date": str(future_start)}, **headers)
+        future_room = next(item for item in future_board.data["data"]["rooms"] if item["id"] == room.id)
+        self.assertEqual(future_room["display_status"], "blocked")
+        self.assertEqual(future_room["block_status"], "currently_blocked")
+        self.assertEqual(future_room["current_block"]["id"], block.id)
+
     def test_check_in_form_accepts_deposit_then_remaining_balance_payment(self):
         booking, _ = create_booking(self.payload())
         headers = {
