@@ -541,15 +541,12 @@ class GuestSerializer(serializers.ModelSerializer):
     documents = serializers.SerializerMethodField()
 
     def get_documents(self, obj):
-        request = self.context.get("request")
         return [
             {
                 "id": document.id,
                 "document_type": document.document_type,
                 "document_number": document.document_number,
-                "file_url": request.build_absolute_uri(
-                    f"/api/v1/admin/bookings/{obj.booking_id}/identity-documents/{document.id}/download/"
-                ) if request else f"/api/v1/admin/bookings/{obj.booking_id}/identity-documents/{document.id}/download/",
+                "file_url": document.file.url if document.file else None,
                 "is_verified": document.is_verified,
                 "verified_at": document.verified_at,
                 "uploaded_at": document.uploaded_at,
@@ -651,9 +648,7 @@ class GuestIdentityDocumentSerializer(serializers.ModelSerializer):
     file_url = serializers.SerializerMethodField()
 
     def get_file_url(self, obj):
-        path = f"/api/v1/admin/bookings/{obj.guest.booking_id}/identity-documents/{obj.id}/download/"
-        request = self.context.get("request")
-        return request.build_absolute_uri(path) if request else path
+        return obj.file.url if obj.file else None
 
     class Meta:
         model = GuestIdentityDocument

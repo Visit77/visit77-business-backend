@@ -19,6 +19,12 @@ if not CORE_JWT_SIGNING_KEY and not CORE_JWT_VERIFYING_KEY:
     raise ImproperlyConfigured("Core JWT verification key must be configured in production.")
 if env("DB_ENGINE", default="sqlite") != "postgres":
     raise ImproperlyConfigured("Production Booking Engine must use PostgreSQL (DB_ENGINE=postgres).")
+if not USE_S3_STORAGE:
+    raise ImproperlyConfigured("Production Booking Engine must use S3 storage (USE_S3_STORAGE=true).")
+if not AWS_S3_CUSTOM_DOMAIN:
+    raise ImproperlyConfigured("AWS_S3_CUSTOM_DOMAIN must be configured for CloudFront media delivery.")
+if not AWS_CLOUDFRONT_KEY_ID or not AWS_CLOUDFRONT_KEY:
+    raise ImproperlyConfigured("CloudFront signing credentials must be configured for private documents.")
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SECURE_SSL_REDIRECT = env.bool("SECURE_SSL_REDIRECT", default=True)

@@ -3,7 +3,7 @@ import json
 import re
 
 from django.conf import settings
-from django.http import FileResponse
+from django.shortcuts import redirect
 from django.db import transaction
 from django.db.models import Max, Prefetch, Q
 from django.utils import timezone
@@ -757,10 +757,7 @@ class RoomBoardView(APIView):
                         "id": document.id,
                         "document_type": document.document_type,
                         "document_number": document.document_number,
-                        "file_url": (
-                            f"/api/v1/admin/bookings/{booking.id}/"
-                            f"identity-documents/{document.id}/download/"
-                        ),
+                        "file_url": document.file.url if document.file else None,
                         "is_verified": document.is_verified,
                         "verified_at": document.verified_at,
                         "uploaded_at": document.uploaded_at,
@@ -1553,11 +1550,7 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
         ).first()
         if not document or not document.file:
             raise NotFound("Identity document not found.")
-        return FileResponse(
-            document.file.open("rb"),
-            as_attachment=False,
-            filename=document.file.name.rsplit("/", 1)[-1],
-        )
+        return redirect(document.file.url)
 
     @action(detail=True, methods=["post"])
     def payment(self, request, pk=None):

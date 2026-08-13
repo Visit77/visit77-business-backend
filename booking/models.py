@@ -4,6 +4,8 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.db import models
 
+from booking.storage import get_private_document_storage
+
 
 class Hotel(models.Model):
     """Read-only projection of a Visit77 Core business."""
@@ -552,7 +554,10 @@ class GuestIdentityDocument(models.Model):
     guest = models.ForeignKey(Guest, on_delete=models.CASCADE, related_name="identity_documents")
     document_type = models.CharField(max_length=24, choices=DocumentType.choices)
     document_number = models.CharField(max_length=100, blank=True)
-    file = models.FileField(upload_to="booking/guest-identities/%Y/%m/")
+    file = models.FileField(
+        upload_to="booking/guest-identities/%Y/%m/",
+        storage=get_private_document_storage,
+    )
     is_verified = models.BooleanField(default=False)
     verified_at = models.DateTimeField(null=True, blank=True)
     verified_by_core_user_id = models.PositiveBigIntegerField(null=True, blank=True)

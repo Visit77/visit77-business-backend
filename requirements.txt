@@ -10,4 +10,5 @@ gunicorn==25.3.0
 daphne==4.2.1
 celery==5.5.3
 redis==6.1.0
+django-storages[s3]==1.14.6
 debugpy==1.8.14
