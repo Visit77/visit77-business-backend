@@ -82,10 +82,9 @@ def _check_in_readiness(booking):
     primary_guest = next((guest for guest in guests if guest.is_primary), None)
     if not primary_guest:
         missing.append("primary_guest")
-    else:
-        document_types = {doc.document_type for doc in primary_guest.identity_documents.all()}
-        if GuestIdentityDocument.DocumentType.IDENTITY_PHOTO not in document_types:
-            missing.append(f"guests.{primary_guest.id}.identity_photo")
+    for guest in guests:
+        if not (guest.identity_number or guest.nrc_number or guest.passport_number):
+            missing.append(f"guests.{guest.id}.identity_number")
 
     unassigned = []
     non_vacant = []
@@ -109,8 +108,12 @@ def _check_in_readiness(booking):
     else:
         payment_status = "partially_paid"
     return {
-        "guest_information_complete": primary_guest is not None,
-        "identity_documents_complete": not any("identity_photo" in item for item in missing),
+        "guest_information_complete": primary_guest is not None and not any(
+            ".identity_number" in item for item in missing
+        ),
+        "identity_information_complete": not any(".identity_number" in item for item in missing),
+        # Backward-compatible field. An uploaded identity photo is now optional.
+        "identity_documents_complete": True,
         "all_rooms_assigned": not unassigned,
         "assigned_rooms_vacant": not non_vacant,
         "payment_status": payment_status,

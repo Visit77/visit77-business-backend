@@ -838,7 +838,7 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(room.status, PhysicalRoom.Status.VACANT)
         self.assertFalse(response.data["data"]["verification"]["can_check_in"])
 
-    def test_walk_in_uses_check_in_form_documents_and_verified_final_check_in(self):
+    def test_walk_in_check_in_requires_identity_number_but_not_identity_photo(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="306")
         headers = {
             "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
@@ -875,33 +875,6 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(booking.status, Booking.Status.CONFIRMED)
         self.assertFalse(booking.payments.exists())
 
-        blocked = self.client.post(
-            f"/api/v1/admin/bookings/{booking_id}/check-in/",
-            {"verification_confirmed": True},
-            format="json",
-            **headers,
-        )
-        self.assertEqual(blocked.status_code, 400, blocked.data)
-        self.assertIn("Missing fields - guests.", blocked.data["error"][1])
-        self.assertIn(".identity_photo", blocked.data["error"][1])
-
-        uploaded = self.client.post(
-            f"/api/v1/admin/bookings/{booking_id}/guest-identity-document/",
-            {
-                "guest_id": guest.id,
-                "document_type": "identity_photo",
-                "document_number": guest.nrc_number,
-                "file": SimpleUploadedFile("identity-photo.jpg", b"test-image", content_type="image/jpeg"),
-            },
-            format="multipart",
-            **headers,
-        )
-        self.assertEqual(uploaded.status_code, 201, uploaded.data)
-
-        form = self.client.get(f"/api/v1/admin/bookings/{booking_id}/check-in-form/", **headers)
-        self.assertEqual(form.status_code, 200, form.data)
-        self.assertTrue(form.data["data"]["verification"]["can_check_in"])
-
         checked_in = self.client.post(
             f"/api/v1/admin/bookings/{booking_id}/check-in/",
             {"verification_confirmed": True, "verification_note": "NRC checked."},
@@ -914,7 +887,40 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(booking.status, Booking.Status.CHECKED_IN)
         self.assertEqual(booking.checked_in_by_core_user_id, 501)
         self.assertEqual(room.status, PhysicalRoom.Status.OCCUPIED)
-        self.assertFalse(booking.guests.filter(identity_documents__is_verified=False).exists())
+        self.assertFalse(booking.guests.filter(identity_documents__isnull=False).exists())
+
+    def test_check_in_blocks_guest_without_identity_number_even_when_photo_is_optional(self):
+        room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="306-B")
+        booking = create_walk_in_booking(
+            {
+                "physical_room_id": room.id,
+                "rate_plan_id": self.rate_plan.id,
+                "check_in": self.check_in,
+                "check_out": self.check_out,
+                "contact_name": "No Identity Guest",
+                "contact_phone": "092222222",
+                "guest_market": "local",
+                "adults": 1,
+                "children": 0,
+                "guests": [{"name": "No Identity Guest", "is_primary": True}],
+            },
+            core_business_id=self.hotel.core_business_id,
+            check_in_immediately=False,
+        )
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        response = self.client.post(
+            f"/api/v1/admin/bookings/{booking.id}/check-in/",
+            {"verification_confirmed": True},
+            format="json",
+            **headers,
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn(".identity_number", response.data["error"][1])
 
     def test_walk_in_v2_accepts_guest_identity_photos_in_initial_multipart_request(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="307")
