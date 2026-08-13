@@ -59,3 +59,5 @@ postman/*
 config/settings/*.bak.*
 docker-compose*.bak.*
 .env.bak.*
+booking/guest-identities/
+booking/guest-identities/*

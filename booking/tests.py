@@ -589,6 +589,22 @@ class BookingApiTests(BookingServiceTests):
         )
         self.assertEqual(unavailable.status_code, 400, unavailable.data)
 
+        unblocked = self.client.post(
+            f"/api/v1/admin/room-blocks/{created.data['data']['id']}/unblock/",
+            {},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(unblocked.status_code, 200, unblocked.data)
+        self.assertFalse(unblocked.data["data"]["is_active"])
+
+        board = self.client.get("/api/v1/admin/room-board/", {"date": str(self.check_in)}, **headers)
+        board_room = next(item for item in board.data["data"]["rooms"] if item["id"] == room.id)
+        self.assertEqual(board_room["display_status"], "available")
+        self.assertEqual(board.data["data"]["summary"]["blocked"], 0)
+        inventory.refresh_from_db()
+        self.assertEqual(inventory.total_rooms, 1)
+
     def test_room_block_rejects_reserved_or_occupied_date_range(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="O01")
         booking = create_walk_in_booking(
@@ -1494,6 +1510,13 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(data["current_booking"]["payment_status"], "paid")
         self.assertEqual(data["current_booking"]["guest_count"], {"adults": 2, "children": 1, "total": 3})
         self.assertEqual(data["current_booking"]["amount"]["grand_total"], booking.grand_total)
+        guest_data = data["current_booking"]["primary_guest"]
+        self.assertIn("nrc_number", guest_data)
+        self.assertIn("passport_number", guest_data)
+        self.assertIn("identity_type", guest_data)
+        self.assertIn("identity_number", guest_data)
+        self.assertIn("is_primary", guest_data)
+        self.assertIn("documents", guest_data)
 
     def test_assignment_requires_confirmed_booking_and_vacant_room(self):
         room = PhysicalRoom.objects.create(

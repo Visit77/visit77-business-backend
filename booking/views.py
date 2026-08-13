@@ -439,7 +439,7 @@ class RoomBoardView(APIView):
         ).prefetch_related(
             "booking_room__nights",
             "booking_room__booking__payments",
-            "booking_room__booking__guests",
+            "booking_room__booking__guests__identity_documents",
         ).order_by("assigned_at", "id")
         assignment_by_room = {assignment.physical_room_id: assignment for assignment in active_assignments}
 
@@ -740,6 +740,35 @@ class RoomBoardView(APIView):
         primary_guest = next((guest for guest in guests if guest.is_primary), guests[0] if guests else None)
         payments = list(booking.payments.all())
 
+        def serialize_guest(guest):
+            return {
+                "id": guest.id,
+                "name": guest.name,
+                "phone": guest.phone,
+                "email": guest.email,
+                "nationality": guest.nationality,
+                "nrc_number": guest.nrc_number,
+                "passport_number": guest.passport_number,
+                "identity_type": guest.identity_type,
+                "identity_number": guest.identity_number,
+                "is_primary": guest.is_primary,
+                "documents": [
+                    {
+                        "id": document.id,
+                        "document_type": document.document_type,
+                        "document_number": document.document_number,
+                        "file_url": (
+                            f"/api/v1/admin/bookings/{booking.id}/"
+                            f"identity-documents/{document.id}/download/"
+                        ),
+                        "is_verified": document.is_verified,
+                        "verified_at": document.verified_at,
+                        "uploaded_at": document.uploaded_at,
+                    }
+                    for document in guest.identity_documents.all()
+                ],
+            }
+
         return {
             "id": booking.id,
             "reference": booking.reference,
@@ -755,24 +784,8 @@ class RoomBoardView(APIView):
                 "phone": booking.contact_phone,
                 "email": booking.contact_email,
             },
-            "primary_guest": {
-                "id": primary_guest.id,
-                "name": primary_guest.name,
-                "phone": primary_guest.phone,
-                "email": primary_guest.email,
-                "nationality": primary_guest.nationality,
-            } if primary_guest else None,
-            "guests": [
-                {
-                    "id": guest.id,
-                    "name": guest.name,
-                    "phone": guest.phone,
-                    "email": guest.email,
-                    "nationality": guest.nationality,
-                    "is_primary": guest.is_primary,
-                }
-                for guest in guests
-            ],
+            "primary_guest": serialize_guest(primary_guest) if primary_guest else None,
+            "guests": [serialize_guest(guest) for guest in guests],
             "guest_count": {
                 "adults": booking_room.adults,
                 "children": booking_room.children,
@@ -1049,7 +1062,7 @@ class PhysicalRoomViewSet(AdminModelViewSet):
         ).prefetch_related(
             "booking_room__nights",
             "booking_room__booking__payments",
-            "booking_room__booking__guests",
+            "booking_room__booking__guests__identity_documents",
         ).order_by("assigned_at", "id").first()
 
         active_block = PhysicalRoomBlock.objects.filter(
@@ -1111,6 +1124,20 @@ class PhysicalRoomBlockViewSet(AdminModelViewSet):
         room = instance.physical_room
         instance.delete()
         self._reconcile_inventory(room)
+
+    @action(detail=True, methods=["post"], url_path="unblock")
+    @transaction.atomic
+    def unblock(self, request, pk=None):
+        block = PhysicalRoomBlock.objects.select_for_update().select_related(
+            "physical_room",
+            "physical_room__hotel",
+            "physical_room__room_type",
+        ).get(pk=self.get_object().pk)
+        if block.is_active:
+            block.is_active = False
+            block.save(update_fields=["is_active", "updated_at"])
+            self._reconcile_inventory(block.physical_room)
+        return success(PhysicalRoomBlockSerializer(block, context={"request": request}).data)
 
 
 class RatePlanViewSet(AdminModelViewSet):
