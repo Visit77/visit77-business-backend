@@ -636,7 +636,57 @@ class BookingApiTests(BookingServiceTests):
             HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
         )
         self.assertEqual(response.status_code, 400, response.data)
+        error_message = " ".join(response.data["error"])
+        self.assertIn(booking.reference, error_message)
+        self.assertIn("occupied", error_message)
+        self.assertIn(str(booking.check_in), error_message)
+        self.assertIn(str(booking.check_out), error_message)
+        conflicts = response.data["data"]["conflict_bookings"]
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual(conflicts[0]["booking_id"], str(booking.id))
+        self.assertEqual(conflicts[0]["reference"], booking.reference)
+        self.assertEqual(conflicts[0]["status"], "occupied")
+        self.assertEqual(conflicts[0]["check_in"], str(booking.check_in))
+        self.assertEqual(conflicts[0]["check_out"], str(booking.check_out))
         self.assertFalse(PhysicalRoomBlock.objects.exists())
+
+    def test_room_block_conflict_message_identifies_reserved_booking(self):
+        room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="R01")
+        booking = create_walk_in_booking(
+            {
+                "physical_room_id": room.id,
+                "rate_plan_id": self.rate_plan.id,
+                "check_in": self.check_in,
+                "check_out": self.check_out,
+                "contact_name": "Reserved Guest",
+                "contact_phone": "091111111",
+                "guest_market": "local",
+                "adults": 1,
+                "children": 0,
+                "guests": [{"name": "Reserved Guest", "is_primary": True}],
+            },
+            core_business_id=self.hotel.core_business_id,
+            check_in_immediately=False,
+        )
+        response = self.client.post(
+            "/api/v1/admin/room-blocks/",
+            {
+                "physical_room": room.id,
+                "start_date": str(self.check_in),
+                "end_date": str(self.check_out),
+            },
+            format="json",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        error_message = " ".join(response.data["error"])
+        self.assertIn(booking.reference, error_message)
+        self.assertIn("reserved", error_message)
+        conflicts = response.data["data"]["conflict_bookings"]
+        self.assertEqual(conflicts[0]["status"], "reserved")
+        self.assertEqual(conflicts[0]["booking_status"], Booking.Status.CONFIRMED)
 
     def test_room_board_exposes_upcoming_and_current_block_state(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="VIP-02")

@@ -1,3 +1,4 @@
+from datetime import timedelta
 from decimal import Decimal
 
 from django.db.models import Q
@@ -238,16 +239,48 @@ class PhysicalRoomBlockSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"end_date": "Must be on or after start_date."})
         if not (room and start_date and end_date and is_active):
             return attrs
-        booking_conflict = RoomAssignment.objects.filter(
+        booking_conflicts = RoomAssignment.objects.filter(
             physical_room=room,
             released_at__isnull=True,
             booking_room__booking__status__in=[Booking.Status.CONFIRMED, Booking.Status.CHECKED_IN],
             booking_room__booking__check_in__lte=end_date,
             booking_room__booking__check_out__gt=start_date,
-        ).exists()
-        if booking_conflict:
+        ).select_related("booking_room__booking").order_by(
+            "booking_room__booking__check_in", "booking_room__booking__reference",
+        )
+        conflict_details = []
+        conflict_bookings = []
+        seen_booking_ids = set()
+        for assignment in booking_conflicts:
+            booking = assignment.booking_room.booking
+            if booking.id in seen_booking_ids:
+                continue
+            seen_booking_ids.add(booking.id)
+            display_status = (
+                "occupied" if booking.status == Booking.Status.CHECKED_IN else "reserved"
+            )
+            overlap_start = max(start_date, booking.check_in)
+            overlap_end = min(end_date, booking.check_out - timedelta(days=1))
+            conflict_details.append(
+                f"Booking {booking.reference} ({display_status}) is from "
+                f"{booking.check_in} to {booking.check_out} and conflicts from "
+                f"{overlap_start} to {overlap_end}."
+            )
+            conflict_bookings.append({
+                "booking_id": str(booking.id),
+                "reference": booking.reference,
+                "status": display_status,
+                "booking_status": booking.status,
+                "contact_name": booking.contact_name,
+                "check_in": str(booking.check_in),
+                "check_out": str(booking.check_out),
+                "conflict_start_date": str(overlap_start),
+                "conflict_end_date": str(overlap_end),
+            })
+        if conflict_details:
             raise serializers.ValidationError({
-                "date_range": "The room is reserved or occupied within the selected block date range."
+                "date_range": " ".join(conflict_details),
+                "conflict_bookings": conflict_bookings,
             })
         overlapping_blocks = PhysicalRoomBlock.objects.filter(
             physical_room=room,
