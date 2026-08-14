@@ -445,6 +445,21 @@ class RoomBoardView(APIView):
             "booking_room__booking__guests__identity_documents",
         ).order_by("assigned_at", "id")
         assignment_by_room = {assignment.physical_room_id: assignment for assignment in active_assignments}
+        checked_in_assignments = RoomAssignment.objects.filter(
+            physical_room_id__in=room_ids,
+            released_at__isnull=True,
+            booking_room__booking__status=Booking.Status.CHECKED_IN,
+        ).select_related(
+            "physical_room", "booking_room__room_type", "booking_room__rate_plan",
+            "booking_room__meal_plan_link", "booking_room__meal_plan_link__meal_plan",
+            "booking_room__booking",
+        ).prefetch_related(
+            "booking_room__nights", "booking_room__booking__payments",
+            "booking_room__booking__guests__identity_documents",
+        ).order_by("assigned_at", "id")
+        # An actual active stay has precedence over a date-based reservation.
+        for checked_in_assignment in checked_in_assignments:
+            assignment_by_room[checked_in_assignment.physical_room_id] = checked_in_assignment
 
         future_assignments = RoomAssignment.objects.filter(
             physical_room_id__in=room_ids,
@@ -1108,6 +1123,20 @@ class PhysicalRoomViewSet(AdminModelViewSet):
             "booking_room__booking__payments",
             "booking_room__booking__guests__identity_documents",
         ).order_by("assigned_at", "id").first()
+        checked_in_assignment = RoomAssignment.objects.filter(
+            physical_room=room,
+            released_at__isnull=True,
+            booking_room__booking__status=Booking.Status.CHECKED_IN,
+        ).select_related(
+            "booking_room__room_type", "booking_room__rate_plan",
+            "booking_room__meal_plan_link", "booking_room__meal_plan_link__meal_plan",
+            "booking_room__booking",
+        ).prefetch_related(
+            "booking_room__nights", "booking_room__booking__payments",
+            "booking_room__booking__guests__identity_documents",
+        ).order_by("assigned_at", "id").first()
+        if checked_in_assignment:
+            assignment = checked_in_assignment
 
         active_block = PhysicalRoomBlock.objects.filter(
             physical_room=room,

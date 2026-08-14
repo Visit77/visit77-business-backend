@@ -1582,24 +1582,48 @@ def update_reservation_for_check_in(booking, data):
                 released_at__isnull=True,
             ).exists()
             if already_assigned_to_booking and physical_room.status == PhysicalRoom.Status.OCCUPIED:
-                has_actual_checked_in_stay = RoomAssignment.objects.filter(
+                checked_in_conflicts = RoomAssignment.objects.filter(
                     physical_room=physical_room,
                     released_at__isnull=True,
                     booking_room__booking__status=Booking.Status.CHECKED_IN,
-                ).exclude(booking_room__booking=booking).exists()
-                if not has_actual_checked_in_stay:
+                ).exclude(booking_room__booking=booking).select_related("booking_room__booking")
+                if not checked_in_conflicts.exists():
                     # A confirmed reservation must not make the room operationally occupied.
                     # Repair stale state left by the former walk-in flow.
                     physical_room.status = PhysicalRoom.Status.VACANT
                     physical_room.save(update_fields=["status"])
+                else:
+                    conflict_bookings = []
+                    seen_ids = set()
+                    for conflict in checked_in_conflicts:
+                        conflict_booking = conflict.booking_room.booking
+                        if conflict_booking.id in seen_ids:
+                            continue
+                        seen_ids.add(conflict_booking.id)
+                        conflict_bookings.append({
+                            "booking_id": str(conflict_booking.id),
+                            "reference": conflict_booking.reference,
+                            "status": "occupied",
+                            "booking_status": conflict_booking.status,
+                            "contact_name": conflict_booking.contact_name,
+                            "check_in": str(conflict_booking.check_in),
+                            "check_out": str(conflict_booking.check_out),
+                            "physical_room_id": physical_room.id,
+                            "room_number": physical_room.room_number,
+                        })
+                    raise ValidationError({
+                        "rooms": (
+                            f"Room {physical_room.room_number} is occupied by checked-in booking "
+                            f"{conflict_bookings[0]['reference']}. Check out or change that booking's room first."
+                        ),
+                        "conflict_bookings": conflict_bookings,
+                    })
             if physical_room.status != PhysicalRoom.Status.VACANT and not already_assigned_to_booking:
                 raise ValidationError({
                     "rooms": f"Room {physical_room.room_number} is not vacant and cannot be newly assigned."
                 })
             if physical_room.status != PhysicalRoom.Status.VACANT:
-                raise ValidationError({
-                    "rooms": f"Room {physical_room.room_number} is occupied by another checked-in booking."
-                })
+                raise ValidationError({"rooms": f"Room {physical_room.room_number} is not vacant."})
             if _has_overlapping_room_assignment(
                 physical_room, replacement.check_in, replacement.check_out, exclude_booking=booking,
             ):

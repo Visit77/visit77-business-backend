@@ -886,6 +886,60 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(booking.status, Booking.Status.CHECKED_IN)
         self.assertEqual(room.status, PhysicalRoom.Status.OCCUPIED)
 
+    def test_check_in_form_reports_actual_checked_in_booking_conflict(self):
+        room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-C")
+        occupied_booking = create_walk_in_booking(
+            {
+                "physical_room_id": room.id,
+                "rate_plan_id": self.rate_plan.id,
+                "check_in": self.check_in,
+                "check_out": self.check_out,
+                "contact_name": "Existing Stay",
+                "contact_phone": "091111111",
+                "guest_market": "local",
+                "adults": 1,
+                "children": 0,
+                "guests": [{"name": "Existing Stay", "identity_number": "NRC-OLD", "is_primary": True}],
+            },
+            core_business_id=self.hotel.core_business_id,
+            check_in_immediately=True,
+        )
+        reserved_booking, _ = create_booking(self.payload())
+        record_payment(reserved_booking, {
+            "payment_type": Payment.Type.FULL_PAYMENT,
+            "provider": Payment.Provider.CASH,
+            "amount": reserved_booking.grand_total,
+            "status": Payment.Status.PAID,
+        }, auto_assign=False)
+        reserved_booking.refresh_from_db()
+        RoomAssignment.objects.create(
+            booking_room=reserved_booking.rooms.get(), physical_room=room,
+        )
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        response = self.client.patch(
+            f"/api/v1/admin/bookings/{reserved_booking.id}/check-in-form/",
+            {"physical_room_id": room.id},
+            format="json",
+            **headers,
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        conflict = response.data["data"]["conflict_bookings"][0]
+        self.assertEqual(conflict["booking_id"], str(occupied_booking.id))
+        self.assertEqual(conflict["reference"], occupied_booking.reference)
+        self.assertEqual(conflict["status"], "occupied")
+
+        board = self.client.get(
+            "/api/v1/admin/room-board/", {"date": str(self.check_in)}, **headers,
+        )
+        board_room = next(item for item in board.data["data"]["rooms"] if item["id"] == room.id)
+        self.assertEqual(board_room["display_status"], "occupied")
+        self.assertEqual(str(board_room["current_booking"]["id"]), str(occupied_booking.id))
+
     def test_check_in_form_rejects_date_update_overlapping_assigned_room(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-O")
         first = create_admin_reservation({
