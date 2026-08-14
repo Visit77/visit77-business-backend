@@ -1779,6 +1779,24 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
         booking = Booking.objects.select_for_update().get(pk=self.get_object().pk)
         if booking.status != Booking.Status.CONFIRMED:
             raise ValidationError("Only a confirmed booking can check in.")
+        assigned_room_ids = RoomAssignment.objects.filter(
+            booking_room__booking=booking,
+            released_at__isnull=True,
+        ).values_list("physical_room_id", flat=True)
+        assigned_rooms = PhysicalRoom.objects.select_for_update().filter(id__in=assigned_room_ids)
+        for physical_room in assigned_rooms:
+            if physical_room.status != PhysicalRoom.Status.OCCUPIED:
+                continue
+            has_other_checked_in_stay = RoomAssignment.objects.filter(
+                physical_room=physical_room,
+                released_at__isnull=True,
+                booking_room__booking__status=Booking.Status.CHECKED_IN,
+            ).exclude(booking_room__booking=booking).exists()
+            if not has_other_checked_in_stay:
+                # Repair legacy state: reserved/confirmed rooms must remain vacant
+                # until this final check-in transaction succeeds.
+                physical_room.status = PhysicalRoom.Status.VACANT
+                physical_room.save(update_fields=["status"])
         readiness = _check_in_readiness(booking)
         if not readiness["can_check_in"]:
             raise ValidationError({

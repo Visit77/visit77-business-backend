@@ -866,11 +866,25 @@ class BookingApiTests(BookingServiceTests):
 
         self.assertEqual(response.status_code, 200, response.data)
         booking.refresh_from_db()
+        room.refresh_from_db()
         self.assertEqual(booking.rooms.get().assignments.get().physical_room, room)
+        self.assertEqual(room.status, PhysicalRoom.Status.VACANT)
         self.assertEqual(booking.guests.count(), 1)
         guest = booking.guests.get()
         self.assertEqual(guest.name, "Updated Existing Guest")
         self.assertEqual(guest.nrc_number, "8/MAMANA(N)123465")
+
+        checked_in = self.client.post(
+            f"/api/v1/admin/bookings/{booking.id}/check-in/",
+            {"verification_confirmed": True},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(checked_in.status_code, 200, checked_in.data)
+        booking.refresh_from_db()
+        room.refresh_from_db()
+        self.assertEqual(booking.status, Booking.Status.CHECKED_IN)
+        self.assertEqual(room.status, PhysicalRoom.Status.OCCUPIED)
 
     def test_check_in_form_rejects_date_update_overlapping_assigned_room(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-O")
