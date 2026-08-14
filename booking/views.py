@@ -1,3 +1,4 @@
+from collections import defaultdict
 from datetime import timedelta
 import json
 import re
@@ -465,14 +466,14 @@ class RoomBoardView(APIView):
             physical_room_id__in=room_ids,
             released_at__isnull=True,
             booking_room__booking__status=Booking.Status.CONFIRMED,
-            booking_room__booking__check_in__gt=target_date,
+            booking_room__booking__check_in__gte=target_date,
         ).select_related(
             "booking_room__room_type",
             "booking_room__booking",
         ).order_by("booking_room__booking__check_in", "assigned_at", "id")
-        next_assignment_by_room = {}
+        next_assignments_by_room = defaultdict(list)
         for future_assignment in future_assignments:
-            next_assignment_by_room.setdefault(future_assignment.physical_room_id, future_assignment)
+            next_assignments_by_room[future_assignment.physical_room_id].append(future_assignment)
 
         released_assignments = RoomAssignment.objects.filter(
             physical_room_id__in=room_ids,
@@ -524,7 +525,7 @@ class RoomBoardView(APIView):
                 display_status=display_status,
                 target_date=target_date,
                 assignment=assignment,
-                next_assignment=next_assignment_by_room.get(room.id),
+                next_assignments=next_assignments_by_room.get(room.id, []),
                 checkout_assignment=last_checkout_assignment_by_room.get(room.id),
             )
             floor_key = (
@@ -594,6 +595,9 @@ class RoomBoardView(APIView):
                 "status_note": room.note,
                 "timeline": timeline,
                 "timeline_text": timeline["text"],
+                "next_reservations": self.serialize_next_reservations(
+                    next_assignments_by_room.get(room.id, [])
+                ),
                 "room_type": self.serialize_room_board_room_type(room.room_type),
                 "assignment": assignment_data,
                 "current_booking": self.serialize_room_board_current_booking(assignment) if assignment else None,
@@ -679,7 +683,29 @@ class RoomBoardView(APIView):
             "block_timeline": None,
         }
 
-    def build_room_timeline(self, *, display_status, target_date, assignment=None, next_assignment=None, checkout_assignment=None):
+    def serialize_next_reservations(self, assignments):
+        reservations = []
+        seen_booking_ids = set()
+        for assignment in assignments:
+            booking = assignment.booking_room.booking
+            if booking.id in seen_booking_ids:
+                continue
+            seen_booking_ids.add(booking.id)
+            reservations.append({
+                "assignment_id": assignment.id,
+                "booking_id": booking.id,
+                "booking_reference": booking.reference,
+                "booking_status": booking.status,
+                "contact_name": booking.contact_name,
+                "check_in": booking.check_in,
+                "check_out": booking.check_out,
+                "nights": booking.nights,
+            })
+        return reservations
+
+    def build_room_timeline(self, *, display_status, target_date, assignment=None, next_assignments=None, checkout_assignment=None):
+        next_assignments = next_assignments or []
+        next_reservations = self.serialize_next_reservations(next_assignments)
         base = {
             "type": display_status,
             "text": "",
@@ -687,6 +713,7 @@ class RoomBoardView(APIView):
             "reserved_nights": None,
             "vacant_days": None,
             "next_reserved": None,
+            "next_reservations": next_reservations,
             "checkout": None,
         }
 
@@ -736,8 +763,8 @@ class RoomBoardView(APIView):
             return base
 
         if display_status == "available":
-            if next_assignment:
-                next_booking = next_assignment.booking_room.booking
+            if next_assignments:
+                next_booking = next_assignments[0].booking_room.booking
                 vacant_days = max((next_booking.check_in - target_date).days, 0)
                 reserved_nights = max(next_booking.nights, 0)
                 base.update({
@@ -1138,6 +1165,15 @@ class PhysicalRoomViewSet(AdminModelViewSet):
         if checked_in_assignment:
             assignment = checked_in_assignment
 
+        next_assignments = list(RoomAssignment.objects.filter(
+            physical_room=room,
+            released_at__isnull=True,
+            booking_room__booking__status=Booking.Status.CONFIRMED,
+            booking_room__booking__check_in__gte=target_date,
+        ).select_related("booking_room__booking").order_by(
+            "booking_room__booking__check_in", "assigned_at", "id",
+        ))
+
         active_block = PhysicalRoomBlock.objects.filter(
             physical_room=room,
             is_active=True,
@@ -1177,6 +1213,7 @@ class PhysicalRoomViewSet(AdminModelViewSet):
                 upcoming_block=upcoming_block,
             ),
             "room_type": board.serialize_room_board_room_type(room.room_type),
+            "next_reservations": board.serialize_next_reservations(next_assignments),
             "current_booking": board.serialize_room_board_current_booking(assignment) if assignment else None,
         })
         return success(data)

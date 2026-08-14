@@ -939,6 +939,10 @@ class BookingApiTests(BookingServiceTests):
         board_room = next(item for item in board.data["data"]["rooms"] if item["id"] == room.id)
         self.assertEqual(board_room["display_status"], "occupied")
         self.assertEqual(str(board_room["current_booking"]["id"]), str(occupied_booking.id))
+        self.assertEqual(
+            [item["booking_reference"] for item in board_room["next_reservations"]],
+            [reserved_booking.reference],
+        )
 
     def test_check_in_form_rejects_date_update_overlapping_assigned_room(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-O")
@@ -1744,6 +1748,20 @@ class BookingApiTests(BookingServiceTests):
         future_booking.refresh_from_db()
         RoomAssignment.objects.filter(booking_room__booking=future_booking).delete()
         RoomAssignment.objects.create(booking_room=future_booking.rooms.get(), physical_room=room_803)
+        ensure_daily_inventory_for_room_type(
+            self.room_type, start_date=self.check_in + timedelta(days=3), days=1,
+        )
+        later_payload = self.payload()
+        later_payload["check_in"] = self.check_in + timedelta(days=3)
+        later_payload["check_out"] = self.check_in + timedelta(days=4)
+        later_payload["rooms"][0]["quantity"] = 1
+        later_payload["rooms"][0]["adults"] = 2
+        later_booking, _ = create_booking(later_payload)
+        record_payment(later_booking, {
+            "provider": "cash", "amount": later_booking.grand_total, "status": Payment.Status.PAID,
+        })
+        RoomAssignment.objects.filter(booking_room__booking=later_booking).delete()
+        RoomAssignment.objects.create(booking_room=later_booking.rooms.get(), physical_room=room_803)
         headers = {
             "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
             "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
@@ -1773,6 +1791,14 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(available_with_next["display_status"], "available")
         self.assertEqual(available_with_next["timeline"]["text"], "Vacant: 2 Days | Reserved: 1 Night")
         self.assertEqual(available_with_next["timeline"]["next_reserved"]["booking_reference"], future_booking.reference)
+        self.assertEqual(
+            [item["booking_reference"] for item in available_with_next["next_reservations"]],
+            [future_booking.reference, later_booking.reference],
+        )
+        self.assertEqual(
+            available_with_next["timeline"]["next_reservations"],
+            available_with_next["next_reservations"],
+        )
 
     def test_physical_room_detail_includes_current_booking(self):
         room = PhysicalRoom.objects.create(
