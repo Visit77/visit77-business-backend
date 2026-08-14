@@ -771,6 +771,16 @@ class BookingApiTests(BookingServiceTests):
 
     def test_check_in_form_updates_reservation_dates_capacity_and_guests(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-U")
+        self.rate_plan.extra_bed_base_price = Decimal("10000")
+        self.rate_plan.save(update_fields=["extra_bed_base_price"])
+        add_on = AddOn.objects.create(
+            hotel=self.hotel,
+            code="check-in-service",
+            name="Check-in Service",
+            pricing_unit=AddOn.PricingUnit.PER_BOOKING,
+            price=Decimal("30000"),
+            currency="MMK",
+        )
         booking = create_admin_reservation({
             **self.payload(),
             "source": Booking.Source.PHONE,
@@ -799,6 +809,7 @@ class BookingApiTests(BookingServiceTests):
                 "adults": 2,
                 "children": 1,
                 "extra_beds": 1,
+                "add_ons": [{"add_on_id": add_on.id, "quantity": 1, "configuration": {}}],
                 "contact_name": "Updated Contact",
                 "guests": [
                     {"id": primary.id, "name": "Updated Primary", "identity_number": "NRC-1", "is_primary": True},
@@ -818,6 +829,10 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(booking_room.children, 1)
         self.assertEqual(booking_room.extra_beds, 1)
         self.assertEqual(booking_room.nights.count(), 3)
+        self.assertEqual(response.data["data"]["payment_summary"]["room_total"], Decimal("270000"))
+        self.assertEqual(response.data["data"]["payment_summary"]["add_on_total"], Decimal("30000"))
+        self.assertEqual(response.data["data"]["payment_summary"]["grand_total"], Decimal("300000"))
+        self.assertEqual(response.data["data"]["payment_summary"]["amount_due"], Decimal("300000"))
         self.assertEqual(booking_room.assignments.get().physical_room, room)
         self.assertEqual(booking.guests.count(), 2)
         self.assertTrue(booking.guests.filter(name="Updated Primary", identity_number="NRC-1").exists())
@@ -888,6 +903,8 @@ class BookingApiTests(BookingServiceTests):
 
     def test_check_in_form_reports_actual_checked_in_booking_conflict(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-C")
+        PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-C2")
+        PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-C3")
         occupied_booking = create_walk_in_booking(
             {
                 "physical_room_id": room.id,
@@ -1016,6 +1033,73 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(room.status, PhysicalRoom.Status.OCCUPIED)
         self.assertFalse(booking.guests.filter(identity_documents__isnull=False).exists())
 
+    def test_checkout_releases_daily_inventory_for_room_to_be_resold(self):
+        room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="304-R")
+        booking = create_walk_in_booking(
+            {
+                "physical_room_id": room.id,
+                "rate_plan_id": self.rate_plan.id,
+                "check_in": self.check_in,
+                "check_out": self.check_out,
+                "contact_name": "First Guest",
+                "contact_phone": "091111111",
+                "guest_market": "local",
+                "adults": 1,
+                "children": 0,
+                "guests": [{"name": "First Guest", "is_primary": True}],
+            },
+            core_business_id=self.hotel.core_business_id,
+            check_in_immediately=True,
+        )
+        self.assertEqual(
+            list(DailyInventory.objects.order_by("stay_date").values_list("reserved_rooms", flat=True)),
+            [1, 1],
+        )
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        checked_out = self.client.post(
+            f"/api/v1/admin/bookings/{booking.id}/check-out/", {}, format="json", **headers,
+        )
+
+        self.assertEqual(checked_out.status_code, 200, checked_out.data)
+        room.refresh_from_db()
+        self.assertEqual(room.status, PhysicalRoom.Status.CLEANING)
+        self.assertEqual(
+            list(DailyInventory.objects.order_by("stay_date").values_list("reserved_rooms", flat=True)),
+            [0, 0],
+        )
+        room.status = PhysicalRoom.Status.VACANT
+        room.save(update_fields=["status"])
+        # Simulate counters left by an older deployment. Walk-in creation must
+        # reconcile them from active booking statuses before checking capacity.
+        DailyInventory.objects.update(reserved_rooms=1)
+
+        second_booking = self.client.post(
+            "/api/v1/admin/walk-in-booking-v2/",
+            {
+                "physical_room_id": room.id,
+                "rate_plan_id": self.rate_plan.id,
+                "check_in": str(self.check_in),
+                "check_out": str(self.check_out),
+                "contact_name": "Second Guest",
+                "contact_phone": "092222222",
+                "guest_market": "local",
+                "adults": 1,
+                "children": 0,
+                "guests": [{"name": "Second Guest", "is_primary": True}],
+            },
+            format="json",
+            **headers,
+        )
+        self.assertEqual(second_booking.status_code, 201, second_booking.data)
+        self.assertEqual(
+            list(DailyInventory.objects.order_by("stay_date").values_list("reserved_rooms", flat=True)),
+            [1, 1],
+        )
+
     def setUp(self):
         super().setUp()
         self.client = APIClient()
@@ -1104,9 +1188,9 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(booking.amount_paid, booking.grand_total)
         self.assertEqual(booking.payments.get().payment_type, Payment.Type.FULL_PAYMENT)
         self.assertEqual(room.status, PhysicalRoom.Status.VACANT)
-        self.assertFalse(response.data["data"]["verification"]["can_check_in"])
+        self.assertTrue(response.data["data"]["verification"]["can_check_in"])
 
-    def test_walk_in_check_in_requires_identity_number_but_not_identity_photo(self):
+    def test_walk_in_check_in_accepts_identity_number_without_identity_photo(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="306")
         headers = {
             "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
@@ -1157,7 +1241,7 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(room.status, PhysicalRoom.Status.OCCUPIED)
         self.assertFalse(booking.guests.filter(identity_documents__isnull=False).exists())
 
-    def test_check_in_blocks_guest_without_identity_number_even_when_photo_is_optional(self):
+    def test_check_in_accepts_guest_without_identity_number_or_photo(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="306-B")
         booking = create_walk_in_booking(
             {
@@ -1187,8 +1271,11 @@ class BookingApiTests(BookingServiceTests):
             **headers,
         )
 
-        self.assertEqual(response.status_code, 400, response.data)
-        self.assertIn(".identity_number", response.data["error"][1])
+        self.assertEqual(response.status_code, 200, response.data)
+        booking.refresh_from_db()
+        room.refresh_from_db()
+        self.assertEqual(booking.status, Booking.Status.CHECKED_IN)
+        self.assertEqual(room.status, PhysicalRoom.Status.OCCUPIED)
 
     def test_walk_in_v2_accepts_guest_identity_photos_in_initial_multipart_request(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="307")
@@ -1220,6 +1307,54 @@ class BookingApiTests(BookingServiceTests):
         guest = booking.guests.get(is_primary=True)
         document = guest.identity_documents.get(document_type="identity_photo")
         self.assertEqual(document.document_number, "12/ABC(N)123456")
+
+    def test_walk_in_v2_prices_extra_beds_add_ons_and_full_payment(self):
+        room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="307-S")
+        self.rate_plan.extra_bed_base_price = Decimal("10000")
+        self.rate_plan.save(update_fields=["extra_bed_base_price"])
+        add_on = AddOn.objects.create(
+            hotel=self.hotel,
+            code="late-service",
+            name="Late Service",
+            pricing_unit=AddOn.PricingUnit.PER_NIGHT,
+            price=Decimal("5000"),
+            currency="MMK",
+        )
+        response = self.client.post(
+            "/api/v1/admin/walk-in-booking-v2/",
+            {
+                "physical_room_id": room.id,
+                "rate_plan_id": self.rate_plan.id,
+                "check_in": str(self.check_in),
+                "check_out": str(self.check_out),
+                "contact_name": "Service Guest",
+                "contact_phone": "093333333",
+                "guest_market": "local",
+                "adults": 1,
+                "children": 0,
+                "extra_beds": 1,
+                "guests": [{
+                    "name": "Service Guest", "identity_number": "NRC-S", "is_primary": True,
+                }],
+                "add_ons": [{"add_on_id": add_on.id, "quantity": 1, "configuration": {}}],
+                "payment": {
+                    "payment_type": "full_payment", "provider": "cash", "status": "paid",
+                },
+            },
+            format="json",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        summary = response.data["data"]["payment_summary"]
+        self.assertEqual(summary["room_total"], Decimal("180000"))
+        self.assertEqual(summary["add_on_total"], Decimal("10000"))
+        self.assertEqual(summary["grand_total"], Decimal("190000"))
+        self.assertEqual(summary["amount_paid"], Decimal("190000"))
+        self.assertEqual(summary["amount_due"], Decimal("0"))
+        booking = Booking.objects.get(id=response.data["data"]["booking"]["id"])
+        self.assertEqual(booking.payments.get().amount, Decimal("190000"))
         self.assertTrue(response.data["data"]["verification"]["identity_documents_complete"])
 
     def test_walk_in_v2_accepts_bracket_notation_guest_form_data(self):

@@ -883,6 +883,7 @@ class WalkInBookingCreateSerializer(serializers.Serializer):
     adults = serializers.IntegerField(min_value=1, max_value=100, default=1)
     children = serializers.IntegerField(min_value=0, max_value=100, default=0)
     extra_beds = serializers.IntegerField(min_value=0, max_value=20, default=0)
+    add_ons = RequestedAddOnSerializer(many=True, required=False)
     preferences = RequestedRoomPreferenceSerializer(required=False, default=dict)
     guests = RequestedGuestSerializer(many=True, allow_empty=False)
     special_request = serializers.CharField(required=False, allow_blank=True)

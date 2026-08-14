@@ -60,7 +60,7 @@ from booking.serializers import (
     RoomTypeSerializer,
     WalkInBookingCreateSerializer,
 )
-from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_walk_in_booking, deprovision_hotel, estimate_booking, record_payment, refund_payment, refund_quote as calculate_refund_quote, update_reservation_for_check_in, validate_assignment_preferences
+from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_walk_in_booking, deprovision_hotel, estimate_booking, record_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, update_reservation_for_check_in, validate_assignment_preferences
 from config.response_formatter import success
 
 
@@ -83,9 +83,6 @@ def _check_in_readiness(booking):
     primary_guest = next((guest for guest in guests if guest.is_primary), None)
     if not primary_guest:
         missing.append("primary_guest")
-    for guest in guests:
-        if not (guest.identity_number or guest.nrc_number or guest.passport_number):
-            missing.append(f"guests.{guest.id}.identity_number")
 
     unassigned = []
     non_vacant = []
@@ -109,11 +106,10 @@ def _check_in_readiness(booking):
     else:
         payment_status = "partially_paid"
     return {
-        "guest_information_complete": primary_guest is not None and not any(
-            ".identity_number" in item for item in missing
-        ),
-        "identity_information_complete": not any(".identity_number" in item for item in missing),
-        # Backward-compatible field. An uploaded identity photo is now optional.
+        "guest_information_complete": primary_guest is not None,
+        # Identity numbers and uploaded identity photos are currently optional.
+        "identity_information_complete": True,
+        # Backward-compatible field retained for existing mobile clients.
         "identity_documents_complete": True,
         "all_rooms_assigned": not unassigned,
         "assigned_rooms_vacant": not non_vacant,
@@ -122,6 +118,27 @@ def _check_in_readiness(booking):
         "missing_fields": missing,
         "unassigned_booking_rooms": unassigned,
         "non_vacant_room_numbers": non_vacant,
+    }
+
+
+def _payment_summary(booking):
+    amount_due = max(booking.grand_total - booking.amount_paid, 0)
+    return {
+        "currency": booking.currency,
+        "room_total": booking.room_total,
+        "add_on_total": booking.add_on_total,
+        "tax_total": booking.tax_total,
+        "discount_total": booking.discount_total,
+        "grand_total": booking.grand_total,
+        "amount_paid": booking.amount_paid,
+        "amount_due": amount_due,
+        "payment_status": (
+            "paid" if amount_due == 0
+            else "partially_paid" if booking.amount_paid > 0
+            else "unpaid"
+        ),
+        "transaction_url": f"/api/v1/admin/bookings/{booking.id}/payment/",
+        "payment_types": ["deposit", "balance", "full_payment"],
     }
 
 
@@ -1590,13 +1607,28 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
         if request.method == "PATCH":
             request_data = request.data.dict() if hasattr(request.data, "dict") else request.data.copy()
             nested_guests = {}
+            nested_add_ons = {}
             guest_field_pattern = re.compile(
                 r"^guests?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+            )
+            add_on_field_pattern = re.compile(
+                r"^add_ons?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
             )
             for key, value in request.data.items():
                 match = guest_field_pattern.match(key)
                 if match and match.group(2) not in {"photo", "identity_photo"}:
                     nested_guests.setdefault(int(match.group(1)), {})[match.group(2)] = value
+                    continue
+                add_on_match = add_on_field_pattern.match(key)
+                if add_on_match:
+                    index = int(add_on_match.group(1))
+                    field = add_on_match.group(2)
+                    if field == "configuration" and isinstance(value, str):
+                        try:
+                            value = json.loads(value)
+                        except (TypeError, ValueError):
+                            raise ValidationError({key: "Must be valid JSON."})
+                    nested_add_ons.setdefault(index, {})[field] = value
             if nested_guests:
                 indexes = sorted(nested_guests)
                 if indexes != list(range(len(indexes))):
@@ -1607,6 +1639,16 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
                     request_data["guests"] = json.loads(request_data["guests"])
                 except (TypeError, ValueError):
                     raise ValidationError({"guests": "Must be valid JSON when using multipart/form-data."})
+            if nested_add_ons:
+                indexes = sorted(nested_add_ons)
+                if indexes != list(range(len(indexes))):
+                    raise ValidationError({"add_ons": "Add-on indexes must start at 0 and be consecutive."})
+                request_data["add_ons"] = [nested_add_ons[index] for index in indexes]
+            elif isinstance(request_data.get("add_ons"), str):
+                try:
+                    request_data["add_ons"] = json.loads(request_data["add_ons"])
+                except (TypeError, ValueError):
+                    raise ValidationError({"add_ons": "Must be valid JSON when using multipart/form-data."})
             serializer = CheckInFormUpdateSerializer(
                 data=request_data, partial=True, context={"booking": booking},
             )
@@ -1631,23 +1673,10 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
                 else:
                     Guest.objects.create(booking=booking, **guest_data)
         booking = self.get_queryset().prefetch_related("guests__identity_documents").get(pk=booking.pk)
-        amount_due = max(booking.grand_total - booking.amount_paid, 0)
         return success({
             "booking": BookingSerializer(booking, context={"request": request}).data,
             "verification": _check_in_readiness(booking),
-            "payment_summary": {
-                "currency": booking.currency,
-                "grand_total": booking.grand_total,
-                "amount_paid": booking.amount_paid,
-                "amount_due": amount_due,
-                "payment_status": (
-                    "paid" if amount_due == 0
-                    else "partially_paid" if booking.amount_paid > 0
-                    else "unpaid"
-                ),
-                "transaction_url": f"/api/v1/admin/bookings/{booking.id}/payment/",
-                "payment_types": ["deposit", "balance", "full_payment"],
-            },
+            "payment_summary": _payment_summary(booking),
         })
 
     @action(detail=True, methods=["post"], url_path="guest-identity-document")
@@ -1897,6 +1926,10 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
         booking = Booking.objects.select_for_update().get(pk=self.get_object().pk)
         if booking.status != Booking.Status.CHECKED_IN:
             raise ValidationError("Only a checked-in booking can check out.")
+        # A checked-in booking remains counted in reserved_rooms until checkout.
+        # Release that commitment together with its physical-room assignment so
+        # the cleaned room can be sold again (including an early checkout).
+        release_checked_in_booking_inventory(booking)
         assignments = RoomAssignment.objects.filter(booking_room__booking=booking, released_at__isnull=True)
         PhysicalRoom.objects.filter(assignments__in=assignments).update(status=PhysicalRoom.Status.CLEANING)
         assignments.update(released_at=timezone.now())
@@ -1935,11 +1968,15 @@ class WalkInBookingV2View(APIView):
         nested_guests = {}
         nested_identity_photos = {}
         nested_payment = {}
+        nested_add_ons = {}
         guest_field_pattern = re.compile(
             r"^guests?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
         )
         payment_field_pattern = re.compile(
             r"^payment\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+        )
+        add_on_field_pattern = re.compile(
+            r"^add_ons?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
         )
         for key, value in request.data.items():
             match = guest_field_pattern.match(key)
@@ -1956,6 +1993,17 @@ class WalkInBookingV2View(APIView):
             payment_match = payment_field_pattern.match(key)
             if payment_match:
                 nested_payment[payment_match.group(1)] = value
+                continue
+            add_on_match = add_on_field_pattern.match(key)
+            if add_on_match:
+                index = int(add_on_match.group(1))
+                field = add_on_match.group(2)
+                if field == "configuration" and isinstance(value, str):
+                    try:
+                        value = json.loads(value)
+                    except (TypeError, ValueError):
+                        raise ValidationError({key: "Must be valid JSON."})
+                nested_add_ons.setdefault(index, {})[field] = value
 
         if nested_guests:
             indexes = sorted(nested_guests)
@@ -1964,8 +2012,13 @@ class WalkInBookingV2View(APIView):
             data["guests"] = [nested_guests[index] for index in indexes]
         if nested_payment:
             data["payment"] = nested_payment
+        if nested_add_ons:
+            indexes = sorted(nested_add_ons)
+            if indexes != list(range(len(indexes))):
+                raise ValidationError({"add_ons": "Add-on indexes must start at 0 and be consecutive."})
+            data["add_ons"] = [nested_add_ons[index] for index in indexes]
 
-        for field in ("guests", "payment", "preferences"):
+        for field in ("guests", "payment", "preferences", "add_ons"):
             raw_value = data.get(field)
             if isinstance(raw_value, str):
                 try:
@@ -2011,6 +2064,7 @@ class WalkInBookingV2View(APIView):
             {
                 "booking": BookingSerializer(booking, context={"request": request}).data,
                 "verification": _check_in_readiness(booking),
+                "payment_summary": _payment_summary(booking),
                 "next_action": {
                     "type": "complete_check_in",
                     "url": f"/api/v1/admin/bookings/{booking.id}/check-in-form/",
@@ -2037,6 +2091,7 @@ class AdminReservationView(APIView):
             {
                 "booking": BookingSerializer(booking, context={"request": request}).data,
                 "verification": _check_in_readiness(booking),
+                "payment_summary": _payment_summary(booking),
                 "next_action": {
                     "type": "complete_check_in",
                     "url": f"/api/v1/admin/bookings/{booking.id}/check-in-form/",

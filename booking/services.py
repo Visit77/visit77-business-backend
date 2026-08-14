@@ -132,6 +132,52 @@ def ensure_rolling_daily_inventory(days=None):
     return summary
 
 
+@transaction.atomic
+def reconcile_daily_inventory_for_room_type(room_type, check_in, check_out):
+    """Rebuild held/reserved counters from active bookings for a stay range."""
+    dates = list(stay_dates(check_in, check_out))
+    if not dates:
+        return []
+    ensure_daily_inventory_for_room_type(
+        room_type,
+        start_date=dates[0],
+        days=len(dates) - 1,
+    )
+    rows = list(DailyInventory.objects.select_for_update().filter(
+        room_type=room_type, stay_date__in=dates,
+    ).order_by("stay_date"))
+    active_rooms = list(BookingRoom.objects.filter(
+        room_type=room_type,
+        booking__status__in=[
+            Booking.Status.PENDING_PAYMENT,
+            Booking.Status.CONFIRMED,
+            Booking.Status.CHECKED_IN,
+        ],
+        booking__check_in__lt=check_out,
+        booking__check_out__gt=check_in,
+    ).select_related("booking"))
+    base_total = active_sellable_room_count(room_type)
+    for row in rows:
+        held_rooms = sum(
+            booking_room.quantity
+            for booking_room in active_rooms
+            if booking_room.booking.status == Booking.Status.PENDING_PAYMENT
+            and booking_room.booking.check_in <= row.stay_date < booking_room.booking.check_out
+        )
+        reserved_rooms = sum(
+            booking_room.quantity
+            for booking_room in active_rooms
+            if booking_room.booking.status in [Booking.Status.CONFIRMED, Booking.Status.CHECKED_IN]
+            and booking_room.booking.check_in <= row.stay_date < booking_room.booking.check_out
+        )
+        sellable_total = sellable_room_count_for_date(room_type, row.stay_date, base_total)
+        row.held_rooms = held_rooms
+        row.reserved_rooms = reserved_rooms
+        row.total_rooms = max(sellable_total, held_rooms + reserved_rooms)
+        row.save(update_fields=["held_rooms", "reserved_rooms", "total_rooms"])
+    return rows
+
+
 def _period_by_date(rate_plan, dates):
     if not dates:
         return {}
@@ -1187,6 +1233,13 @@ def _move_inventory(booking, from_field, to_field=None):
             row.save(update_fields=update_fields)
 
 
+def release_checked_in_booking_inventory(booking):
+    """Release room-type inventory when an active stay checks out."""
+    if booking.status != Booking.Status.CHECKED_IN:
+        raise ValidationError("Only a checked-in booking can release stay inventory.")
+    _move_inventory(booking, "reserved_rooms")
+
+
 @transaction.atomic
 def record_payment(booking, data, auto_assign=True):
     booking = Booking.objects.select_for_update().get(pk=booking.pk)
@@ -1313,6 +1366,9 @@ def create_walk_in_booking(data, idempotency_key=None, core_business_id=None, ch
         raise ValidationError({"physical_room_id": "Selected physical room is assigned to an overlapping booking."})
     if _has_overlapping_room_block(physical_room, check_in, check_out):
         raise ValidationError({"physical_room_id": "Selected physical room is blocked for one or more stay dates."})
+    reconcile_daily_inventory_for_room_type(
+        physical_room.room_type, check_in, check_out,
+    )
 
     guest_market = data.get("guest_market", RatePlan.GuestMarket.LOCAL)
     rate_plan_id = data.get("rate_plan_id")
@@ -1354,6 +1410,7 @@ def create_walk_in_booking(data, idempotency_key=None, core_business_id=None, ch
                 }
             ],
             "guests": data.get("guests") or [],
+            "add_ons": data.get("add_ons") or [],
         },
         idempotency_key=idempotency_key,
     )
