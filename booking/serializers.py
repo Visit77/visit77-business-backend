@@ -754,6 +754,8 @@ class CheckInAddOnUpdateSerializer(serializers.Serializer):
 
 
 class CheckInFormUpdateSerializer(serializers.Serializer):
+    physical_room_id = serializers.IntegerField(min_value=1, required=False)
+    rate_plan_id = serializers.IntegerField(min_value=1, required=False)
     check_in = serializers.DateField(required=False)
     check_out = serializers.DateField(required=False)
     contact_name = serializers.CharField(max_length=255, required=False)
@@ -779,6 +781,16 @@ class CheckInFormUpdateSerializer(serializers.Serializer):
         if attrs.get("rooms") and any(key in attrs for key in ["adults", "children", "extra_beds"]):
             raise serializers.ValidationError({
                 "rooms": "Send guest counts either inside rooms or as top-level fields, not both."
+            })
+        if attrs.get("rooms") and any(key in attrs for key in ["physical_room_id", "rate_plan_id"]):
+            raise serializers.ValidationError({
+                "rooms": "Send room selection either inside rooms or as top-level fields, not both."
+            })
+        if booking and booking.rooms.count() != 1 and any(
+            key in attrs for key in ["physical_room_id", "rate_plan_id", "adults", "children", "extra_beds"]
+        ):
+            raise serializers.ValidationError({
+                "rooms": "Top-level room fields can only be used for a single-room booking."
             })
         return attrs
 

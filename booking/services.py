@@ -1513,6 +1513,10 @@ def update_reservation_for_check_in(booking, data):
             for field in ["adults", "children", "extra_beds"]:
                 if field in data:
                     requested_rooms[0][field] = data[field]
+            if "rate_plan_id" in data:
+                requested_rooms[0]["rate_plan_id"] = data["rate_plan_id"]
+            if "physical_room_id" in data:
+                requested_rooms[0]["physical_room_ids"] = [data["physical_room_id"]]
 
     assignment_ids_by_index = [list(room.pop("physical_room_ids", [])) for room in requested_rooms]
     if len(assignment_ids_by_index) != len(requested_rooms):
@@ -1568,11 +1572,19 @@ def update_reservation_for_check_in(booking, data):
             hotel=booking.hotel,
             room_type=replacement_rooms[index].room_type,
             is_active=True,
-            status=PhysicalRoom.Status.VACANT,
         ))
         if len(physical_rooms) != len(set(physical_ids)):
-            raise ValidationError({"rooms": "Every assigned physical room must be active, vacant, and match its room type."})
+            raise ValidationError({"rooms": "Every assigned physical room must be active and match its room type."})
         for physical_room in physical_rooms:
+            already_assigned_to_booking = RoomAssignment.objects.filter(
+                physical_room=physical_room,
+                booking_room__booking=booking,
+                released_at__isnull=True,
+            ).exists()
+            if physical_room.status != PhysicalRoom.Status.VACANT and not already_assigned_to_booking:
+                raise ValidationError({
+                    "rooms": f"Room {physical_room.room_number} is not vacant and cannot be newly assigned."
+                })
             if _has_overlapping_room_assignment(
                 physical_room, replacement.check_in, replacement.check_out, exclude_booking=booking,
             ):

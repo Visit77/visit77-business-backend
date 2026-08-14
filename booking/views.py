@@ -1522,17 +1522,39 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
         if booking.status not in [Booking.Status.CONFIRMED, Booking.Status.PENDING_PAYMENT]:
             raise ValidationError("Only pending or confirmed reservations can use the check-in form.")
         if request.method == "PATCH":
+            request_data = request.data.dict() if hasattr(request.data, "dict") else request.data.copy()
+            nested_guests = {}
+            guest_field_pattern = re.compile(
+                r"^guests?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+            )
+            for key, value in request.data.items():
+                match = guest_field_pattern.match(key)
+                if match and match.group(2) not in {"photo", "identity_photo"}:
+                    nested_guests.setdefault(int(match.group(1)), {})[match.group(2)] = value
+            if nested_guests:
+                indexes = sorted(nested_guests)
+                if indexes != list(range(len(indexes))):
+                    raise ValidationError({"guests": "Guest indexes must start at 0 and be consecutive."})
+                request_data["guests"] = [nested_guests[index] for index in indexes]
+            elif isinstance(request_data.get("guests"), str):
+                try:
+                    request_data["guests"] = json.loads(request_data["guests"])
+                except (TypeError, ValueError):
+                    raise ValidationError({"guests": "Must be valid JSON when using multipart/form-data."})
             serializer = CheckInFormUpdateSerializer(
-                data=request.data, partial=True, context={"booking": booking},
+                data=request_data, partial=True, context={"booking": booking},
             )
             serializer.is_valid(raise_exception=True)
             data = serializer.validated_data
             guest_updates = data.pop("guests", [])
             booking = update_reservation_for_check_in(booking, data)
-            for guest_data in guest_updates:
+            existing_guests = list(booking.guests.order_by("id"))
+            for guest_index, guest_data in enumerate(guest_updates):
                 guest_id = guest_data.pop("id", None)
                 if guest_data.get("is_primary"):
                     booking.guests.update(is_primary=False)
+                if not guest_id and guest_index < len(existing_guests):
+                    guest_id = existing_guests[guest_index].id
                 if guest_id:
                     guest = booking.guests.filter(id=guest_id).first()
                     if not guest:

@@ -823,6 +823,55 @@ class BookingApiTests(BookingServiceTests):
         self.assertTrue(booking.guests.filter(name="Updated Primary", identity_number="NRC-1").exists())
         self.assertTrue(booking.guests.filter(name="Second Guest", identity_number="PP-2").exists())
 
+    def test_check_in_form_accepts_unchanged_current_room_even_if_marked_occupied(self):
+        room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-S")
+        booking = create_admin_reservation({
+            **self.payload(),
+            "source": Booking.Source.PHONE,
+            "rooms": [{
+                "core_room_type_id": self.room_type.core_room_type_id,
+                "rate_plan_id": self.rate_plan.id,
+                "quantity": 1,
+                "adults": 1,
+                "children": 0,
+                "physical_room_ids": [room.id],
+            }],
+        })
+        room.status = PhysicalRoom.Status.OCCUPIED
+        room.save(update_fields=["status"])
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        response = self.client.patch(
+            f"/api/v1/admin/bookings/{booking.id}/check-in-form/",
+            {
+                "physical_room_id": str(room.id),
+                "rate_plan_id": str(self.rate_plan.id),
+                "check_in": str(booking.check_in),
+                "check_out": str(booking.check_out),
+                "adults": "1",
+                "children": "0",
+                "extra_beds": "0",
+                "contact_name": booking.contact_name,
+                "contact_phone": booking.contact_phone,
+                "guest[0][name]": "Updated Existing Guest",
+                "guest[0][nrc_number]": "8/MAMANA(N)123465",
+                "guest[0][is_primary]": "true",
+            },
+            format="multipart",
+            **headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        booking.refresh_from_db()
+        self.assertEqual(booking.rooms.get().assignments.get().physical_room, room)
+        self.assertEqual(booking.guests.count(), 1)
+        guest = booking.guests.get()
+        self.assertEqual(guest.name, "Updated Existing Guest")
+        self.assertEqual(guest.nrc_number, "8/MAMANA(N)123465")
+
     def test_check_in_form_rejects_date_update_overlapping_assigned_room(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-O")
         first = create_admin_reservation({
