@@ -698,6 +698,12 @@ class BookingApiTests(BookingServiceTests):
             end_date=future_end,
             note="Future VIP hold",
         )
+        later_block = PhysicalRoomBlock.objects.create(
+            physical_room=room,
+            start_date=future_end + timedelta(days=2),
+            end_date=future_end + timedelta(days=4),
+            note="Later maintenance hold",
+        )
         headers = {
             "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
             "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
@@ -709,6 +715,10 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(today_room["block_status"], "upcoming_block")
         self.assertIsNone(today_room["current_block"])
         self.assertEqual(today_room["upcoming_block"]["id"], block.id)
+        self.assertEqual(
+            [item["id"] for item in today_room["upcoming_blocks"]],
+            [block.id, later_block.id],
+        )
         self.assertEqual(today_room["block_timeline"]["days_until_block"], 2)
         self.assertEqual(today_room["block_timeline"]["blocked_days"], 6)
 
@@ -717,6 +727,21 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(future_room["display_status"], "blocked")
         self.assertEqual(future_room["block_status"], "currently_blocked")
         self.assertEqual(future_room["current_block"]["id"], block.id)
+        self.assertEqual(
+            [item["id"] for item in future_room["upcoming_blocks"]],
+            [later_block.id],
+        )
+
+        detail = self.client.get(
+            f"/api/v1/admin/physical-rooms/{room.id}/",
+            {"date": str(self.check_in)},
+            **headers,
+        )
+        self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertEqual(
+            [item["id"] for item in detail.data["data"]["upcoming_blocks"]],
+            [block.id, later_block.id],
+        )
 
     def test_check_in_form_accepts_deposit_then_remaining_balance_payment(self):
         booking, _ = create_booking(self.payload())

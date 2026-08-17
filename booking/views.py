@@ -506,17 +506,17 @@ class RoomBoardView(APIView):
             last_checkout_assignment_by_room.setdefault(released_assignment.physical_room_id, released_assignment)
 
         block_by_room = {}
-        upcoming_block_by_room = {}
+        upcoming_blocks_by_room = defaultdict(list)
         room_blocks = PhysicalRoomBlock.objects.filter(
             physical_room_id__in=room_ids,
             is_active=True,
             end_date__gte=target_date,
-        ).order_by("start_date", "id")
+        ).order_by("start_date", "end_date", "id")
         for block in room_blocks:
             if block.start_date <= target_date <= block.end_date:
                 block_by_room.setdefault(block.physical_room_id, block)
             elif block.start_date > target_date:
-                upcoming_block_by_room.setdefault(block.physical_room_id, block)
+                upcoming_blocks_by_room[block.physical_room_id].append(block)
 
         counts = {status_name: 0 for status_name in ["available", "reserved", "occupied", "cleaning", "out_of_service", "blocked"]}
         floors = {}
@@ -607,7 +607,7 @@ class RoomBoardView(APIView):
                 **self.serialize_room_block_state(
                     target_date=target_date,
                     current_block=block_by_room.get(room.id),
-                    upcoming_block=upcoming_block_by_room.get(room.id),
+                    upcoming_blocks=upcoming_blocks_by_room.get(room.id, []),
                 ),
                 "status_note": room.note,
                 "oos_note": room.note if room.status == PhysicalRoom.Status.OUT_OF_SERVICE else None,
@@ -665,14 +665,18 @@ class RoomBoardView(APIView):
             "unassigned": unassigned,
         })
 
-    def serialize_room_block_state(self, *, target_date, current_block=None, upcoming_block=None):
+    def serialize_room_block_state(self, *, target_date, current_block=None, upcoming_blocks=None):
+        upcoming_blocks = upcoming_blocks or []
+        upcoming_block = upcoming_blocks[0] if upcoming_blocks else None
         current_data = PhysicalRoomBlockSerializer(current_block).data if current_block else None
         upcoming_data = PhysicalRoomBlockSerializer(upcoming_block).data if upcoming_block else None
+        upcoming_list = PhysicalRoomBlockSerializer(upcoming_blocks, many=True).data
         if current_block:
             return {
                 "block_status": "currently_blocked",
                 "current_block": current_data,
                 "upcoming_block": upcoming_data,
+                "upcoming_blocks": upcoming_list,
                 "block_timeline": {
                     "text": f"Blocked until {current_block.end_date.isoformat()}",
                     "days_until_block": 0,
@@ -685,6 +689,7 @@ class RoomBoardView(APIView):
                 "block_status": "upcoming_block",
                 "current_block": None,
                 "upcoming_block": upcoming_data,
+                "upcoming_blocks": upcoming_list,
                 "block_timeline": {
                     "text": (
                         f"Block starts {upcoming_block.start_date.isoformat()} "
@@ -698,6 +703,7 @@ class RoomBoardView(APIView):
             "block_status": "none",
             "current_block": None,
             "upcoming_block": None,
+            "upcoming_blocks": [],
             "block_timeline": None,
         }
 
@@ -1198,11 +1204,11 @@ class PhysicalRoomViewSet(AdminModelViewSet):
             start_date__lte=target_date,
             end_date__gte=target_date,
         ).order_by("start_date", "id").first()
-        upcoming_block = PhysicalRoomBlock.objects.filter(
+        upcoming_blocks = list(PhysicalRoomBlock.objects.filter(
             physical_room=room,
             is_active=True,
             start_date__gt=target_date,
-        ).order_by("start_date", "id").first()
+        ).order_by("start_date", "end_date", "id"))
 
         if room.status == PhysicalRoom.Status.OUT_OF_SERVICE:
             display_status = "out_of_service"
@@ -1230,7 +1236,7 @@ class PhysicalRoomViewSet(AdminModelViewSet):
             **board.serialize_room_block_state(
                 target_date=target_date,
                 current_block=active_block,
-                upcoming_block=upcoming_block,
+                upcoming_blocks=upcoming_blocks,
             ),
             "room_type": board.serialize_room_board_room_type(room.room_type),
             "next_reservations": board.serialize_next_reservations(next_assignments),
