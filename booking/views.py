@@ -610,6 +610,7 @@ class RoomBoardView(APIView):
                     upcoming_block=upcoming_block_by_room.get(room.id),
                 ),
                 "status_note": room.note,
+                "oos_note": room.note if room.status == PhysicalRoom.Status.OUT_OF_SERVICE else None,
                 "timeline": timeline,
                 "timeline_text": timeline["text"],
                 "next_reservations": self.serialize_next_reservations(
@@ -1223,6 +1224,8 @@ class PhysicalRoomViewSet(AdminModelViewSet):
         data.update({
             "date": target_date,
             "display_status": display_status,
+            "status_note": room.note,
+            "oos_note": room.note if room.status == PhysicalRoom.Status.OUT_OF_SERVICE else None,
             "block": PhysicalRoomBlockSerializer(active_block).data if active_block else None,
             **board.serialize_room_block_state(
                 target_date=target_date,

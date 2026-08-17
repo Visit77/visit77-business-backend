@@ -148,7 +148,7 @@ class BookingServiceTests(TestCase):
             ],
         }
         self.room_type.save(update_fields=["core_snapshot"])
-        PhysicalRoom.objects.create(
+        room_802 = PhysicalRoom.objects.create(
             hotel=self.hotel,
             room_type=self.room_type,
             room_number="101",
@@ -1856,6 +1856,7 @@ class BookingApiTests(BookingServiceTests):
             building="Main Building",
             floor="8",
             status=PhysicalRoom.Status.OUT_OF_SERVICE,
+            note="Air conditioner repair",
         )
         room_803 = PhysicalRoom.objects.create(
             hotel=self.hotel,
@@ -1922,6 +1923,12 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(reserved["assignment"]["booking_reference"], booking.reference)
         self.assertEqual(reserved["assignment"]["payment_status"], "paid")
         self.assertEqual(reserved["timeline"]["text"], "Reserved: 2 Nights")
+        out_of_service = next(
+            room for room in board.data["data"]["rooms"] if room["display_status"] == "out_of_service"
+        )
+        self.assertEqual(out_of_service["status_note"], "Air conditioner repair")
+        self.assertEqual(out_of_service["oos_note"], "Air conditioner repair")
+        self.assertIsNone(reserved["oos_note"])
         available_with_next = next(room for room in board.data["data"]["rooms"] if room["room_number"] == "803")
         self.assertEqual(available_with_next["display_status"], "available")
         self.assertEqual(available_with_next["timeline"]["text"], "Vacant: 2 Days | Reserved: 1 Night")
