@@ -9,6 +9,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.utils import timezone
 from rest_framework.test import APIClient
+from rest_framework.exceptions import ValidationError
 from rest_framework_simplejwt.backends import TokenBackend
 
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, CoreIntegrationEvent, DailyInventory, DailyRate, Hotel, MealPlan, Payment, PhysicalRoom, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
@@ -1214,6 +1215,71 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(booking.payments.get().payment_type, Payment.Type.FULL_PAYMENT)
         self.assertEqual(room.status, PhysicalRoom.Status.VACANT)
         self.assertTrue(response.data["data"]["verification"]["can_check_in"])
+
+    def test_future_reservation_accepts_occupied_room_after_current_checkout(self):
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="305-F",
+        )
+        current_booking = create_walk_in_booking(
+            {
+                "physical_room_id": room.id,
+                "rate_plan_id": self.rate_plan.id,
+                "check_in": self.check_in,
+                "check_out": self.check_out,
+                "contact_name": "Current Guest",
+                "contact_phone": "091111111",
+                "guest_market": "local",
+                "adults": 1,
+                "children": 0,
+            },
+            core_business_id=self.hotel.core_business_id,
+            check_in_immediately=True,
+        )
+        room.refresh_from_db()
+        self.assertEqual(current_booking.status, Booking.Status.CHECKED_IN)
+        self.assertEqual(room.status, PhysicalRoom.Status.OCCUPIED)
+
+        overlapping_payload = self.payload()
+        overlapping_payload.update({
+            "source": Booking.Source.PHONE,
+            "rooms": [{
+                "core_room_type_id": self.room_type.core_room_type_id,
+                "rate_plan_id": self.rate_plan.id,
+                "quantity": 1,
+                "adults": 1,
+                "children": 0,
+                "physical_room_ids": [room.id],
+            }],
+        })
+        with self.assertRaises(ValidationError):
+            create_admin_reservation(overlapping_payload)
+
+        future_payload = self.payload()
+        future_payload.update({
+            "source": Booking.Source.PHONE,
+            "check_in": self.check_out,
+            "check_out": self.check_out + timedelta(days=2),
+            "rooms": [{
+                "core_room_type_id": self.room_type.core_room_type_id,
+                "rate_plan_id": self.rate_plan.id,
+                "quantity": 1,
+                "adults": 1,
+                "children": 0,
+                "physical_room_ids": [room.id],
+            }],
+        })
+
+        future_booking = create_admin_reservation(future_payload)
+
+        self.assertEqual(future_booking.status, Booking.Status.CONFIRMED)
+        self.assertEqual(
+            future_booking.rooms.get().assignments.get().physical_room_id,
+            room.id,
+        )
+        room.refresh_from_db()
+        self.assertEqual(room.status, PhysicalRoom.Status.OCCUPIED)
 
     def test_walk_in_check_in_accepts_identity_number_without_identity_photo(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="306")

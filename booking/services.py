@@ -1520,10 +1520,18 @@ def create_admin_reservation(data, idempotency_key=None, core_business_id=None):
             hotel=booking.hotel,
             room_type=booking_room.room_type,
             is_active=True,
-            status=PhysicalRoom.Status.VACANT,
+            # An occupied room may still be assigned to a future reservation
+            # once its current stay has checked out. Date-range overlap below
+            # is the authoritative availability check.
+            status__in=[PhysicalRoom.Status.VACANT, PhysicalRoom.Status.OCCUPIED],
         ))
         if len(rooms) != len(set(physical_room_ids)):
-            raise ValidationError({"rooms": "Every assigned physical room must be active, vacant, and match its room type."})
+            raise ValidationError({
+                "rooms": (
+                    "Every assigned physical room must be active, either vacant or occupied, "
+                    "and match its room type."
+                )
+            })
         for room in rooms:
             if _has_overlapping_room_assignment(room, booking.check_in, booking.check_out, exclude_booking=booking):
                 raise ValidationError({"rooms": f"Room {room.room_number} has an overlapping assignment."})
