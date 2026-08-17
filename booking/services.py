@@ -1356,8 +1356,19 @@ def create_walk_in_booking(data, idempotency_key=None, core_business_id=None, ch
         raise ValidationError({"physical_room_id": "Selected physical room is unavailable."})
     if core_business_id and physical_room.hotel.core_business_id != core_business_id:
         raise ValidationError({"physical_room_id": "Selected physical room does not belong to this business."})
-    if physical_room.status != PhysicalRoom.Status.VACANT:
-        raise ValidationError({"physical_room_id": "Only a vacant physical room can be used for walk-in check-in."})
+    allowed_statuses = [PhysicalRoom.Status.VACANT]
+    if not check_in_immediately:
+        # V2 first creates a reservation. An occupied room can be reserved for
+        # a future non-overlapping stay, while immediate/legacy check-in must
+        # still use a room that is vacant right now.
+        allowed_statuses.append(PhysicalRoom.Status.OCCUPIED)
+    if physical_room.status not in allowed_statuses:
+        message = (
+            "Only a vacant physical room can be used for walk-in check-in."
+            if check_in_immediately
+            else "Only a vacant or currently occupied physical room can be reserved."
+        )
+        raise ValidationError({"physical_room_id": message})
 
     check_in, check_out = data["check_in"], data["check_out"]
     if check_out <= check_in:
@@ -1456,8 +1467,13 @@ def create_walk_in_booking(data, idempotency_key=None, core_business_id=None, ch
         booking.save(update_fields=["status", "hold_expires_at", "updated_at"])
 
     physical_room = PhysicalRoom.objects.select_for_update().get(pk=physical_room.pk)
-    if physical_room.status != PhysicalRoom.Status.VACANT:
-        raise ValidationError({"physical_room_id": "Selected physical room is no longer vacant."})
+    if physical_room.status not in allowed_statuses:
+        message = (
+            "Selected physical room is no longer vacant."
+            if check_in_immediately
+            else "Selected physical room can no longer be reserved."
+        )
+        raise ValidationError({"physical_room_id": message})
     if _has_overlapping_room_assignment(physical_room, check_in, check_out, exclude_booking=booking):
         raise ValidationError({"physical_room_id": "Selected physical room is assigned to an overlapping booking."})
 

@@ -1332,6 +1332,53 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(room.status, PhysicalRoom.Status.OCCUPIED)
         self.assertFalse(booking.guests.filter(identity_documents__isnull=False).exists())
 
+    def test_walk_in_v2_reserves_occupied_room_after_current_checkout(self):
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="306-F",
+        )
+        create_walk_in_booking(
+            {
+                "physical_room_id": room.id,
+                "rate_plan_id": self.rate_plan.id,
+                "check_in": self.check_in,
+                "check_out": self.check_out,
+                "contact_name": "Current Guest",
+                "contact_phone": "091111111",
+                "guest_market": "local",
+                "adults": 1,
+                "children": 0,
+            },
+            core_business_id=self.hotel.core_business_id,
+            check_in_immediately=True,
+        )
+
+        future_booking = create_walk_in_booking(
+            {
+                "physical_room_id": room.id,
+                "rate_plan_id": self.rate_plan.id,
+                "check_in": self.check_out,
+                "check_out": self.check_out + timedelta(days=1),
+                "contact_name": "Future Guest",
+                "contact_phone": "092222222",
+                "guest_market": "local",
+                "adults": 1,
+                "children": 0,
+            },
+            core_business_id=self.hotel.core_business_id,
+            check_in_immediately=False,
+        )
+
+        future_booking.refresh_from_db()
+        room.refresh_from_db()
+        self.assertEqual(future_booking.status, Booking.Status.CONFIRMED)
+        self.assertEqual(room.status, PhysicalRoom.Status.OCCUPIED)
+        self.assertEqual(
+            future_booking.rooms.get().assignments.get().physical_room_id,
+            room.id,
+        )
+
     def test_check_in_accepts_guest_without_identity_number_or_photo(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="306-B")
         booking = create_walk_in_booking(
