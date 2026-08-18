@@ -188,7 +188,14 @@ class PhysicalRoom(models.Model):
 
     class Meta:
         ordering = ["building", "floor", "room_number"]
-        constraints = [models.UniqueConstraint(fields=["hotel", "room_number"], name="uniq_room_number_per_hotel")]
+        constraints = [
+            models.UniqueConstraint(fields=["hotel", "room_number"], name="uniq_room_number_per_hotel"),
+            models.UniqueConstraint(
+                fields=["hotel", "core_physical_room_id"],
+                condition=models.Q(core_physical_room_id__isnull=False),
+                name="uniq_core_physical_room_per_hotel",
+            ),
+        ]
         indexes = [
             models.Index(fields=["hotel", "core_building_id"], name="booking_phy_hotel_i_2e5f4d_idx"),
             models.Index(fields=["hotel", "core_floor_id"], name="booking_phy_hotel_i_c2a08a_idx"),

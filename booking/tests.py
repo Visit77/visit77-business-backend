@@ -380,6 +380,7 @@ class BookingServiceTests(TestCase):
     def test_core_sync_updates_default_plans_inventory_and_preserves_custom_plans(self):
         class StubCoreClient:
             local_price = 80000
+            room_number = "801"
 
             def provisioning_bundle(self, core_business_id):
                 return {
@@ -455,7 +456,7 @@ class BookingServiceTests(TestCase):
                         {
                             "id": 9901,
                             "room_type_id": 901,
-                            "room_no": "801",
+                            "room_no": self.room_number,
                             "floor": "8",
                             "floor_data": {"id": 8008, "name": "8"},
                             "building": "Main Building",
@@ -497,7 +498,18 @@ class BookingServiceTests(TestCase):
             refundable=False,
         )
         client.local_price = 90000
+        client.room_number = "801-A"
         sync_business_from_core(99, client=client)
+
+        renamed_room = PhysicalRoom.objects.get(
+            hotel=hotel,
+            core_physical_room_id=9901,
+        )
+        self.assertEqual(renamed_room.room_number, "801-A")
+        self.assertEqual(
+            PhysicalRoom.objects.filter(hotel=hotel, core_physical_room_id=9901).count(),
+            1,
+        )
 
         local_default = RatePlan.objects.get(core_rate_plan_id="room-901-local")
         custom.refresh_from_db()

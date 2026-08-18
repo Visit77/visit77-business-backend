@@ -3,10 +3,11 @@ from typing import Any
 
 import httpx
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import APIException
 
-from booking.models import Hotel, MealPlan, PhysicalRoom, RatePlan, RoomType, RoomTypeMealPlan
+from booking.models import Hotel, MealPlan, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RoomAssignment, RoomType, RoomTypeMealPlan
 
 
 class CoreIntegrationError(APIException):
@@ -107,6 +108,7 @@ class CoreClient:
             self.token = original_token
 
 
+@transaction.atomic
 def sync_business_from_core(core_business_id: int, client=None):
     client = client or CoreClient()
     bundle = client.provisioning_bundle(core_business_id)
@@ -328,20 +330,47 @@ def sync_business_from_core(core_business_id: int, client=None):
         if not room_type:
             continue
         seen_core_room_ids.append(payload["id"])
-        room, created = PhysicalRoom.objects.update_or_create(
+        room_number = payload.get("room_no") or str(payload["id"])
+        matching_rooms = list(PhysicalRoom.objects.select_for_update().filter(
             hotel=hotel,
-            room_number=payload.get("room_no") or str(payload["id"]),
-            defaults={
-                "room_type": room_type,
-                "core_physical_room_id": payload["id"],
-                "core_building_id": _nested_id(payload, "building_id", "building_data", "building"),
-                "core_floor_id": _nested_id(payload, "floor_id", "floor_data", "floor"),
-                "floor": payload.get("floor") or "",
-                "building": payload.get("building") or "",
-                "is_active": payload.get("is_active", True),
-                "core_snapshot": payload,
-            },
+            core_physical_room_id=payload["id"],
+        ).order_by("-id"))
+        room = next(
+            (item for item in matching_rooms if item.room_number == room_number),
+            matching_rooms[0] if matching_rooms else None,
         )
+        created = room is None
+        if room is None:
+            room = PhysicalRoom(hotel=hotel, core_physical_room_id=payload["id"])
+
+        duplicate_rooms = [item for item in matching_rooms if item.id != room.id]
+        if duplicate_rooms:
+            duplicate_ids = [item.id for item in duplicate_rooms]
+            RoomAssignment.objects.filter(physical_room_id__in=duplicate_ids).update(physical_room=room)
+            PhysicalRoomBlock.objects.filter(physical_room_id__in=duplicate_ids).update(physical_room=room)
+            PhysicalRoomActionHistory.objects.filter(physical_room_id__in=duplicate_ids).update(physical_room=room)
+            status_priority = {
+                PhysicalRoom.Status.VACANT: 0,
+                PhysicalRoom.Status.CLEANING: 1,
+                PhysicalRoom.Status.OUT_OF_SERVICE: 2,
+                PhysicalRoom.Status.OCCUPIED: 3,
+            }
+            status_room = max([room, *duplicate_rooms], key=lambda item: status_priority.get(item.status, 0))
+            room.status = status_room.status
+            if status_room.note:
+                room.note = status_room.note
+            PhysicalRoom.objects.filter(id__in=duplicate_ids).delete()
+
+        room.room_type = room_type
+        room.room_number = room_number
+        room.core_physical_room_id = payload["id"]
+        room.core_building_id = _nested_id(payload, "building_id", "building_data", "building")
+        room.core_floor_id = _nested_id(payload, "floor_id", "floor_data", "floor")
+        room.floor = payload.get("floor") or ""
+        room.building = payload.get("building") or ""
+        room.is_active = payload.get("is_active", True)
+        room.core_snapshot = payload
+        room.save()
         if created:
             room.status = payload.get("status") or PhysicalRoom.Status.VACANT
             room.save(update_fields=["status"])
