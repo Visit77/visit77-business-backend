@@ -48,6 +48,11 @@ def merge_duplicate_core_physical_rooms(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
+    # PostgreSQL cannot create the unique index while FK-trigger events from
+    # the deduplication UPDATE/DELETE statements are still pending in the same
+    # transaction. Commit the data migration before AddConstraint runs.
+    atomic = False
+
     dependencies = [
         ("booking", "0030_physical_room_action_history"),
     ]
@@ -56,6 +61,7 @@ class Migration(migrations.Migration):
         migrations.RunPython(
             merge_duplicate_core_physical_rooms,
             migrations.RunPython.noop,
+            atomic=True,
         ),
         migrations.AddConstraint(
             model_name="physicalroom",
