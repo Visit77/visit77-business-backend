@@ -683,6 +683,7 @@ class RoomBoardView(APIView):
                 "room_number": room.room_number,
                 "building": room.building,
                 "floor": room.floor,
+                **self.serialize_physical_room_details(room),
                 # "core_snapshot": room.core_snapshot,
                 "operational_status": room.status,
                 "display_status": display_status,
@@ -747,6 +748,28 @@ class RoomBoardView(APIView):
             "rooms": room_rows,
             "unassigned": unassigned,
         })
+
+    def serialize_physical_room_details(self, room):
+        snapshot = room.core_snapshot or {}
+        beds = snapshot.get("beds") or []
+        bed_types = [
+            bed.get("bed_type")
+            for bed in beds
+            if isinstance(bed, dict) and bed.get("bed_type")
+        ]
+        room_view = snapshot.get("room_view") or snapshot.get("view")
+        return {
+            "room_view": room_view,
+            "view": room_view,
+            "beds": beds,
+            "bed_type": snapshot.get("bed_type") or (bed_types[0] if bed_types else None),
+            "bed_types": bed_types,
+            "room_area": snapshot.get("room_area"),
+            "area_unit": snapshot.get("area_unit"),
+            "size_sqft": snapshot.get("size_sqft") or (
+                snapshot.get("room_area") if snapshot.get("area_unit") == "sqft" else None
+            ),
+        }
 
     def serialize_room_block_state(self, *, target_date, current_block=None, upcoming_blocks=None):
         upcoming_blocks = upcoming_blocks or []
@@ -1410,6 +1433,7 @@ class PhysicalRoomViewSet(AdminModelViewSet):
         data = PhysicalRoomSerializer(room, context={"request": request}).data
         data.update({
             "date": target_date,
+            **board.serialize_physical_room_details(room),
             "display_status": display_status,
             "status_note": room.note,
             "oos_note": room.note if room.status == PhysicalRoom.Status.OUT_OF_SERVICE else None,

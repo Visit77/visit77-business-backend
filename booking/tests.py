@@ -2111,6 +2111,12 @@ class BookingApiTests(BookingServiceTests):
             room_number="801",
             building="Main Building",
             floor="8",
+            core_snapshot={
+                "room_view": {"id": 3, "name": "City View"},
+                "beds": [{"bed_type": {"id": 9, "name": "Physical King Bed"}, "quantity": 1}],
+                "room_area": 315,
+                "area_unit": "sqft",
+            },
         )
         PhysicalRoom.objects.create(
             hotel=self.hotel,
@@ -2183,6 +2189,13 @@ class BookingApiTests(BookingServiceTests):
         reserved = next(room for room in board.data["data"]["rooms"] if room["display_status"] == "reserved")
         self.assertEqual(reserved["building_id"], 7001)
         self.assertEqual(reserved["floor_id"], 8008)
+        self.assertEqual(reserved["room_view"], {"id": 3, "name": "City View"})
+        self.assertEqual(reserved["view"], reserved["room_view"])
+        self.assertEqual(reserved["bed_type"], {"id": 9, "name": "Physical King Bed"})
+        self.assertEqual(reserved["beds"][0]["quantity"], 1)
+        self.assertEqual(reserved["room_area"], 315)
+        self.assertEqual(reserved["area_unit"], "sqft")
+        self.assertEqual(reserved["size_sqft"], 315)
         self.assertEqual(reserved["room_type"]["name"], self.room_type.name)
         self.assertEqual(reserved["room_type"]["room_type_name"], self.room_type.name)
         self.assertEqual(reserved["room_type"]["photos"][0]["id"], 11)
@@ -2222,7 +2235,12 @@ class BookingApiTests(BookingServiceTests):
             room_number="303",
             building="Main Building",
             floor="3",
-            core_snapshot={"room_view": {"name": "City View"}, "room_area": 301, "area_unit": "sqft"},
+            core_snapshot={
+                "room_view": {"name": "City View"},
+                "beds": [{"bed_type": {"id": 1, "name": "King Bed"}, "quantity": 1}],
+                "room_area": 301,
+                "area_unit": "sqft",
+            },
         )
         payload = self.payload()
         payload["rooms"][0]["quantity"] = 1
@@ -2244,6 +2262,10 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(response.status_code, 200, response.data)
         data = response.data["data"]
         self.assertEqual(data["room_number"], "303")
+        self.assertEqual(data["room_view"], {"name": "City View"})
+        self.assertEqual(data["bed_type"], {"id": 1, "name": "King Bed"})
+        self.assertEqual(data["room_area"], 301)
+        self.assertEqual(data["size_sqft"], 301)
         self.assertEqual(data["display_status"], "reserved")
         self.assertEqual(data["room_type"]["name"], self.room_type.name)
         self.assertEqual(data["current_booking"]["reference"], booking.reference)
