@@ -1974,6 +1974,20 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(first.total_rooms, 10)
 
     def test_room_board_aggregates_reserved_oos_and_unassigned_rooms(self):
+        self.room_type.core_snapshot = {
+            "photos": [
+                {"id": 11, "image": "https://media.example/room.jpg", "is_cover": True},
+            ],
+            "beds": [
+                {"bed_type": {"id": 7, "name": "King Bed"}, "quantity": 1},
+            ],
+            "room_area": 301,
+            "room_area_from": 300,
+            "room_area_to": 320,
+            "area_unit": "sqft",
+            "size_sqft": 301,
+        }
+        self.room_type.save(update_fields=["core_snapshot"])
         room_801 = PhysicalRoom.objects.create(
             hotel=self.hotel,
             room_type=self.room_type,
@@ -2056,6 +2070,12 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(reserved["building_id"], 7001)
         self.assertEqual(reserved["floor_id"], 8008)
         self.assertEqual(reserved["room_type"]["name"], self.room_type.name)
+        self.assertEqual(reserved["room_type"]["room_type_name"], self.room_type.name)
+        self.assertEqual(reserved["room_type"]["photos"][0]["id"], 11)
+        self.assertEqual(reserved["room_type"]["bed_type"], {"id": 7, "name": "King Bed"})
+        self.assertEqual(reserved["room_type"]["bed_types"], [{"id": 7, "name": "King Bed"}])
+        self.assertEqual(reserved["room_type"]["room_area"], 301)
+        self.assertEqual(reserved["room_type"]["area_unit"], "sqft")
         self.assertEqual(reserved["room_type"]["price"]["base_price"], Decimal("80000"))
         self.assertEqual(reserved["room_type"]["price"]["currency"], "MMK")
         self.assertEqual(reserved["assignment"]["booking_reference"], booking.reference)

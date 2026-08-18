@@ -821,13 +821,32 @@ class RoomBoardView(APIView):
     def serialize_room_board_room_type(self, room_type):
         rate_plans = list(getattr(room_type, "room_board_rate_plans", None) or room_type.rate_plans.filter(is_active=True).order_by("-is_default", "guest_market", "id"))
         primary_rate_plan = next((rate_plan for rate_plan in rate_plans if rate_plan.is_default), None) or (rate_plans[0] if rate_plans else None)
+        snapshot = room_type.core_snapshot or {}
+        photos = snapshot.get("photos") or []
+        beds = snapshot.get("beds") or []
+        bed_types = [
+            bed.get("bed_type")
+            for bed in beds
+            if isinstance(bed, dict) and bed.get("bed_type")
+        ]
+        bed_type = snapshot.get("bed_type") or (bed_types[0] if bed_types else None)
 
         return {
             "id": room_type.id,
             "core_room_type_id": room_type.core_room_type_id,
             "name": room_type.name,
+            "room_type_name": room_type.name,
             "description": room_type.description,
             "cover_image_url": room_type.cover_image_url,
+            "photos": photos,
+            "beds": beds,
+            "bed_type": bed_type,
+            "bed_types": bed_types,
+            "room_area": snapshot.get("room_area"),
+            "room_area_from": snapshot.get("room_area_from"),
+            "room_area_to": snapshot.get("room_area_to"),
+            "area_unit": snapshot.get("area_unit"),
+            "size_sqft": snapshot.get("size_sqft"),
             "max_adults": room_type.max_adults,
             "max_children": room_type.max_children,
             "max_occupancy": room_type.max_occupancy,
