@@ -626,6 +626,7 @@ class RoomBoardView(APIView):
                 next_assignments=next_assignments_by_room.get(room.id, []),
                 checkout_assignment=last_checkout_assignment_by_room.get(room.id),
                 status_event=status_event,
+                current_block=block_by_room.get(room.id),
             )
             floor_key = (
                 room.core_building_id or room.building or "Unspecified",
@@ -816,7 +817,11 @@ class RoomBoardView(APIView):
             })
         return reservations
 
-    def build_room_timeline(self, *, display_status, target_date, assignment=None, next_assignments=None, checkout_assignment=None, status_event=None):
+    def build_room_timeline(
+        self, *, display_status, target_date, assignment=None,
+        next_assignments=None, checkout_assignment=None, status_event=None,
+        current_block=None,
+    ):
         next_assignments = next_assignments or []
         next_reservations = self.serialize_next_reservations(next_assignments)
         base = {
@@ -908,7 +913,21 @@ class RoomBoardView(APIView):
             return base
 
         if display_status == "blocked":
-            base["text"] = "Blocked"
+            if current_block:
+                base.update({
+                    "text": (
+                        f"Blocked: {current_block.start_date.isoformat()} "
+                        f"to {current_block.end_date.isoformat()}"
+                    ),
+                    "block": {
+                        "id": current_block.id,
+                        "start_date": current_block.start_date.isoformat(),
+                        "end_date": current_block.end_date.isoformat(),
+                        "note": current_block.note,
+                    },
+                })
+            else:
+                base["text"] = "Blocked"
             return base
 
         base["text"] = display_status.replace("_", " ").title()

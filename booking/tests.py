@@ -663,6 +663,12 @@ class BookingApiTests(BookingServiceTests):
         board_room = next(item for item in board.data["data"]["rooms"] if item["id"] == room.id)
         self.assertEqual(board_room["display_status"], "blocked")
         self.assertEqual(board_room["block"]["note"], "Held for VIP guest")
+        self.assertEqual(
+            board_room["timeline_text"],
+            f"Blocked: {self.check_in.isoformat()} to {self.check_out.isoformat()}",
+        )
+        self.assertEqual(board_room["timeline"]["block"]["start_date"], str(self.check_in))
+        self.assertEqual(board_room["timeline"]["block"]["end_date"], str(self.check_out))
         self.assertEqual(board.data["data"]["summary"]["blocked"], 1)
         inventory = DailyInventory.objects.get(room_type=self.room_type, stay_date=self.check_in)
         self.assertEqual(inventory.total_rooms, 0)
