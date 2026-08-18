@@ -751,6 +751,7 @@ class RoomBoardView(APIView):
 
     def serialize_physical_room_details(self, room):
         snapshot = room.core_snapshot or {}
+        room_type_snapshot = snapshot.get("room_type") or {}
         beds = snapshot.get("beds") or []
         bed_types = [
             bed.get("bed_type")
@@ -758,7 +759,12 @@ class RoomBoardView(APIView):
             if isinstance(bed, dict) and bed.get("bed_type")
         ]
         room_view = snapshot.get("room_view") or snapshot.get("view")
+        room_standard = snapshot.get("room_standard") or room_type_snapshot.get("room_standard")
         return {
+            "room_standard": room_standard,
+            "room_standard_id": (
+                room_standard.get("id") if isinstance(room_standard, dict) else None
+            ),
             "room_view": room_view,
             "view": room_view,
             "beds": beds,

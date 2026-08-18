@@ -2115,6 +2115,9 @@ class BookingApiTests(BookingServiceTests):
             building="Main Building",
             floor="8",
             core_snapshot={
+                "room_type": {
+                    "room_standard": {"id": 4, "name": "Deluxe"},
+                },
                 "room_view": {"id": 3, "name": "City View"},
                 "beds": [{"bed_type": {"id": 9, "name": "Physical King Bed"}, "quantity": 1}],
                 "room_area": 315,
@@ -2193,6 +2196,8 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(reserved["building_id"], 7001)
         self.assertEqual(reserved["floor_id"], 8008)
         self.assertEqual(reserved["room_view"], {"id": 3, "name": "City View"})
+        self.assertEqual(reserved["room_standard"], {"id": 4, "name": "Deluxe"})
+        self.assertEqual(reserved["room_standard_id"], 4)
         self.assertEqual(reserved["view"], reserved["room_view"])
         self.assertEqual(reserved["bed_type"], {"id": 9, "name": "Physical King Bed"})
         self.assertEqual(reserved["beds"][0]["quantity"], 1)
@@ -2239,6 +2244,9 @@ class BookingApiTests(BookingServiceTests):
             building="Main Building",
             floor="3",
             core_snapshot={
+                "room_type": {
+                    "room_standard": {"id": 5, "name": "Superior"},
+                },
                 "room_view": {"name": "City View"},
                 "beds": [{"bed_type": {"id": 1, "name": "King Bed"}, "quantity": 1}],
                 "room_area": 301,
@@ -2266,6 +2274,8 @@ class BookingApiTests(BookingServiceTests):
         data = response.data["data"]
         self.assertEqual(data["room_number"], "303")
         self.assertEqual(data["room_view"], {"name": "City View"})
+        self.assertEqual(data["room_standard"], {"id": 5, "name": "Superior"})
+        self.assertEqual(data["room_standard_id"], 5)
         self.assertEqual(data["bed_type"], {"id": 1, "name": "King Bed"})
         self.assertEqual(data["room_area"], 301)
         self.assertEqual(data["size_sqft"], 301)
