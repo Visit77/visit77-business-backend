@@ -1338,7 +1338,11 @@ class PhysicalRoomViewSet(AdminModelViewSet):
 
     @action(detail=True, methods=["get"], url_path="history")
     def history(self, request, pk=None):
-        room = self.get_object()
+        room = self.filter_queryset(self.get_queryset()).filter(
+            core_physical_room_id=pk,
+        ).first()
+        if room is None:
+            raise NotFound("Physical room was not found for the supplied core physical room ID.")
         queryset = room.action_history.select_related("booking", "block").prefetch_related(
             "booking__payments",
         )

@@ -565,7 +565,10 @@ class BookingServiceTests(TestCase):
 class BookingApiTests(BookingServiceTests):
     def test_physical_room_history_records_status_block_and_checkout_actions(self):
         room = PhysicalRoom.objects.create(
-            hotel=self.hotel, room_type=self.room_type, room_number="HIST-01",
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="HIST-01",
+            core_physical_room_id=9129,
         )
         headers = {
             "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
@@ -632,7 +635,7 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(checkout.status_code, 200, checkout.data)
 
         history = self.client.get(
-            f"/api/v1/admin/physical-rooms/{room.id}/history/", **headers,
+            f"/api/v1/admin/physical-rooms/{room.core_physical_room_id}/history/", **headers,
         )
         self.assertEqual(history.status_code, 200, history.data)
         actions = [item["action"] for item in history.data["data"]]
