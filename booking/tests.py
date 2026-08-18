@@ -12,7 +12,7 @@ from rest_framework.test import APIClient
 from rest_framework.exceptions import ValidationError
 from rest_framework_simplejwt.backends import TokenBackend
 
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, CoreIntegrationEvent, DailyInventory, DailyRate, Hotel, MealPlan, Payment, PhysicalRoom, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, CoreIntegrationEvent, DailyInventory, DailyRate, Hotel, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import sync_business_from_core
 from booking.services import availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_walk_in_booking, ensure_daily_inventory_for_room_type, record_payment, refund_payment, refund_quote
 
@@ -89,6 +89,12 @@ class BookingServiceTests(TestCase):
             .values_list("physical_room__room_number", flat=True)
         )
         self.assertEqual(assigned_room_numbers, ["G01", "101"])
+        reservation_events = PhysicalRoomActionHistory.objects.filter(
+            booking=booking,
+            action=PhysicalRoomActionHistory.Action.RESERVED,
+        )
+        self.assertEqual(reservation_events.count(), 2)
+        self.assertTrue(all(event.actor_type == "guest" for event in reservation_events))
         room_801.refresh_from_db()
         self.assertEqual(room_801.status, PhysicalRoom.Status.VACANT)
 
@@ -545,6 +551,96 @@ class BookingServiceTests(TestCase):
 
 @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key", CORE_JWT_SIGNING_KEY="test-core-jwt-key")
 class BookingApiTests(BookingServiceTests):
+    def test_physical_room_history_records_status_block_and_checkout_actions(self):
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel, room_type=self.room_type, room_number="HIST-01",
+        )
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+            "HTTP_X_CORE_USER_ID": "501",
+        }
+
+        oos = self.client.patch(
+            f"/api/v1/admin/physical-rooms/{room.id}/",
+            {"status": "out_of_service", "note": "Air conditioner repair"},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(oos.status_code, 200, oos.data)
+        room.refresh_from_db()
+        oos_event = room.action_history.get(action="out_of_service_started")
+        self.assertEqual(oos_event.actor_type, "hotel_admin")
+        self.assertEqual(oos_event.actor_core_user_id, 501)
+        self.assertEqual(oos_event.note, "Air conditioner repair")
+
+        restored = self.client.patch(
+            f"/api/v1/admin/physical-rooms/{room.id}/",
+            {"status": "vacant", "note": "Repair completed"},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(restored.status_code, 200, restored.data)
+        block_response = self.client.post(
+            "/api/v1/admin/room-blocks/",
+            {
+                "physical_room": room.id,
+                "start_date": str(self.check_out + timedelta(days=1)),
+                "end_date": str(self.check_out + timedelta(days=2)),
+                "note": "Held for VIP",
+            },
+            format="json",
+            **headers,
+        )
+        self.assertEqual(block_response.status_code, 201, block_response.data)
+        unblock_response = self.client.post(
+            f"/api/v1/admin/room-blocks/{block_response.data['data']['id']}/unblock/",
+            {}, format="json", **headers,
+        )
+        self.assertEqual(unblock_response.status_code, 200, unblock_response.data)
+
+        booking = create_walk_in_booking(
+            {
+                "physical_room_id": room.id,
+                "rate_plan_id": self.rate_plan.id,
+                "check_in": self.check_in,
+                "check_out": self.check_out,
+                "contact_name": "History Guest",
+                "contact_phone": "091111111",
+                "guest_market": "local",
+                "adults": 1,
+                "children": 0,
+            },
+            core_business_id=self.hotel.core_business_id,
+            check_in_immediately=True,
+        )
+        checkout = self.client.post(
+            f"/api/v1/admin/bookings/{booking.id}/check-out/", {}, format="json", **headers,
+        )
+        self.assertEqual(checkout.status_code, 200, checkout.data)
+
+        history = self.client.get(
+            f"/api/v1/admin/physical-rooms/{room.id}/history/", **headers,
+        )
+        self.assertEqual(history.status_code, 200, history.data)
+        actions = [item["action"] for item in history.data["data"]]
+        self.assertIn("out_of_service_started", actions)
+        self.assertIn("out_of_service_ended", actions)
+        self.assertIn("block_created", actions)
+        self.assertIn("unblocked", actions)
+        self.assertIn("checked_out", actions)
+        self.assertIn("cleaning_started", actions)
+        checked_out = next(item for item in history.data["data"] if item["action"] == "checked_out")
+        self.assertEqual(checked_out["booking_reference"], booking.reference)
+        self.assertEqual(checked_out["guest_name"], "History Guest")
+
+        board = self.client.get(
+            "/api/v1/admin/room-board/", {"date": str(self.check_out)}, **headers,
+        )
+        board_room = next(item for item in board.data["data"]["rooms"] if item["id"] == room.id)
+        self.assertEqual(board_room["display_status"], "cleaning")
+        self.assertIn("Cleaning | Checked out:", board_room["timeline_text"])
+
     def test_room_block_date_range_updates_board_inventory_and_prevents_walk_in(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="VIP-01")
         headers = {

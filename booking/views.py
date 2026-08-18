@@ -18,7 +18,7 @@ from rest_framework.views import APIView
 
 from booking.authentication import CoreJWTAuthentication
 from booking.integrations.core import CoreClient, sync_business_from_core
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, MealPlan, Payment, PhysicalRoom, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
 from booking.serializers import (
     AddOnSerializer,
@@ -46,6 +46,7 @@ from booking.serializers import (
     PaymentCreateSerializer,
     PaymentSerializer,
     PhysicalRoomSerializer,
+    PhysicalRoomActionHistorySerializer,
     PhysicalRoomBlockSerializer,
     PublicHotelSerializer,
     RatePlanSerializer,
@@ -70,6 +71,62 @@ def _pluralize_day_label(days):
 
 def _pluralize_night_label(nights):
     return "Night" if nights == 1 else "Nights"
+
+
+def _room_history_actor_type(request=None, booking=None):
+    if booking and booking.source == Booking.Source.OTA:
+        return PhysicalRoomActionHistory.ActorType.OTA
+    if request is not None and _core_user_id(request):
+        return PhysicalRoomActionHistory.ActorType.HOTEL_ADMIN
+    if booking and booking.source == Booking.Source.DIRECT:
+        return PhysicalRoomActionHistory.ActorType.GUEST
+    return PhysicalRoomActionHistory.ActorType.SYSTEM
+
+
+def _record_room_history(
+    room, action, *, request=None, booking=None, block=None,
+    old_status="", new_status="", note="", metadata=None,
+):
+    return PhysicalRoomActionHistory.objects.create(
+        physical_room=room,
+        booking=booking,
+        block=block,
+        action=action,
+        actor_type=_room_history_actor_type(request=request, booking=booking),
+        actor_core_user_id=_core_user_id(request) if request is not None else None,
+        old_status=old_status or "",
+        new_status=new_status or "",
+        note=note or "",
+        metadata=metadata or {},
+    )
+
+
+def _record_booking_room_assignments(booking, request, action):
+    assignments = RoomAssignment.objects.filter(
+        booking_room__booking=booking,
+        released_at__isnull=True,
+    ).select_related("physical_room")
+    for assignment in assignments:
+        room = assignment.physical_room
+        _record_room_history(
+            room,
+            action,
+            request=request,
+            booking=booking,
+            old_status=(
+                PhysicalRoom.Status.VACANT
+                if action == PhysicalRoomActionHistory.Action.CHECKED_IN
+                else room.status
+            ),
+            new_status=room.status,
+            note=booking.special_request,
+            metadata={
+                "assignment_id": assignment.id,
+                "check_in": str(booking.check_in),
+                "check_out": str(booking.check_out),
+                "booking_source": booking.source,
+            },
+        )
 
 
 def _check_in_readiness(booking):
@@ -443,6 +500,19 @@ class RoomBoardView(APIView):
             rooms = rooms.filter(floor=data["floor"])
         rooms = list(rooms.order_by("building", "floor", "room_number", "id"))
         room_ids = [room.id for room in rooms]
+        latest_status_events = {}
+        for event in PhysicalRoomActionHistory.objects.filter(
+            physical_room_id__in=room_ids,
+            action__in=[
+                PhysicalRoomActionHistory.Action.CHECKED_OUT,
+                PhysicalRoomActionHistory.Action.CLEANING_STARTED,
+                PhysicalRoomActionHistory.Action.CLEANING_COMPLETED,
+                PhysicalRoomActionHistory.Action.OUT_OF_SERVICE_STARTED,
+                PhysicalRoomActionHistory.Action.OUT_OF_SERVICE_ENDED,
+                PhysicalRoomActionHistory.Action.STATUS_CHANGED,
+            ],
+        ).order_by("-created_at", "-id"):
+            latest_status_events.setdefault((event.physical_room_id, event.action), event)
 
         active_assignments = RoomAssignment.objects.filter(
             physical_room_id__in=room_ids,
@@ -538,12 +608,24 @@ class RoomBoardView(APIView):
             else:
                 display_status = "available"
             counts[display_status] += 1
+            if display_status == "cleaning":
+                status_event = (
+                    latest_status_events.get((room.id, PhysicalRoomActionHistory.Action.CLEANING_STARTED))
+                    or latest_status_events.get((room.id, PhysicalRoomActionHistory.Action.CHECKED_OUT))
+                )
+            elif display_status == "out_of_service":
+                status_event = latest_status_events.get(
+                    (room.id, PhysicalRoomActionHistory.Action.OUT_OF_SERVICE_STARTED)
+                )
+            else:
+                status_event = None
             timeline = self.build_room_timeline(
                 display_status=display_status,
                 target_date=target_date,
                 assignment=assignment,
                 next_assignments=next_assignments_by_room.get(room.id, []),
                 checkout_assignment=last_checkout_assignment_by_room.get(room.id),
+                status_event=status_event,
             )
             floor_key = (
                 room.core_building_id or room.building or "Unspecified",
@@ -678,7 +760,12 @@ class RoomBoardView(APIView):
                 "upcoming_block": upcoming_data,
                 "upcoming_blocks": upcoming_list,
                 "block_timeline": {
-                    "text": f"Blocked until {current_block.end_date.isoformat()}",
+                    "text": (
+                        f"Blocked: {current_block.start_date.isoformat()} "
+                        f"to {current_block.end_date.isoformat()}"
+                    ),
+                    "start_date": current_block.start_date,
+                    "end_date": current_block.end_date,
                     "days_until_block": 0,
                     "blocked_days": (current_block.end_date - current_block.start_date).days + 1,
                 },
@@ -695,6 +782,8 @@ class RoomBoardView(APIView):
                         f"Block starts {upcoming_block.start_date.isoformat()} "
                         f"and ends {upcoming_block.end_date.isoformat()}"
                     ),
+                    "start_date": upcoming_block.start_date,
+                    "end_date": upcoming_block.end_date,
                     "days_until_block": days_until_block,
                     "blocked_days": (upcoming_block.end_date - upcoming_block.start_date).days + 1,
                 },
@@ -727,7 +816,7 @@ class RoomBoardView(APIView):
             })
         return reservations
 
-    def build_room_timeline(self, *, display_status, target_date, assignment=None, next_assignments=None, checkout_assignment=None):
+    def build_room_timeline(self, *, display_status, target_date, assignment=None, next_assignments=None, checkout_assignment=None, status_event=None):
         next_assignments = next_assignments or []
         next_reservations = self.serialize_next_reservations(next_assignments)
         base = {
@@ -780,9 +869,14 @@ class RoomBoardView(APIView):
                     "check_out": checkout_booking.check_out,
                     "released_at": checkout_assignment.released_at,
                 }
+            checked_out_at = None
+            if status_event:
+                checked_out_at = (status_event.metadata or {}).get("checked_out_at")
+                checked_out_at = checked_out_at or status_event.created_at.isoformat()
             base.update({
-                "text": "Check-out",
+                "text": f"Cleaning | Checked out: {checked_out_at}" if checked_out_at else "Cleaning",
                 "checkout": checkout_data,
+                "status_since": status_event.created_at if status_event else None,
             })
             return base
 
@@ -808,7 +902,9 @@ class RoomBoardView(APIView):
             return base
 
         if display_status == "out_of_service":
-            base["text"] = "Out of service"
+            since = status_event.created_at if status_event else None
+            base["text"] = f"Out of service since {since.isoformat()}" if since else "Out of service"
+            base["status_since"] = since
             return base
 
         if display_status == "blocked":
@@ -1166,10 +1262,57 @@ class PhysicalRoomViewSet(AdminModelViewSet):
 
     def perform_update(self, serializer):
         previous_status = serializer.instance.status
+        previous_note = serializer.instance.note
         room = serializer.save()
         if room.status != previous_status:
             from booking.services import ensure_daily_inventory_for_room_type
             ensure_daily_inventory_for_room_type(room.room_type)
+            if room.status == PhysicalRoom.Status.OUT_OF_SERVICE:
+                action_name = PhysicalRoomActionHistory.Action.OUT_OF_SERVICE_STARTED
+            elif previous_status == PhysicalRoom.Status.OUT_OF_SERVICE:
+                action_name = PhysicalRoomActionHistory.Action.OUT_OF_SERVICE_ENDED
+            elif previous_status == PhysicalRoom.Status.CLEANING and room.status == PhysicalRoom.Status.VACANT:
+                action_name = PhysicalRoomActionHistory.Action.CLEANING_COMPLETED
+            else:
+                action_name = PhysicalRoomActionHistory.Action.STATUS_CHANGED
+            _record_room_history(
+                room,
+                action_name,
+                request=self.request,
+                old_status=previous_status,
+                new_status=room.status,
+                note=room.note or previous_note,
+            )
+        elif room.note != previous_note:
+            _record_room_history(
+                room,
+                PhysicalRoomActionHistory.Action.STATUS_CHANGED,
+                request=self.request,
+                old_status=room.status,
+                new_status=room.status,
+                note=room.note,
+                metadata={"note_changed": True, "previous_note": previous_note},
+            )
+
+    @action(detail=True, methods=["get"], url_path="history")
+    def history(self, request, pk=None):
+        room = self.get_object()
+        queryset = room.action_history.select_related("booking", "block").prefetch_related(
+            "booking__payments",
+        )
+        date_from = parse_date(request.query_params.get("date_from", ""))
+        date_to = parse_date(request.query_params.get("date_to", ""))
+        if request.query_params.get("date_from") and not date_from:
+            raise ValidationError({"date_from": "Use YYYY-MM-DD format."})
+        if request.query_params.get("date_to") and not date_to:
+            raise ValidationError({"date_to": "Use YYYY-MM-DD format."})
+        if date_from:
+            queryset = queryset.filter(created_at__date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(created_at__date__lte=date_to)
+        if date_from and date_to and date_to < date_from:
+            raise ValidationError({"date_to": "Must be on or after date_from."})
+        return success(PhysicalRoomActionHistorySerializer(queryset, many=True).data)
 
     def retrieve(self, request, *args, **kwargs):
         room = self.get_object()
@@ -1276,17 +1419,41 @@ class PhysicalRoomBlockViewSet(AdminModelViewSet):
 
     def perform_create(self, serializer):
         block = serializer.save()
+        _record_room_history(
+            block.physical_room,
+            PhysicalRoomActionHistory.Action.BLOCK_CREATED,
+            request=self.request,
+            block=block,
+            note=block.note,
+            metadata={"start_date": str(block.start_date), "end_date": str(block.end_date)},
+        )
         self._reconcile_inventory(block.physical_room)
 
     def perform_update(self, serializer):
         old_room = serializer.instance.physical_room
         block = serializer.save()
+        _record_room_history(
+            block.physical_room,
+            PhysicalRoomActionHistory.Action.BLOCK_UPDATED,
+            request=self.request,
+            block=block,
+            note=block.note,
+            metadata={"start_date": str(block.start_date), "end_date": str(block.end_date)},
+        )
         self._reconcile_inventory(old_room)
         if block.physical_room_id != old_room.id:
             self._reconcile_inventory(block.physical_room)
 
     def perform_destroy(self, instance):
         room = instance.physical_room
+        _record_room_history(
+            room,
+            PhysicalRoomActionHistory.Action.UNBLOCKED,
+            request=self.request,
+            block=instance,
+            note=instance.note,
+            metadata={"start_date": str(instance.start_date), "end_date": str(instance.end_date), "deleted": True},
+        )
         instance.delete()
         self._reconcile_inventory(room)
 
@@ -1301,6 +1468,14 @@ class PhysicalRoomBlockViewSet(AdminModelViewSet):
         if block.is_active:
             block.is_active = False
             block.save(update_fields=["is_active", "updated_at"])
+            _record_room_history(
+                block.physical_room,
+                PhysicalRoomActionHistory.Action.UNBLOCKED,
+                request=request,
+                block=block,
+                note=block.note,
+                metadata={"start_date": str(block.start_date), "end_date": str(block.end_date)},
+            )
             self._reconcile_inventory(block.physical_room)
         return success(PhysicalRoomBlockSerializer(block, context={"request": request}).data)
 
@@ -1814,6 +1989,15 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
         ).exists():
             raise ValidationError("This physical room is blocked for one or more stay dates.")
         assignment = RoomAssignment.objects.create(booking_room=booking_room, physical_room=room)
+        _record_room_history(
+            room,
+            PhysicalRoomActionHistory.Action.ROOM_ASSIGNED,
+            request=request,
+            booking=booking,
+            new_status=room.status,
+            note=booking.special_request,
+            metadata={"assignment_id": assignment.id},
+        )
         return success(
             RoomAssignmentSerializer(assignment).data,
             status_code=status.HTTP_201_CREATED,
@@ -1837,6 +2021,15 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
             raise NotFound("Active room assignment not found for this booking.")
         assignment.released_at = timezone.now()
         assignment.save(update_fields=["released_at"])
+        _record_room_history(
+            assignment.physical_room,
+            PhysicalRoomActionHistory.Action.ROOM_UNASSIGNED,
+            request=request,
+            booking=booking,
+            old_status=assignment.physical_room.status,
+            note=booking.special_request,
+            metadata={"assignment_id": assignment.id},
+        )
         return success(RoomAssignmentSerializer(assignment).data)
 
     @action(detail=True, methods=["post"], url_path="change-room")
@@ -1890,6 +2083,26 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
             old_room.save(update_fields=["status"])
             new_room.status = PhysicalRoom.Status.OCCUPIED
             new_room.save(update_fields=["status"])
+        _record_room_history(
+            old_room,
+            PhysicalRoomActionHistory.Action.ROOM_CHANGED,
+            request=request,
+            booking=booking,
+            old_status=PhysicalRoom.Status.OCCUPIED if booking.status == Booking.Status.CHECKED_IN else old_room.status,
+            new_status=old_room.status,
+            note=booking.special_request,
+            metadata={"direction": "from", "new_physical_room_id": new_room.id},
+        )
+        _record_room_history(
+            new_room,
+            PhysicalRoomActionHistory.Action.ROOM_CHANGED,
+            request=request,
+            booking=booking,
+            old_status=PhysicalRoom.Status.VACANT,
+            new_status=new_room.status,
+            note=booking.special_request,
+            metadata={"direction": "to", "old_physical_room_id": old_room.id, "assignment_id": new_assignment.id},
+        )
         return success(RoomAssignmentSerializer(new_assignment).data)
 
     @action(detail=True, methods=["post"], url_path="check-in")
@@ -1931,7 +2144,8 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
             raise ValidationError("Assign all physical rooms before check-in.")
         if any(assignment.physical_room.status != PhysicalRoom.Status.VACANT for assignment in assignments):
             raise ValidationError("All assigned physical rooms must be vacant before check-in.")
-        PhysicalRoom.objects.filter(assignments__in=assignments).update(status=PhysicalRoom.Status.OCCUPIED)
+        checked_in_rooms = [assignment.physical_room for assignment in assignments]
+        PhysicalRoom.objects.filter(id__in=[room.id for room in checked_in_rooms]).update(status=PhysicalRoom.Status.OCCUPIED)
         booking.status = Booking.Status.CHECKED_IN
         booking.checked_in_at = timezone.now()
         booking.checked_in_by_core_user_id = _core_user_id(request)
@@ -1945,6 +2159,17 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
             "status", "checked_in_at", "checked_in_by_core_user_id",
             "check_in_verification_note", "updated_at",
         ])
+        for room in checked_in_rooms:
+            _record_room_history(
+                room,
+                PhysicalRoomActionHistory.Action.CHECKED_IN,
+                request=request,
+                booking=booking,
+                old_status=PhysicalRoom.Status.VACANT,
+                new_status=PhysicalRoom.Status.OCCUPIED,
+                note=booking.check_in_verification_note,
+                metadata={"checked_in_at": booking.checked_in_at.isoformat()},
+            )
         return success(BookingSerializer(booking).data)
 
 
@@ -1958,11 +2183,36 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
         # Release that commitment together with its physical-room assignment so
         # the cleaned room can be sold again (including an early checkout).
         release_checked_in_booking_inventory(booking)
-        assignments = RoomAssignment.objects.filter(booking_room__booking=booking, released_at__isnull=True)
-        PhysicalRoom.objects.filter(assignments__in=assignments).update(status=PhysicalRoom.Status.CLEANING)
-        assignments.update(released_at=timezone.now())
+        assignments = list(RoomAssignment.objects.filter(
+            booking_room__booking=booking, released_at__isnull=True,
+        ).select_related("physical_room"))
+        checked_out_at = timezone.now()
+        PhysicalRoom.objects.filter(id__in=[item.physical_room_id for item in assignments]).update(
+            status=PhysicalRoom.Status.CLEANING,
+        )
+        RoomAssignment.objects.filter(id__in=[item.id for item in assignments]).update(released_at=checked_out_at)
         booking.status = Booking.Status.CHECKED_OUT
         booking.save(update_fields=["status", "updated_at"])
+        for assignment in assignments:
+            _record_room_history(
+                assignment.physical_room,
+                PhysicalRoomActionHistory.Action.CHECKED_OUT,
+                request=request,
+                booking=booking,
+                old_status=PhysicalRoom.Status.OCCUPIED,
+                new_status=PhysicalRoom.Status.CLEANING,
+                note=booking.special_request,
+                metadata={"checked_out_at": checked_out_at.isoformat()},
+            )
+            _record_room_history(
+                assignment.physical_room,
+                PhysicalRoomActionHistory.Action.CLEANING_STARTED,
+                request=request,
+                booking=booking,
+                old_status=PhysicalRoom.Status.OCCUPIED,
+                new_status=PhysicalRoom.Status.CLEANING,
+                metadata={"checked_out_at": checked_out_at.isoformat()},
+            )
         return success(BookingSerializer(booking).data)
 
 
@@ -1978,6 +2228,9 @@ class WalkInBookingView(APIView):
             idempotency_key=request.headers.get("Idempotency-Key"),
             core_business_id=getattr(request, "booking_core_business_id", None),
             check_in_immediately=True,
+        )
+        _record_booking_room_assignments(
+            booking, request, PhysicalRoomActionHistory.Action.CHECKED_IN,
         )
         return success(
             BookingSerializer(booking, context={"request": request}).data,
@@ -2073,6 +2326,9 @@ class WalkInBookingV2View(APIView):
             core_business_id=getattr(request, "booking_core_business_id", None),
             check_in_immediately=False,
         )
+        _record_booking_room_assignments(
+            booking, request, PhysicalRoomActionHistory.Action.RESERVED,
+        )
         created_guests = list(booking.guests.order_by("id"))
         for index, file, guest_data in identity_photos:
             if index >= len(created_guests):
@@ -2114,6 +2370,9 @@ class AdminReservationView(APIView):
             serializer.validated_data,
             idempotency_key=request.headers.get("Idempotency-Key"),
             core_business_id=getattr(request, "booking_core_business_id", None),
+        )
+        _record_booking_room_assignments(
+            booking, request, PhysicalRoomActionHistory.Action.RESERVED,
         )
         return success(
             {

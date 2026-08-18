@@ -22,6 +22,7 @@ from booking.models import (
     Hotel,
     Payment,
     PhysicalRoom,
+    PhysicalRoomActionHistory,
     PhysicalRoomBlock,
     RatePlan,
     RatePeriod,
@@ -682,10 +683,32 @@ def auto_assign_physical_rooms_for_booking(booking):
             *_physical_room_assignment_sort_key(room),
         ))
         for room in candidates[:missing_count]:
-            created_assignments.append(RoomAssignment.objects.create(
+            assignment = RoomAssignment.objects.create(
                 booking_room=booking_room,
                 physical_room=room,
-            ))
+            )
+            created_assignments.append(assignment)
+            if booking.source == Booking.Source.OTA:
+                actor_type = PhysicalRoomActionHistory.ActorType.OTA
+            elif booking.source == Booking.Source.DIRECT:
+                actor_type = PhysicalRoomActionHistory.ActorType.GUEST
+            else:
+                actor_type = PhysicalRoomActionHistory.ActorType.SYSTEM
+            PhysicalRoomActionHistory.objects.create(
+                physical_room=room,
+                booking=booking,
+                action=PhysicalRoomActionHistory.Action.RESERVED,
+                actor_type=actor_type,
+                old_status=room.status,
+                new_status=room.status,
+                note=booking.special_request,
+                metadata={
+                    "assignment_id": assignment.id,
+                    "check_in": str(booking.check_in),
+                    "check_out": str(booking.check_out),
+                    "booking_source": booking.source,
+                },
+            )
 
     return created_assignments
 

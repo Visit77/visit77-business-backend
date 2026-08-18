@@ -21,6 +21,7 @@ from booking.models import (
     MealPlan,
     Payment,
     PhysicalRoom,
+    PhysicalRoomActionHistory,
     PhysicalRoomBlock,
     RatePlan,
     RatePeriod,
@@ -293,6 +294,29 @@ class PhysicalRoomBlockSerializer(serializers.ModelSerializer):
         if overlapping_blocks.exists():
             raise serializers.ValidationError({"date_range": "This room already has an overlapping block."})
         return attrs
+
+
+class PhysicalRoomActionHistorySerializer(serializers.ModelSerializer):
+    action_label = serializers.CharField(source="get_action_display", read_only=True)
+    actor_type_label = serializers.CharField(source="get_actor_type_display", read_only=True)
+    booking_reference = serializers.CharField(source="booking.reference", read_only=True, allow_null=True)
+    guest_name = serializers.CharField(source="booking.contact_name", read_only=True, allow_null=True)
+    invoice_numbers = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PhysicalRoomActionHistory
+        fields = [
+            "id", "physical_room", "action", "action_label", "created_at",
+            "old_status", "new_status", "note", "actor_type", "actor_type_label",
+            "actor_core_user_id", "booking", "booking_reference", "guest_name",
+            "block", "invoice_numbers", "metadata",
+        ]
+        read_only_fields = fields
+
+    def get_invoice_numbers(self, obj):
+        if not obj.booking_id:
+            return []
+        return [payment.invoice_number for payment in obj.booking.payments.all()]
 
 
 class RatePlanSerializer(serializers.ModelSerializer):

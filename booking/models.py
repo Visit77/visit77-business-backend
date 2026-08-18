@@ -345,6 +345,7 @@ class RatePeriod(models.Model):
         if self.end_date and self.end_date < self.start_date:
             raise ValidationError({"end_date": "Must be on or after start_date."})
 
+
     def save(self, *args, **kwargs):
         if self.base_price == 0 and self.price:
             self.base_price = self.price
@@ -357,6 +358,59 @@ class RatePeriod(models.Model):
 
     def __str__(self):
         return f"{self.rate_plan_id}: {self.name} ({self.start_date} - {self.end_date or 'open'})"
+
+
+class PhysicalRoomActionHistory(models.Model):
+    class Action(models.TextChoices):
+        RESERVED = "reserved", "Reserved"
+        ROOM_ASSIGNED = "room_assigned", "Room assigned"
+        ROOM_UNASSIGNED = "room_unassigned", "Room unassigned"
+        ROOM_CHANGED = "room_changed", "Room changed"
+        CHECKED_IN = "checked_in", "Checked in"
+        CHECKED_OUT = "checked_out", "Checked out"
+        CLEANING_STARTED = "cleaning_started", "Cleaning started"
+        CLEANING_COMPLETED = "cleaning_completed", "Cleaning completed"
+        STATUS_CHANGED = "status_changed", "Status changed"
+        OUT_OF_SERVICE_STARTED = "out_of_service_started", "Out of service started"
+        OUT_OF_SERVICE_ENDED = "out_of_service_ended", "Out of service ended"
+        BLOCK_CREATED = "block_created", "Block created"
+        BLOCK_UPDATED = "block_updated", "Block updated"
+        UNBLOCKED = "unblocked", "Unblocked"
+
+    class ActorType(models.TextChoices):
+        HOTEL_ADMIN = "hotel_admin", "Hotel admin"
+        GUEST = "guest", "Guest"
+        OTA = "ota", "OTA"
+        SYSTEM = "system", "System"
+
+    physical_room = models.ForeignKey(
+        PhysicalRoom, on_delete=models.CASCADE, related_name="action_history",
+    )
+    booking = models.ForeignKey(
+        "Booking", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="physical_room_history",
+    )
+    block = models.ForeignKey(
+        PhysicalRoomBlock, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="action_history",
+    )
+    action = models.CharField(max_length=40, choices=Action.choices)
+    actor_type = models.CharField(
+        max_length=24, choices=ActorType.choices, default=ActorType.SYSTEM,
+    )
+    actor_core_user_id = models.PositiveBigIntegerField(null=True, blank=True)
+    old_status = models.CharField(max_length=32, blank=True)
+    new_status = models.CharField(max_length=32, blank=True)
+    note = models.TextField(blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["physical_room", "created_at"], name="booking_room_hist_date_idx"),
+            models.Index(fields=["physical_room", "action"], name="booking_room_hist_action_idx"),
+        ]
 
 
 class AddOnTemplate(models.Model):
