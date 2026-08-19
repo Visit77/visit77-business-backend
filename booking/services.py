@@ -20,6 +20,8 @@ from booking.models import (
     DailyRate,
     Guest,
     Hotel,
+    Invoice,
+    InvoiceLine,
     Payment,
     PhysicalRoom,
     PhysicalRoomActionHistory,
@@ -882,6 +884,19 @@ def availability_for_hotels(hotels, check_in, check_out, adults=1, children=0, g
                     "display_price": default_rate_plan["default_display_price"],
                     "display_currency": default_rate_plan["display_currency"],
                 },
+                "extra_bed_price": {
+                    "rate_plan_id": default_rate_plan["id"],
+                    "guest_market": default_rate_plan["guest_market"],
+                    "base_price": default_rate_plan["extra_bed_base_price"],
+                    "base_currency": default_rate_plan["base_currency"],
+                    "usd_display_price": default_rate_plan["extra_bed_usd_display_price"],
+                    "display_price": default_rate_plan["extra_bed_display_price"],
+                    "display_currency": default_rate_plan["display_currency"],
+                    "pricing_unit": "per_bed_per_night",
+                },
+                "extra_bed_base_price": default_rate_plan["extra_bed_base_price"],
+                "extra_bed_usd_display_price": default_rate_plan["extra_bed_usd_display_price"],
+                "extra_bed_display_price": default_rate_plan["extra_bed_display_price"],
                 "default_rate_plan": default_rate_plan,
                 "max_adults": room_type.max_adults,
                 "max_children": room_type.max_children,
@@ -1108,6 +1123,7 @@ def create_booking(data, idempotency_key=None):
     if idempotency_key:
         existing = Booking.objects.filter(hotel=hotel, idempotency_key=idempotency_key).first()
         if existing:
+            ensure_initial_invoice(existing)
             return existing, False
 
     check_in, check_out = data["check_in"], data["check_out"]
@@ -1288,6 +1304,7 @@ def create_booking(data, idempotency_key=None):
     booking.grand_total = room_total + add_on_total + booking.tax_total - booking.discount_total
     booking.cancellation_policy_snapshot = policy_snapshot
     booking.save(update_fields=["currency", "room_total", "add_on_total", "grand_total", "cancellation_policy_snapshot"])
+    ensure_initial_invoice(booking)
     return booking, True
 
 
@@ -1314,6 +1331,125 @@ def release_checked_in_booking_inventory(booking):
     _move_inventory(booking, "reserved_rooms")
 
 
+def _sync_invoice_status(invoice):
+    if invoice.status == Invoice.Status.VOID:
+        return invoice
+    paid_amount = invoice.paid_amount
+    invoice.status = (
+        Invoice.Status.PAID if invoice.total <= paid_amount
+        else Invoice.Status.PARTIALLY_PAID if paid_amount > 0
+        else Invoice.Status.OPEN
+    )
+    invoice.save(update_fields=["status", "updated_at"])
+    return invoice
+
+
+def create_invoice(booking, invoice_type, lines, tax_total=Decimal("0"), discount_total=Decimal("0"), note="", add_to_booking_total=False):
+    normalized_lines = []
+    subtotal = Decimal("0")
+    for item in lines:
+        quantity = Decimal(str(item.get("quantity", 1)))
+        unit_price = Decimal(str(item["unit_price"]))
+        line_total = quantity * unit_price
+        if quantity <= 0 or unit_price < 0:
+            raise ValidationError({"lines": "Quantity must be positive and unit price cannot be negative."})
+        subtotal += line_total
+        normalized_lines.append((item, quantity, unit_price, line_total))
+    tax_total = Decimal(str(tax_total or 0))
+    discount_total = Decimal(str(discount_total or 0))
+    total = subtotal + tax_total - discount_total
+    if not normalized_lines:
+        raise ValidationError({"lines": "At least one invoice line is required."})
+    if tax_total < 0 or discount_total < 0 or total < 0:
+        raise ValidationError({"total": "Invoice totals cannot be negative."})
+    invoice = Invoice.objects.create(
+        booking=booking,
+        invoice_number=_reference("IV"),
+        invoice_type=invoice_type,
+        currency=booking.currency,
+        subtotal=subtotal,
+        tax_total=tax_total,
+        discount_total=discount_total,
+        total=total,
+        note=note,
+    )
+    InvoiceLine.objects.bulk_create([
+        InvoiceLine(
+            invoice=invoice,
+            description=item["description"],
+            quantity=quantity,
+            unit_price=unit_price,
+            total=line_total,
+            metadata=item.get("metadata", {}),
+        )
+        for item, quantity, unit_price, line_total in normalized_lines
+    ])
+    if add_to_booking_total:
+        booking.add_on_total += subtotal
+        booking.tax_total += tax_total
+        booking.discount_total += discount_total
+        booking.grand_total += total
+        booking.save(update_fields=["add_on_total", "tax_total", "discount_total", "grand_total", "updated_at"])
+    return invoice
+
+
+def _booking_charge_lines(booking):
+    lines = [
+        {
+            "description": f"{room.quantity} x {room.room_type.name} ({booking.nights} night(s))",
+            "quantity": 1,
+            "unit_price": room.total,
+            "metadata": {"booking_room_id": room.id, "core_room_type_id": room.room_type.core_room_type_id},
+        }
+        for room in booking.rooms.select_related("room_type").all()
+    ]
+    lines.extend({
+        "description": item.add_on.name,
+        "quantity": 1,
+        "unit_price": item.total,
+        "metadata": {"booking_add_on_id": item.id, "add_on_id": item.add_on_id},
+    } for item in booking.add_ons.select_related("add_on").all())
+    return lines
+
+
+def ensure_initial_invoice(booking):
+    existing = booking.invoices.filter(invoice_type=Invoice.Type.ROOM_BOOKING).order_by("issued_at").first()
+    if existing:
+        return existing
+    return create_invoice(
+        booking,
+        Invoice.Type.ROOM_BOOKING,
+        _booking_charge_lines(booking),
+        tax_total=booking.tax_total,
+        discount_total=booking.discount_total,
+        note="Original booking charges",
+    )
+
+
+def sync_initial_invoice(booking):
+    invoice = ensure_initial_invoice(booking)
+    invoice.lines.all().delete()
+    lines = _booking_charge_lines(booking)
+    subtotal = sum((Decimal(str(item["quantity"])) * Decimal(str(item["unit_price"])) for item in lines), Decimal("0"))
+    InvoiceLine.objects.bulk_create([
+        InvoiceLine(
+            invoice=invoice,
+            description=item["description"],
+            quantity=Decimal(str(item["quantity"])),
+            unit_price=Decimal(str(item["unit_price"])),
+            total=Decimal(str(item["quantity"])) * Decimal(str(item["unit_price"])),
+            metadata=item.get("metadata", {}),
+        )
+        for item in lines
+    ])
+    invoice.subtotal = subtotal
+    invoice.tax_total = booking.tax_total
+    invoice.discount_total = booking.discount_total
+    invoice.total = subtotal + booking.tax_total - booking.discount_total
+    invoice.save(update_fields=["subtotal", "tax_total", "discount_total", "total", "updated_at"])
+    return _sync_invoice_status(invoice)
+
+
 @transaction.atomic
 def record_payment(booking, data, auto_assign=True):
     booking = Booking.objects.select_for_update().get(pk=booking.pk)
@@ -1323,19 +1459,33 @@ def record_payment(booking, data, auto_assign=True):
         and booking.hold_expires_at <= timezone.now()
     ):
         raise ValidationError("The booking payment hold has expired.")
+    invoice = None
+    if data.get("invoice_id"):
+        invoice = booking.invoices.filter(id=data["invoice_id"]).first()
+        if not invoice:
+            raise ValidationError({"invoice_id": "Invoice does not belong to this booking."})
+    if invoice is None:
+        ensure_initial_invoice(booking)
+        invoice = next(
+            (item for item in booking.invoices.prefetch_related("receipts").order_by("issued_at", "id") if item.balance > 0 and item.status != Invoice.Status.VOID),
+            None,
+        )
+    if invoice is None:
+        raise ValidationError({"invoice_id": "This booking has no outstanding invoice."})
     if data.get("status", Payment.Status.PAID) == Payment.Status.PAID:
-        amount_due = max(booking.grand_total - booking.amount_paid, Decimal("0"))
+        amount_due = invoice.balance
         if data["amount"] > amount_due:
-            raise ValidationError({"amount": f"Payment exceeds the remaining balance of {amount_due} {booking.currency}."})
+            raise ValidationError({"amount": f"Payment exceeds invoice {invoice.invoice_number} balance of {amount_due} {booking.currency}."})
     payment = Payment.objects.create(
         booking=booking,
+        invoice=invoice,
         payment_type=data.get("payment_type", Payment.Type.FULL_PAYMENT),
         provider=data["provider"],
         provider_reference=data.get("provider_reference", ""),
         status=data.get("status", Payment.Status.PAID),
         amount=data["amount"],
         currency=booking.currency,
-        invoice_number=_reference("IV"),
+        invoice_number=invoice.invoice_number,
         receipt_number=_reference("RC") if data.get("status", Payment.Status.PAID) == Payment.Status.PAID else None,
         metadata=data.get("metadata", {}),
         paid_at=timezone.now() if data.get("status", Payment.Status.PAID) == Payment.Status.PAID else None,
@@ -1351,6 +1501,7 @@ def record_payment(booking, data, auto_assign=True):
         booking.save(update_fields=["amount_paid", "status", "hold_expires_at", "updated_at"])
         if auto_assign and payment.amount > 0 and was_pending and booking.status == Booking.Status.CONFIRMED:
             auto_assign_physical_rooms_for_booking(booking)
+    _sync_invoice_status(invoice)
     return payment
 
 
@@ -1518,15 +1669,17 @@ def create_walk_in_booking(data, idempotency_key=None, core_business_id=None, ch
         record_payment(booking, payment_payload, auto_assign=False)
         booking = Booking.objects.select_for_update().prefetch_related("rooms").get(pk=booking.pk)
     elif payment_payload:
+        invoice = ensure_initial_invoice(booking)
         Payment.objects.create(
             booking=booking,
+            invoice=invoice,
             payment_type=payment_payload["payment_type"],
             provider=payment_payload["provider"],
             provider_reference=payment_payload["provider_reference"],
             status=Payment.Status.PENDING,
             amount=payment_payload["amount"],
             currency=booking.currency,
-            invoice_number=_reference("IV"),
+            invoice_number=invoice.invoice_number,
             metadata=payment_payload["metadata"],
         )
         if booking.status == Booking.Status.PENDING_PAYMENT:
@@ -1581,15 +1734,17 @@ def create_admin_reservation(data, idempotency_key=None, core_business_id=None):
         record_payment(booking, payment_payload, auto_assign=False)
         booking.refresh_from_db()
     elif payment_payload:
+        invoice = ensure_initial_invoice(booking)
         Payment.objects.create(
             booking=booking,
+            invoice=invoice,
             payment_type=payment_payload["payment_type"],
             provider=payment_payload["provider"],
             provider_reference=payment_payload["provider_reference"],
             status=Payment.Status.PENDING,
             amount=payment_payload["amount"],
             currency=booking.currency,
-            invoice_number=_reference("IV"),
+            invoice_number=invoice.invoice_number,
             metadata=payment_payload["metadata"],
         )
         _move_inventory(booking, "held_rooms", "reserved_rooms")
@@ -1813,6 +1968,10 @@ def update_reservation_for_check_in(booking, data):
         "guest_market", "special_request", "currency", "room_total", "add_on_total",
         "tax_total", "discount_total", "grand_total", "cancellation_policy_snapshot", "updated_at",
     ])
+    sync_initial_invoice(booking)
+    # create_booking() creates the replacement's provisional invoice as well.
+    # It is only a calculation container; the real stay keeps its own invoices.
+    replacement.invoices.all().delete()
     replacement.delete()
     return booking
 
@@ -1820,6 +1979,7 @@ def update_reservation_for_check_in(booking, data):
 @transaction.atomic
 def refund_payment(payment, amount, provider_reference=""):
     payment = Payment.objects.select_for_update().select_related("booking").get(pk=payment.pk)
+    invoice = Invoice.objects.select_for_update().filter(pk=payment.invoice_id).first() if payment.invoice_id else None
     quote = refund_quote(payment.booking)
     if amount > quote["refundable_remaining"]:
         raise ValidationError({
@@ -1839,6 +1999,8 @@ def refund_payment(payment, amount, provider_reference=""):
     booking = Booking.objects.select_for_update().get(pk=payment.booking_id)
     booking.amount_paid = max(booking.amount_paid - amount, Decimal("0"))
     booking.save(update_fields=["amount_paid", "updated_at"])
+    if invoice:
+        _sync_invoice_status(invoice)
     return payment
 
 

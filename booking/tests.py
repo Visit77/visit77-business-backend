@@ -12,9 +12,9 @@ from rest_framework.test import APIClient
 from rest_framework.exceptions import ValidationError
 from rest_framework_simplejwt.backends import TokenBackend
 
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, CoreIntegrationEvent, DailyInventory, DailyRate, Hotel, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, CoreIntegrationEvent, DailyInventory, DailyRate, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import sync_business_from_core
-from booking.services import availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_walk_in_booking, ensure_daily_inventory_for_room_type, record_payment, refund_payment, refund_quote
+from booking.services import availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, record_payment, refund_payment, refund_quote
 
 
 class BookingServiceTests(TestCase):
@@ -290,6 +290,56 @@ class BookingServiceTests(TestCase):
         payment.refresh_from_db()
         self.assertEqual(booking.amount_paid, Decimal("30000"))
         self.assertEqual(payment.status, Payment.Status.PARTIALLY_REFUNDED)
+
+    def test_one_invoice_accepts_deposit_and_balance_as_separate_receipts(self):
+        booking, _ = create_booking(self.payload())
+        invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
+
+        deposit = record_payment(booking, {
+            "invoice_id": invoice.id,
+            "payment_type": Payment.Type.DEPOSIT,
+            "provider": Payment.Provider.CASH,
+            "amount": Decimal("50000"),
+            "status": Payment.Status.PAID,
+        })
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.status, Invoice.Status.PARTIALLY_PAID)
+        self.assertEqual(invoice.balance, Decimal("270000"))
+
+        balance = record_payment(booking, {
+            "invoice_id": invoice.id,
+            "payment_type": Payment.Type.BALANCE,
+            "provider": Payment.Provider.MMQR,
+            "amount": invoice.balance,
+            "status": Payment.Status.PAID,
+        })
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.status, Invoice.Status.PAID)
+        self.assertEqual(invoice.balance, Decimal("0"))
+        self.assertEqual(invoice.receipts.count(), 2)
+        self.assertEqual(deposit.invoice_number, invoice.invoice_number)
+        self.assertEqual(balance.invoice_number, invoice.invoice_number)
+        self.assertNotEqual(deposit.receipt_number, balance.receipt_number)
+
+    def test_new_charge_creates_separate_invoice_with_own_tax_and_discount(self):
+        booking, _ = create_booking(self.payload())
+        initial_invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
+
+        extra_invoice = create_invoice(
+            booking,
+            Invoice.Type.EXTRA_SERVICE,
+            [{"description": "Airport transfer", "quantity": 1, "unit_price": Decimal("30000")}],
+            tax_total=Decimal("1500"),
+            discount_total=Decimal("500"),
+            add_to_booking_total=True,
+        )
+
+        booking.refresh_from_db()
+        self.assertNotEqual(initial_invoice.invoice_number, extra_invoice.invoice_number)
+        self.assertEqual(extra_invoice.subtotal, Decimal("30000"))
+        self.assertEqual(extra_invoice.total, Decimal("31000"))
+        self.assertEqual(booking.invoices.count(), 2)
+        self.assertEqual(booking.grand_total, Decimal("351000"))
 
     def test_refund_quote_uses_less_than_and_highest_more_than_rule(self):
         self.rate_plan.cancellation_policy = {
@@ -980,6 +1030,55 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(booking.guests.count(), 2)
         self.assertTrue(booking.guests.filter(name="Updated Primary", identity_number="NRC-1").exists())
         self.assertTrue(booking.guests.filter(name="Second Guest", identity_number="PP-2").exists())
+        invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
+        self.assertEqual(invoice.total, Decimal("300000"))
+        self.assertEqual(invoice.lines.count(), 2)
+
+    def test_stay_bill_lists_separate_invoices_and_receipts(self):
+        booking, _ = create_booking(self.payload())
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+        created = self.client.post(
+            f"/api/v1/admin/bookings/{booking.id}/invoices/",
+            {
+                "invoice_type": "extra_service",
+                "lines": [{"description": "Laundry", "quantity": "2", "unit_price": "5000"}],
+                "tax_total": "500",
+                "discount_total": "0",
+                "note": "Laundry service",
+            },
+            format="json",
+            **headers,
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        extra_invoice_id = created.data["data"]["id"]
+
+        paid = self.client.post(
+            f"/api/v1/admin/bookings/{booking.id}/payment/",
+            {
+                "invoice_id": extra_invoice_id,
+                "payment_type": "full_payment",
+                "provider": "cash",
+                "status": "paid",
+            },
+            format="json",
+            **headers,
+        )
+        self.assertEqual(paid.status_code, 201, paid.data)
+        self.assertEqual(paid.data["data"]["amount"], "10500.00")
+
+        admin_bill = self.client.get(f"/api/v1/admin/bookings/{booking.id}/stay-bill/", **headers)
+        self.assertEqual(admin_bill.status_code, 200, admin_bill.data)
+        self.assertEqual(len(admin_bill.data["data"]["invoices"]), 2)
+        extra = next(item for item in admin_bill.data["data"]["invoices"] if item["id"] == extra_invoice_id)
+        self.assertEqual(extra["status"], Invoice.Status.PAID)
+        self.assertEqual(len(extra["receipts"]), 1)
+
+        public_bill = self.client.get(f"/api/v1/public/bookings/{booking.public_token}/stay-bill/")
+        self.assertEqual(public_bill.status_code, 200, public_bill.data)
+        self.assertEqual(len(public_bill.data["data"]["invoices"]), 2)
 
     def test_check_in_form_accepts_unchanged_current_room_even_if_marked_occupied(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-S")
@@ -1278,7 +1377,11 @@ class BookingApiTests(BookingServiceTests):
         self.room_type.save(update_fields=["core_snapshot"])
         self.rate_plan.is_default = True
         self.rate_plan.usd_display_price = Decimal("20")
-        self.rate_plan.save(update_fields=["is_default", "usd_display_price"])
+        self.rate_plan.extra_bed_base_price = Decimal("30000")
+        self.rate_plan.extra_bed_usd_display_price = Decimal("8")
+        self.rate_plan.save(update_fields=[
+            "is_default", "usd_display_price", "extra_bed_base_price", "extra_bed_usd_display_price",
+        ])
         response = self.client.get(
             f"/api/v1/public/hotels/{self.hotel.core_business_id}/availability/",
             {"check_in": self.check_in, "check_out": self.check_out, "adults": 2, "guest_market": "local"},
@@ -1293,6 +1396,12 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(room_type["default_price"]["base_currency"], "MMK")
         self.assertEqual(room_type["default_rate_plan"]["id"], self.rate_plan.id)
         self.assertTrue(room_type["rate_plans"][0]["is_default"])
+        self.assertEqual(room_type["extra_bed_price"]["base_price"], Decimal("30000"))
+        self.assertEqual(room_type["extra_bed_price"]["base_currency"], "MMK")
+        self.assertEqual(room_type["extra_bed_price"]["usd_display_price"], Decimal("8"))
+        self.assertEqual(room_type["extra_bed_price"]["pricing_unit"], "per_bed_per_night")
+        self.assertEqual(room_type["extra_bed_base_price"], Decimal("30000"))
+        self.assertEqual(room_type["rate_plans"][0]["extra_bed_base_price"], Decimal("30000"))
 
     def test_public_booking_estimate_does_not_require_contact_info(self):
         self.rate_plan.extra_bed_base_price = Decimal("30000")
@@ -2275,6 +2384,15 @@ class BookingApiTests(BookingServiceTests):
                     "room_standard": {"id": 5, "name": "Superior"},
                 },
                 "room_view": {"name": "City View"},
+                "room_views": [
+                    {"id": 1, "name": "City View"},
+                    {"id": 2, "name": "Garden View"},
+                ],
+                "bath_type": {"id": 3, "name": "Shower"},
+                "bath_types": [
+                    {"id": 3, "name": "Shower"},
+                    {"id": 4, "name": "Bathtub"},
+                ],
                 "beds": [{"bed_type": {"id": 1, "name": "King Bed"}, "quantity": 1}],
                 "room_area": 301,
                 "area_unit": "sqft",
@@ -2301,6 +2419,9 @@ class BookingApiTests(BookingServiceTests):
         data = response.data["data"]
         self.assertEqual(data["room_number"], "303")
         self.assertEqual(data["room_view"], {"name": "City View"})
+        self.assertEqual(len(data["room_views"]), 2)
+        self.assertEqual(data["bath_type"], {"id": 3, "name": "Shower"})
+        self.assertEqual(len(data["bath_types"]), 2)
         self.assertEqual(data["room_standard"], {"id": 5, "name": "Superior"})
         self.assertEqual(data["room_standard_id"], 5)
         self.assertEqual(data["bed_type"], {"id": 1, "name": "King Bed"})

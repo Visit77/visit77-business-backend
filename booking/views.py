@@ -18,7 +18,7 @@ from rest_framework.views import APIView
 
 from booking.authentication import CoreJWTAuthentication
 from booking.integrations.core import CoreClient, sync_business_from_core
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
 from booking.serializers import (
     AddOnSerializer,
@@ -40,6 +40,8 @@ from booking.serializers import (
     DailyRateSerializer,
     DailyRateBulkUpsertSerializer,
     HotelSerializer,
+    InvoiceCreateSerializer,
+    InvoiceSerializer,
     GuestIdentityDocumentSerializer,
     GuestIdentityDocumentUploadSerializer,
     MealPlanSerializer,
@@ -61,7 +63,7 @@ from booking.serializers import (
     RoomTypeSerializer,
     WalkInBookingCreateSerializer,
 )
-from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_walk_in_booking, deprovision_hotel, estimate_booking, record_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, update_reservation_for_check_in, validate_assignment_preferences
+from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, deprovision_hotel, estimate_booking, record_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, update_reservation_for_check_in, validate_assignment_preferences
 from config.response_formatter import success
 
 
@@ -313,6 +315,24 @@ class PublicBookingDetailView(APIView):
         if not booking:
             raise NotFound("Booking not found.")
         return success(BookingSerializer(booking).data)
+
+
+class PublicStayBillView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, public_token):
+        booking = Booking.objects.filter(public_token=public_token).select_related("hotel").prefetch_related(
+            "invoices__lines", "invoices__receipts",
+        ).first()
+        if not booking:
+            raise NotFound("Booking not found.")
+        return success({
+            "booking_id": str(booking.id),
+            "booking_reference": booking.reference,
+            "stay_status": booking.status,
+            "currency": booking.currency,
+            "invoices": InvoiceSerializer(booking.invoices.all(), many=True).data,
+        })
 
 
 class PublicDemoPaymentView(APIView):
@@ -759,6 +779,9 @@ class RoomBoardView(APIView):
             if isinstance(bed, dict) and bed.get("bed_type")
         ]
         room_view = snapshot.get("room_view") or snapshot.get("view")
+        room_views = snapshot.get("room_views") or ([room_view] if room_view else [])
+        bath_type = snapshot.get("bath_type")
+        bath_types = snapshot.get("bath_types") or ([bath_type] if bath_type else [])
         room_standard = snapshot.get("room_standard") or room_type_snapshot.get("room_standard")
         return {
             "room_standard": room_standard,
@@ -767,6 +790,9 @@ class RoomBoardView(APIView):
             ),
             "room_view": room_view,
             "view": room_view,
+            "room_views": room_views,
+            "bath_type": bath_type,
+            "bath_types": bath_types,
             "beds": beds,
             "bed_type": snapshot.get("bed_type") or (bed_types[0] if bed_types else None),
             "bed_types": bed_types,
@@ -1850,8 +1876,42 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
     def get_queryset(self):
         return self.scope_queryset(
             Booking.objects.select_related("hotel").prefetch_related(
-                "rooms__nights", "rooms__assignments", "guests__identity_documents", "add_ons", "payments"
+                "rooms__nights", "rooms__assignments", "guests__identity_documents", "add_ons", "payments",
+                "invoices__lines", "invoices__receipts",
             )
+        )
+
+    @action(detail=True, methods=["get"], url_path="stay-bill")
+    def stay_bill(self, request, pk=None):
+        booking = self.get_object()
+        return success({
+            "booking_id": str(booking.id),
+            "booking_reference": booking.reference,
+            "stay_status": booking.status,
+            "currency": booking.currency,
+            "invoices": InvoiceSerializer(booking.invoices.all(), many=True).data,
+        })
+
+    @action(detail=True, methods=["post"], url_path="invoices")
+    @transaction.atomic
+    def create_booking_invoice(self, request, pk=None):
+        booking = Booking.objects.select_for_update().get(pk=self.get_object().pk)
+        serializer = InvoiceCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        invoice = create_invoice(
+            booking,
+            data["invoice_type"],
+            data["lines"],
+            tax_total=data["tax_total"],
+            discount_total=data["discount_total"],
+            note=data["note"],
+            add_to_booking_total=True,
+        )
+        return success(
+            InvoiceSerializer(invoice).data,
+            status_code=status.HTTP_201_CREATED,
+            status=status.HTTP_201_CREATED,
         )
 
     @action(detail=True, methods=["get", "patch"], url_path="check-in-form")
@@ -2232,6 +2292,21 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
         booking = Booking.objects.select_for_update().get(pk=self.get_object().pk)
         if booking.status != Booking.Status.CHECKED_IN:
             raise ValidationError("Only a checked-in booking can check out.")
+        outstanding = [
+            {
+                "invoice_id": str(invoice.id),
+                "invoice_number": invoice.invoice_number,
+                "balance": str(invoice.balance),
+                "currency": invoice.currency,
+            }
+            for invoice in booking.invoices.prefetch_related("receipts").exclude(status=Invoice.Status.VOID)
+            if invoice.balance > 0
+        ]
+        if outstanding:
+            raise ValidationError({
+                "invoices": "Every invoice must be fully paid before checkout.",
+                "outstanding_invoices": outstanding,
+            })
         # A checked-in booking remains counted in reserved_rooms until checkout.
         # Release that commitment together with its physical-room assignment so
         # the cleaned room can be sold again (including an early checkout).

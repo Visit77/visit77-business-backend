@@ -18,6 +18,8 @@ from booking.models import (
     Guest,
     GuestIdentityDocument,
     Hotel,
+    Invoice,
+    InvoiceLine,
     MealPlan,
     Payment,
     PhysicalRoom,
@@ -643,9 +645,43 @@ class BookingAddOnSerializer(serializers.ModelSerializer):
 
 
 class PaymentSerializer(serializers.ModelSerializer):
+    current_invoice_number = serializers.CharField(source="invoice.invoice_number", read_only=True)
+
     class Meta:
         model = Payment
         fields = "__all__"
+
+
+class InvoiceLineSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = InvoiceLine
+        fields = ["id", "description", "quantity", "unit_price", "total", "metadata", "created_at"]
+
+
+class InvoiceSerializer(serializers.ModelSerializer):
+    lines = InvoiceLineSerializer(many=True, read_only=True)
+    receipts = PaymentSerializer(many=True, read_only=True)
+    paid_amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    balance = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = Invoice
+        fields = "__all__"
+
+
+class InvoiceLineCreateSerializer(serializers.Serializer):
+    description = serializers.CharField(max_length=255)
+    quantity = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=Decimal("0.01"), default=Decimal("1"))
+    unit_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0"))
+    metadata = serializers.JSONField(required=False, default=dict)
+
+
+class InvoiceCreateSerializer(serializers.Serializer):
+    invoice_type = serializers.ChoiceField(choices=Invoice.Type.choices)
+    lines = InvoiceLineCreateSerializer(many=True, allow_empty=False)
+    tax_total = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0"), default=Decimal("0"))
+    discount_total = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0"), default=Decimal("0"))
+    note = serializers.CharField(required=False, allow_blank=True, default="")
 
 
 class BookingSerializer(serializers.ModelSerializer):
@@ -653,6 +689,7 @@ class BookingSerializer(serializers.ModelSerializer):
     guests = GuestSerializer(many=True, read_only=True)
     add_ons = BookingAddOnSerializer(many=True, read_only=True)
     payments = PaymentSerializer(many=True, read_only=True)
+    invoices = InvoiceSerializer(many=True, read_only=True)
     core_business_id = serializers.IntegerField(source="hotel.core_business_id", read_only=True)
     hotel_name = serializers.CharField(source="hotel.name", read_only=True)
     nights = serializers.IntegerField(read_only=True)
@@ -929,6 +966,7 @@ class PaymentCreateSerializer(serializers.Serializer):
         CHOICES = Payment.Type.choices
 
     payment_type = serializers.ChoiceField(choices=PaymentType.CHOICES, default=PaymentType.DEPOSIT)
+    invoice_id = serializers.UUIDField(required=False)
     provider = serializers.CharField(max_length=50)
     provider_reference = serializers.CharField(max_length=255, required=False, allow_blank=True)
     status = serializers.ChoiceField(choices=Payment.Status.choices, default=Payment.Status.PAID)
@@ -938,7 +976,17 @@ class PaymentCreateSerializer(serializers.Serializer):
     def validate(self, attrs):
         booking = self.context.get("booking")
         payment_type = attrs["payment_type"]
-        amount_due = max(booking.grand_total - booking.amount_paid, Decimal("0")) if booking else None
+        invoice = None
+        if booking and attrs.get("invoice_id"):
+            invoice = booking.invoices.prefetch_related("receipts").filter(id=attrs["invoice_id"]).first()
+            if not invoice:
+                raise serializers.ValidationError({"invoice_id": "Invoice does not belong to this booking."})
+        if booking and invoice is None:
+            invoice = next(
+                (item for item in booking.invoices.prefetch_related("receipts").order_by("issued_at", "id") if item.balance > 0 and item.status != Invoice.Status.VOID),
+                None,
+            )
+        amount_due = invoice.balance if invoice else (max(booking.grand_total - booking.amount_paid, Decimal("0")) if booking else None)
         if amount_due is not None and amount_due <= 0:
             raise serializers.ValidationError({"amount": "This booking is already fully paid."})
         if payment_type == self.PaymentType.DEPOSIT:

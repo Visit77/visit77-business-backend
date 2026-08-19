@@ -648,6 +648,68 @@ class RoomAssignment(models.Model):
     released_at = models.DateTimeField(null=True, blank=True)
 
 
+class Invoice(models.Model):
+    class Type(models.TextChoices):
+        ROOM_BOOKING = "room_booking", "Room booking"
+        STAY_EXTENSION = "stay_extension", "Stay extension"
+        EXTRA_SERVICE = "extra_service", "Extra service"
+        DAMAGE = "damage", "Damage charge"
+        OTHER = "other", "Other"
+
+    class Status(models.TextChoices):
+        OPEN = "open", "Open"
+        PARTIALLY_PAID = "partially_paid", "Partially paid"
+        PAID = "paid", "Paid"
+        VOID = "void", "Void"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    booking = models.ForeignKey(Booking, on_delete=models.PROTECT, related_name="invoices")
+    invoice_number = models.CharField(max_length=32, unique=True)
+    invoice_type = models.CharField(max_length=24, choices=Type.choices, default=Type.OTHER)
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.OPEN)
+    currency = models.CharField(max_length=3)
+    subtotal = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    tax_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    discount_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    note = models.TextField(blank=True)
+    issued_at = models.DateTimeField(auto_now_add=True)
+    voided_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["issued_at", "id"]
+
+    @property
+    def paid_amount(self):
+        return sum(
+            (
+                payment.amount - payment.refunded_amount
+                for payment in self.receipts.all()
+                if payment.status in [Payment.Status.PAID, Payment.Status.PARTIALLY_REFUNDED]
+            ),
+            Decimal("0"),
+        )
+
+    @property
+    def balance(self):
+        return max(self.total - self.paid_amount, Decimal("0"))
+
+
+class InvoiceLine(models.Model):
+    invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name="lines")
+    description = models.CharField(max_length=255)
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=1)
+    unit_price = models.DecimalField(max_digits=14, decimal_places=2)
+    total = models.DecimalField(max_digits=14, decimal_places=2)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+
+
 class Payment(models.Model):
     class Type(models.TextChoices):
         DEPOSIT = "deposit", "Deposit"
@@ -670,6 +732,9 @@ class Payment(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     booking = models.ForeignKey(Booking, on_delete=models.PROTECT, related_name="payments")
+    invoice = models.ForeignKey(
+        Invoice, on_delete=models.PROTECT, related_name="receipts", null=True, blank=True,
+    )
     payment_type = models.CharField(max_length=24, choices=Type.choices, default=Type.FULL_PAYMENT)
     provider = models.CharField(max_length=50, choices=Provider.choices)
     provider_reference = models.CharField(max_length=255, blank=True)
@@ -677,7 +742,7 @@ class Payment(models.Model):
     amount = models.DecimalField(max_digits=14, decimal_places=2)
     refunded_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     currency = models.CharField(max_length=3)
-    invoice_number = models.CharField(max_length=32, unique=True)
+    invoice_number = models.CharField(max_length=32)
     receipt_number = models.CharField(max_length=32, unique=True, null=True, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
