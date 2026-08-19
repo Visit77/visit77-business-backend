@@ -1260,12 +1260,39 @@ class BookingApiTests(BookingServiceTests):
         })
 
     def test_public_availability(self):
+        self.room_type.core_snapshot = {
+            "amenities": [{"id": 1, "name": "Wi-Fi"}],
+            "facilities": [{"id": 2, "name": "Air Conditioning"}],
+            "photos": [{"id": 3, "image": "https://media.example.com/double-room.jpg"}],
+            "room_standard": {"id": 4, "name": "Deluxe"},
+            "bed_type": {"id": 5, "name": "King Bed"},
+            "room_area": 320,
+            "area_unit": "sqft",
+            "local_base_price": "80000.00",
+            "local_base_currency": "MMK",
+            "local_usd_display_price": "20.00",
+            "foreign_base_price": "100000.00",
+            "foreign_base_currency": "MMK",
+            "foreign_usd_display_price": "25.00",
+        }
+        self.room_type.save(update_fields=["core_snapshot"])
+        self.rate_plan.is_default = True
+        self.rate_plan.usd_display_price = Decimal("20")
+        self.rate_plan.save(update_fields=["is_default", "usd_display_price"])
         response = self.client.get(
             f"/api/v1/public/hotels/{self.hotel.core_business_id}/availability/",
             {"check_in": self.check_in, "check_out": self.check_out, "adults": 2, "guest_market": "local"},
         )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["data"]["room_types"][0]["available_rooms"], 3)
+        room_type = response.data["data"]["room_types"][0]
+        self.assertEqual(room_type["available_rooms"], 3)
+        self.assertEqual(room_type["amenities"], [{"id": 1, "name": "Wi-Fi"}])
+        self.assertEqual(room_type["photos"][0]["id"], 3)
+        self.assertEqual(room_type["room_standard"], {"id": 4, "name": "Deluxe"})
+        self.assertEqual(room_type["default_price"]["base_price"], Decimal("80000"))
+        self.assertEqual(room_type["default_price"]["base_currency"], "MMK")
+        self.assertEqual(room_type["default_rate_plan"]["id"], self.rate_plan.id)
+        self.assertTrue(room_type["rate_plans"][0]["is_default"])
 
     def test_public_booking_estimate_does_not_require_contact_info(self):
         self.rate_plan.extra_bed_base_price = Decimal("30000")
