@@ -47,6 +47,7 @@ from booking.serializers import (
     GuestIdentityDocumentUploadSerializer,
     MealPlanSerializer,
     OTARoomSelectionUpdateSerializer,
+    OTARoomSaleStatusSerializer,
     PaymentCreateSerializer,
     PaymentSerializer,
     PhysicalRoomSerializer,
@@ -251,6 +252,7 @@ class PublicOTARoomTypeCatalogView(APIView):
                 core_active=True,
                 physical_rooms__is_active=True,
                 physical_rooms__ota_enabled=True,
+                physical_rooms__ota_sale_open=True,
                 rate_plans__is_active=True,
             ).annotate(
                 ota_enabled_room_count=Count(
@@ -258,6 +260,7 @@ class PublicOTARoomTypeCatalogView(APIView):
                     filter=Q(
                         physical_rooms__is_active=True,
                         physical_rooms__ota_enabled=True,
+                        physical_rooms__ota_sale_open=True,
                     ),
                     distinct=True,
                 ),
@@ -564,10 +567,79 @@ class OTARoomSelectionView(APIView):
 
     @staticmethod
     def _payload(hotel):
+        today = timezone.localdate()
         rooms = list(PhysicalRoom.objects.filter(
             hotel=hotel, is_active=True,
         ).select_related("room_type").order_by("room_type__name", "building", "floor", "room_number", "id"))
-        active_booking_counts = dict(RoomAssignment.objects.filter(
+        room_ids = [room.id for room in rooms]
+        assignments = list(RoomAssignment.objects.filter(
+            physical_room_id__in=room_ids,
+            booking_room__booking__source__in=[Booking.Source.OTA, Booking.Source.DIRECT],
+        ).select_related(
+            "booking_room__booking",
+        ).prefetch_related(
+            "booking_room__booking__invoices",
+        ))
+        records_by_room = defaultdict(list)
+        active_booking_counts = defaultdict(int)
+        for assignment in assignments:
+            booking_room = assignment.booking_room
+            booking = booking_room.booking
+            is_live_status = booking.status in [
+                Booking.Status.PENDING_PAYMENT,
+                Booking.Status.CONFIRMED,
+                Booking.Status.CHECKED_IN,
+            ]
+            if is_live_status and booking.check_in <= today < booking.check_out:
+                timeline_status = "active_today"
+                color = "blue"
+                sort_key = (0, booking.check_in, booking.check_out, str(booking.id))
+            elif is_live_status and booking.check_in > today:
+                timeline_status = "upcoming"
+                color = "orange"
+                sort_key = (1, booking.check_in, booking.check_out, str(booking.id))
+            else:
+                timeline_status = "past"
+                color = "grey"
+                # Closest past record first.
+                sort_key = (2, -booking.check_out.toordinal(), -booking.check_in.toordinal(), str(booking.id))
+            if timeline_status in ["active_today", "upcoming"] and assignment.released_at is None:
+                active_booking_counts[assignment.physical_room_id] += 1
+            invoices = [
+                {
+                    "id": str(invoice.id),
+                    "invoice_number": invoice.invoice_number,
+                    "status": invoice.status,
+                    "total": invoice.total,
+                    "currency": invoice.currency,
+                }
+                for invoice in booking.invoices.all()
+            ]
+            records_by_room[assignment.physical_room_id].append((sort_key, {
+                "assignment_id": assignment.id,
+                "booking_id": str(booking.id),
+                "booking_reference": booking.reference,
+                "booking_status": booking.status,
+                "source": booking.source,
+                "timeline_status": timeline_status,
+                "color": color,
+                "check_in": str(booking.check_in),
+                "check_out": str(booking.check_out),
+                "nights": booking.nights,
+                "adults": booking_room.adults,
+                "children": booking_room.children,
+                "contact_name": booking.contact_name,
+                "contact_phone": booking.contact_phone,
+                "amount": booking_room.total,
+                "currency": booking.currency,
+                "invoice_count": len(invoices),
+                "invoices": invoices,
+                "stay_bill_url": f"/api/v1/admin/bookings/{booking.id}/stay-bill/",
+            }))
+        for room_id, records in records_by_room.items():
+            records_by_room[room_id] = [payload for _key, payload in sorted(records, key=lambda item: item[0])]
+
+        active_booking_counts_from_query = dict(RoomAssignment.objects.filter(
             physical_room__hotel=hotel,
             physical_room__is_active=True,
             released_at__isnull=True,
@@ -587,6 +659,9 @@ class OTARoomSelectionView(APIView):
             })
             group["total_rooms"] += 1
             group["selected_count"] += int(room.ota_enabled)
+            group.setdefault("open_count", 0)
+            group["open_count"] += int(room.ota_enabled and room.ota_sale_open)
+            ota_records = records_by_room.get(room.id, [])
             group["rooms"].append({
                 "physical_room_id": room.id,
                 "core_physical_room_id": room.core_physical_room_id,
@@ -596,14 +671,23 @@ class OTARoomSelectionView(APIView):
                 "floor_id": room.core_floor_id,
                 "floor": room.floor,
                 "is_ota_selected": room.ota_enabled,
-                "ota_sale_status": "open" if room.ota_enabled else "not_selected",
-                "active_ota_bookings": active_booking_counts.get(room.id, 0),
+                "ota_sale_open": room.ota_sale_open,
+                "ota_sale_status": (
+                    "not_selected" if not room.ota_enabled
+                    else "open" if room.ota_sale_open
+                    else "closed"
+                ),
+                "active_ota_bookings": active_booking_counts_from_query.get(room.id, active_booking_counts.get(room.id, 0)),
+                "ota_record_count": len(ota_records),
+                "ota_records": ota_records,
                 "history_url": f"/api/v1/admin/physical-rooms/{room.core_physical_room_id or room.id}/history/",
+                "sale_status_url": f"/api/v1/admin/ota-rooms/{room.id}/sale-status/",
             })
         return {
             "package": hotel.package,
             "total_rooms": len(rooms),
             "total_ota_rooms": sum(int(room.ota_enabled) for room in rooms),
+            "total_open_ota_rooms": sum(int(room.ota_enabled and room.ota_sale_open) for room in rooms),
             "selected_room_ids": [room.id for room in rooms if room.ota_enabled],
             "deselected_room_ids": [room.id for room in rooms if not room.ota_enabled],
             "room_types": list(grouped.values()),
@@ -636,9 +720,14 @@ class OTARoomSelectionView(APIView):
         today = timezone.localdate()
         for room_type_id, room_type in affected_room_types.items():
             final_selected_ids = set(PhysicalRoom.objects.filter(
-                room_type_id=room_type_id, is_active=True, ota_enabled=True,
+                room_type_id=room_type_id, is_active=True, ota_enabled=True, ota_sale_open=True,
             ).values_list("id", flat=True))
-            final_selected_ids.update(room.id for room in rooms if room.room_type_id == room_type_id and room.id in selected_set)
+            final_selected_ids.update(
+                room.id for room in rooms
+                if room.room_type_id == room_type_id
+                and room.id in selected_set
+                and (room.ota_sale_open or not room.ota_enabled)
+            )
             final_selected_ids.difference_update(room.id for room in rooms if room.room_type_id == room_type_id and room.id in deselected_set)
             for inventory in DailyInventory.objects.select_for_update().filter(
                 room_type_id=room_type_id, stay_date__gte=today,
@@ -666,7 +755,9 @@ class OTARoomSelectionView(APIView):
             })
 
         previous_states = {room.id: room.ota_enabled for room in rooms}
+        newly_selected_ids = [room.id for room in rooms if room.id in selected_set and not room.ota_enabled]
         PhysicalRoom.objects.filter(id__in=selected_set).update(ota_enabled=True)
+        PhysicalRoom.objects.filter(id__in=newly_selected_ids).update(ota_sale_open=True)
         PhysicalRoom.objects.filter(id__in=deselected_set).update(ota_enabled=False)
         actor_id = _core_user_id(request)
         PhysicalRoomActionHistory.objects.bulk_create([
@@ -688,6 +779,113 @@ class OTARoomSelectionView(APIView):
         for room_type in affected_room_types.values():
             ensure_daily_inventory_for_room_type(room_type)
         return success(self._payload(hotel))
+
+
+class OTARoomSaleStatusView(APIView):
+    permission_classes = [HasBookingAdminKey]
+    business_scoped = True
+
+    @transaction.atomic
+    def post(self, request, physical_room_id):
+        hotel = OTARoomSelectionView._hotel(request)
+        serializer = OTARoomSaleStatusSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        room = PhysicalRoom.objects.select_for_update().select_related("room_type").filter(
+            id=physical_room_id,
+            hotel=hotel,
+            is_active=True,
+        ).first()
+        if not room:
+            raise NotFound("Physical room is not available for this business.")
+        if not room.ota_enabled:
+            raise ValidationError({"physical_room_id": "Select this room for OTA before opening or closing OTA sales."})
+
+        action = serializer.validated_data["action"]
+        should_open = action == "open"
+        if room.ota_sale_open == should_open:
+            return success(OTARoomSelectionView._payload(hotel))
+
+        if not should_open:
+            today = timezone.localdate()
+            conflicts = RoomAssignment.objects.filter(
+                physical_room=room,
+                released_at__isnull=True,
+                booking_room__booking__source__in=[Booking.Source.OTA, Booking.Source.DIRECT],
+                booking_room__booking__status__in=[
+                    Booking.Status.PENDING_PAYMENT,
+                    Booking.Status.CONFIRMED,
+                    Booking.Status.CHECKED_IN,
+                ],
+                booking_room__booking__check_out__gt=today,
+            ).select_related("booking_room__booking").order_by(
+                "booking_room__booking__check_in", "booking_room__booking__check_out",
+            )
+            conflict_bookings = [
+                {
+                    "booking_id": str(item.booking_room.booking.id),
+                    "booking_reference": item.booking_room.booking.reference,
+                    "status": item.booking_room.booking.status,
+                    "check_in": str(item.booking_room.booking.check_in),
+                    "check_out": str(item.booking_room.booking.check_out),
+                    "contact_name": item.booking_room.booking.contact_name,
+                }
+                for item in conflicts
+            ]
+            if conflict_bookings:
+                raise ValidationError({
+                    "ota_sale_status": "Room cannot be closed while it has active or upcoming OTA bookings.",
+                    "conflict_bookings": conflict_bookings,
+                })
+
+            inventory_conflicts = []
+            open_room_ids = set(PhysicalRoom.objects.filter(
+                room_type=room.room_type,
+                is_active=True,
+                ota_enabled=True,
+                ota_sale_open=True,
+            ).exclude(id=room.id).values_list("id", flat=True))
+            for inventory in DailyInventory.objects.select_for_update().filter(
+                room_type=room.room_type,
+                stay_date__gte=today,
+            ).order_by("stay_date"):
+                blocked = PhysicalRoomBlock.objects.filter(
+                    physical_room_id__in=open_room_ids,
+                    is_active=True,
+                    start_date__lte=inventory.stay_date,
+                    end_date__gte=inventory.stay_date,
+                ).values("physical_room_id").distinct().count()
+                capacity = max(len(open_room_ids) - blocked, 0)
+                committed = inventory.held_rooms + inventory.reserved_rooms
+                if committed > capacity:
+                    inventory_conflicts.append({
+                        "date": str(inventory.stay_date),
+                        "ota_capacity_after_close": capacity,
+                        "committed_rooms": committed,
+                    })
+            if inventory_conflicts:
+                raise ValidationError({
+                    "ota_sale_status": "Closing this room would reduce OTA capacity below existing commitments.",
+                    "conflict_dates": inventory_conflicts,
+                })
+
+        previous = room.ota_sale_open
+        room.ota_sale_open = should_open
+        room.save(update_fields=["ota_sale_open"])
+        _record_room_history(
+            room,
+            (
+                PhysicalRoomActionHistory.Action.OTA_SALE_OPENED
+                if should_open else PhysicalRoomActionHistory.Action.OTA_SALE_CLOSED
+            ),
+            request=request,
+            note=serializer.validated_data.get("note", ""),
+            metadata={
+                "previous_ota_sale_open": previous,
+                "ota_sale_open": should_open,
+            },
+        )
+        ensure_daily_inventory_for_room_type(room.room_type)
+        return success(OTARoomSelectionView._payload(hotel))
 
 
 class RoomBoardView(APIView):

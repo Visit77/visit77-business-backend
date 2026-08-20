@@ -185,6 +185,7 @@ class PhysicalRoom(models.Model):
     note = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
     ota_enabled = models.BooleanField(default=True)
+    ota_sale_open = models.BooleanField(default=True)
     core_snapshot = models.JSONField(default=dict, blank=True)
 
     class Meta:
@@ -384,6 +385,8 @@ class PhysicalRoomActionHistory(models.Model):
         BLOCK_CREATED = "block_created", "Block created"
         BLOCK_UPDATED = "block_updated", "Block updated"
         UNBLOCKED = "unblocked", "Unblocked"
+        OTA_SALE_OPENED = "ota_sale_opened", "OTA sale opened"
+        OTA_SALE_CLOSED = "ota_sale_closed", "OTA sale closed"
 
     class ActorType(models.TextChoices):
         HOTEL_ADMIN = "hotel_admin", "Hotel admin"

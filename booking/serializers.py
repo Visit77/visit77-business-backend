@@ -111,6 +111,11 @@ class PublicOTARoomTypeCatalogQuerySerializer(serializers.Serializer):
     display_currency = serializers.ChoiceField(choices=["MMK", "USD"], required=False)
 
 
+class OTARoomSaleStatusSerializer(serializers.Serializer):
+    action = serializers.ChoiceField(choices=["open", "close"])
+    note = serializers.CharField(required=False, allow_blank=True, max_length=500)
+
+
 class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
     room_type_id = serializers.IntegerField(source="id", read_only=True)
     photos = serializers.SerializerMethodField()
@@ -355,7 +360,12 @@ class RoomTypeSerializer(serializers.ModelSerializer):
                 "is_active": room.is_active,
                 "ota_enabled": room.ota_enabled,
                 "is_ota_selected": room.ota_enabled,
-                "ota_sale_status": "open" if room.ota_enabled else "not_selected",
+                "ota_sale_open": room.ota_sale_open,
+                "ota_sale_status": (
+                    "not_selected" if not room.ota_enabled
+                    else "open" if room.ota_sale_open
+                    else "closed"
+                ),
                 "active_ota_bookings": getattr(room, "active_ota_bookings", 0),
             }
             for room in self._rooms(obj)
@@ -411,7 +421,7 @@ class PhysicalRoomSerializer(serializers.ModelSerializer):
     class Meta:
         model = PhysicalRoom
         fields = "__all__"
-        read_only_fields = ["hotel", "room_type", "core_physical_room_id", "room_number", "floor", "building", "is_active", "ota_enabled"]
+        read_only_fields = ["hotel", "room_type", "core_physical_room_id", "room_number", "floor", "building", "is_active", "ota_enabled", "ota_sale_open"]
 
     def validate(self, attrs):
         hotel = attrs.get("hotel", getattr(self.instance, "hotel", None))

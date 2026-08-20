@@ -61,7 +61,7 @@ def active_sellable_room_count(room_type):
         status=PhysicalRoom.Status.OUT_OF_SERVICE,
     )
     if room_type.hotel.package in [Hotel.Package.OTA, Hotel.Package.OTA_PMS]:
-        rooms = rooms.filter(ota_enabled=True)
+        rooms = rooms.filter(ota_enabled=True, ota_sale_open=True)
     return rooms.count()
 
 
@@ -75,7 +75,10 @@ def sellable_room_count_for_date(room_type, stay_date, base_total=None):
         end_date__gte=stay_date,
     )
     if room_type.hotel.package in [Hotel.Package.OTA, Hotel.Package.OTA_PMS]:
-        blocked_rooms = blocked_rooms.filter(physical_room__ota_enabled=True)
+        blocked_rooms = blocked_rooms.filter(
+            physical_room__ota_enabled=True,
+            physical_room__ota_sale_open=True,
+        )
     blocked_rooms = blocked_rooms.values("physical_room_id").distinct().count()
     return max(base_total - blocked_rooms, 0)
 

@@ -12,7 +12,7 @@ from rest_framework.test import APIClient
 from rest_framework.exceptions import ValidationError
 from rest_framework_simplejwt.backends import TokenBackend
 
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, CoreIntegrationEvent, DailyInventory, DailyRate, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import sync_business_from_core
 from booking.services import availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, record_payment, refund_payment, refund_quote
 
@@ -1586,6 +1586,111 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(history.status_code, 200, history.data)
         self.assertTrue(history.data["data"][0]["metadata"]["ota_selection_changed"])
         self.assertFalse(history.data["data"][0]["metadata"]["ota_enabled"])
+
+    def test_ota_room_records_are_sorted_and_close_open_controls_sale(self):
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            core_physical_room_id=799,
+            room_number="OTA-TIMELINE",
+            ota_enabled=True,
+            ota_sale_open=True,
+        )
+        today = timezone.localdate()
+
+        def assigned_booking(reference, check_in, check_out, status=Booking.Status.CONFIRMED):
+            booking = Booking.objects.create(
+                reference=reference,
+                hotel=self.hotel,
+                status=status,
+                source=Booking.Source.OTA,
+                check_in=check_in,
+                check_out=check_out,
+                contact_name=reference,
+                contact_phone="091111111",
+                grand_total=Decimal("80000"),
+            )
+            booking_room = BookingRoom.objects.create(
+                booking=booking,
+                room_type=self.room_type,
+                rate_plan=self.rate_plan,
+                adults=2,
+                children=1,
+                total=Decimal("80000"),
+            )
+            assignment = RoomAssignment.objects.create(booking_room=booking_room, physical_room=room)
+            return booking, assignment
+
+        current, current_assignment = assigned_booking(
+            "OTA-CURRENT", today, today + timedelta(days=1), Booking.Status.CHECKED_IN,
+        )
+        upcoming_near, upcoming_near_assignment = assigned_booking(
+            "OTA-UPCOMING-NEAR", today + timedelta(days=2), today + timedelta(days=3),
+        )
+        upcoming_far, upcoming_far_assignment = assigned_booking(
+            "OTA-UPCOMING-FAR", today + timedelta(days=5), today + timedelta(days=7),
+        )
+        past_near, past_near_assignment = assigned_booking(
+            "OTA-PAST-NEAR", today - timedelta(days=2), today - timedelta(days=1), Booking.Status.CHECKED_OUT,
+        )
+        past_far, past_far_assignment = assigned_booking(
+            "OTA-PAST-FAR", today - timedelta(days=8), today - timedelta(days=6), Booking.Status.CHECKED_OUT,
+        )
+        RoomAssignment.objects.filter(id__in=[past_near_assignment.id, past_far_assignment.id]).update(
+            released_at=timezone.now(),
+        )
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        response = self.client.get("/api/v1/admin/ota-rooms/selection/", **headers)
+
+        self.assertEqual(response.status_code, 200, response.data)
+        room_payload = response.data["data"]["room_types"][0]["rooms"][0]
+        self.assertEqual(
+            [item["booking_reference"] for item in room_payload["ota_records"]],
+            ["OTA-CURRENT", "OTA-UPCOMING-NEAR", "OTA-UPCOMING-FAR", "OTA-PAST-NEAR", "OTA-PAST-FAR"],
+        )
+        self.assertEqual(
+            [item["color"] for item in room_payload["ota_records"]],
+            ["blue", "orange", "orange", "grey", "grey"],
+        )
+
+        close_conflict = self.client.post(
+            f"/api/v1/admin/ota-rooms/{room.id}/sale-status/",
+            {"action": "close", "note": "Manual stop sale"},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(close_conflict.status_code, 400, close_conflict.data)
+        self.assertEqual(len(close_conflict.data["data"]["conflict_bookings"]), 3)
+
+        Booking.objects.filter(id__in=[current.id, upcoming_near.id, upcoming_far.id]).update(
+            status=Booking.Status.CANCELED,
+        )
+        RoomAssignment.objects.filter(id__in=[
+            current_assignment.id, upcoming_near_assignment.id, upcoming_far_assignment.id,
+        ]).update(released_at=timezone.now())
+        closed = self.client.post(
+            f"/api/v1/admin/ota-rooms/{room.id}/sale-status/",
+            {"action": "close", "note": "Manual stop sale"},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(closed.status_code, 200, closed.data)
+        room.refresh_from_db()
+        self.assertFalse(room.ota_sale_open)
+
+        opened = self.client.post(
+            f"/api/v1/admin/ota-rooms/{room.id}/sale-status/",
+            {"action": "open"},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(opened.status_code, 200, opened.data)
+        room.refresh_from_db()
+        self.assertTrue(room.ota_sale_open)
 
     def test_admin_room_type_api_includes_physical_room_ota_selection_state(self):
         selected = PhysicalRoom.objects.create(
