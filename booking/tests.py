@@ -14,7 +14,7 @@ from rest_framework_simplejwt.backends import TokenBackend
 
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import sync_business_from_core
-from booking.services import availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, record_payment, refund_payment, refund_quote
+from booking.services import auto_assign_physical_rooms_for_booking, availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, record_payment, refund_payment, refund_quote
 
 
 class BookingServiceTests(TestCase):
@@ -72,6 +72,97 @@ class BookingServiceTests(TestCase):
         self.assertFalse(created)
         self.assertEqual(first.id, second.id)
         self.assertEqual(list(DailyInventory.objects.values_list("held_rooms", flat=True)), [2, 2])
+
+    def test_ota_auto_assignment_uses_lowest_available_room_number_first_fit(self):
+        rooms = [
+            PhysicalRoom.objects.create(
+                hotel=self.hotel,
+                room_type=self.room_type,
+                room_number=str(number),
+                ota_enabled=True,
+                ota_sale_open=True,
+            )
+            for number in [1, 2, 3, 4]
+        ]
+        start = date.today() + timedelta(days=1)
+
+        def create_confirmed_ota(reference, check_in, check_out):
+            booking = Booking.objects.create(
+                reference=reference,
+                hotel=self.hotel,
+                status=Booking.Status.CONFIRMED,
+                source=Booking.Source.OTA,
+                check_in=check_in,
+                check_out=check_out,
+                contact_name=reference,
+                contact_phone="091111111",
+            )
+            BookingRoom.objects.create(
+                booking=booking,
+                room_type=self.room_type,
+                rate_plan=self.rate_plan,
+            )
+            assignments = auto_assign_physical_rooms_for_booking(booking)
+            self.assertEqual(len(assignments), 1)
+            return assignments[0].physical_room
+
+        for offset in range(4):
+            assigned_room = create_confirmed_ota(
+                f"OTA-SHORT-{offset}",
+                start + timedelta(days=offset),
+                start + timedelta(days=offset + 1),
+            )
+            self.assertEqual(assigned_room.id, rooms[0].id)
+
+        long_stay_room = create_confirmed_ota(
+            "OTA-LONG-STAY",
+            start,
+            start + timedelta(days=5),
+        )
+        self.assertEqual(long_stay_room.id, rooms[1].id)
+
+    def test_ota_auto_assignment_excludes_closed_and_non_ota_rooms(self):
+        PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="1",
+            ota_enabled=True,
+            ota_sale_open=False,
+        )
+        PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="2",
+            ota_enabled=False,
+            ota_sale_open=True,
+        )
+        expected = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="3",
+            ota_enabled=True,
+            ota_sale_open=True,
+        )
+        booking = Booking.objects.create(
+            reference="OTA-ELIGIBLE-ROOM",
+            hotel=self.hotel,
+            status=Booking.Status.CONFIRMED,
+            source=Booking.Source.OTA,
+            check_in=date.today() + timedelta(days=1),
+            check_out=date.today() + timedelta(days=2),
+            contact_name="OTA Guest",
+            contact_phone="091111111",
+        )
+        BookingRoom.objects.create(
+            booking=booking,
+            room_type=self.room_type,
+            rate_plan=self.rate_plan,
+        )
+
+        assignments = auto_assign_physical_rooms_for_booking(booking)
+
+        self.assertEqual(len(assignments), 1)
+        self.assertEqual(assignments[0].physical_room_id, expected.id)
 
     def test_paid_payment_commits_inventory(self):
         room_801 = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="801", floor="8")
@@ -1755,6 +1846,65 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(selected_data["ota_sale_status"], "open")
         self.assertFalse(deselected_data["ota_enabled"])
         self.assertEqual(deselected_data["ota_sale_status"], "not_selected")
+        self.assertEqual(
+            [item["physical_room_id"] for item in room_type["room_list"]],
+            [selected.id, deselected.id],
+        )
+
+        ota_only = self.client.get(
+            "/api/v1/admin/room-types/",
+            {"ota_enabled": "true"},
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(ota_only.status_code, 200, ota_only.data)
+        ota_room_type = next(item for item in ota_only.data["data"] if item["id"] == self.room_type.id)
+        self.assertEqual(
+            [item["physical_room_id"] for item in ota_room_type["room_list"]],
+            [selected.id],
+        )
+
+        ota_only_alias = self.client.get(
+            "/api/v1/admin/room-types/",
+            {"ota_only": "true"},
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        alias_room_type = next(
+            item for item in ota_only_alias.data["data"] if item["id"] == self.room_type.id
+        )
+        self.assertEqual(
+            [item["physical_room_id"] for item in alias_room_type["room_list"]],
+            [selected.id],
+        )
+
+        disabled_only = self.client.get(
+            "/api/v1/admin/room-types/",
+            {"ota_enabled": "false"},
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(disabled_only.status_code, 200, disabled_only.data)
+        disabled_room_type = next(item for item in disabled_only.data["data"] if item["id"] == self.room_type.id)
+        self.assertEqual(
+            [item["physical_room_id"] for item in disabled_room_type["room_list"]],
+            [deselected.id],
+        )
+
+        disabled_first = self.client.get(
+            "/api/v1/admin/room-types/",
+            {"ota_sort": "disabled_first"},
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(disabled_first.status_code, 200, disabled_first.data)
+        sorted_room_type = next(
+            item for item in disabled_first.data["data"] if item["id"] == self.room_type.id
+        )
+        self.assertEqual(
+            [item["physical_room_id"] for item in sorted_room_type["room_list"]],
+            [deselected.id, selected.id],
+        )
 
     def test_ota_room_deselect_rejects_capacity_below_existing_commitments(self):
         room = PhysicalRoom.objects.create(

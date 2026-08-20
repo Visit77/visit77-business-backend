@@ -1777,29 +1777,61 @@ class HotelViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins.L
 
 
 class RoomTypeViewSet(AdminModelViewSet):
-    queryset = RoomType.objects.select_related("hotel").prefetch_related(
-        "meal_plan_links", "meal_plan_links__meal_plan",
-        Prefetch(
-            "physical_rooms",
-            queryset=PhysicalRoom.objects.filter(is_active=True).annotate(
-                active_ota_bookings=Count(
-                    "assignments",
-                    filter=Q(
-                        assignments__released_at__isnull=True,
-                        assignments__booking_room__booking__source__in=[Booking.Source.OTA, Booking.Source.DIRECT],
-                        assignments__booking_room__booking__status__in=[Booking.Status.PENDING_PAYMENT, Booking.Status.CONFIRMED],
-                        assignments__booking_room__booking__check_out__gt=timezone.localdate(),
-                    ),
-                    distinct=True,
-                ),
-            ).order_by("building", "floor", "room_number", "id"),
-            to_attr="room_type_room_list",
-        ),
-    )
+    queryset = RoomType.objects.select_related("hotel")
     serializer_class = RoomTypeSerializer
     filterset_fields = ["hotel", "core_room_type_id", "booking_enabled", "core_active"]
     http_method_names = ["get", "patch", "head", "options"]
     business_lookup = "hotel__core_business_id"
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        ota_enabled = str(self.request.query_params.get("ota_enabled", "all")).strip().lower()
+        ota_only = self.request.query_params.get("ota_only")
+        if ota_only is not None:
+            ota_only = str(ota_only).strip().lower()
+            if ota_only not in ["true", "false"]:
+                raise ValidationError({"ota_only": "Use true or false."})
+            if ota_only == "true":
+                ota_enabled = "true"
+        ota_sort = str(self.request.query_params.get("ota_sort", "enabled_first")).strip().lower()
+        if ota_enabled not in ["all", "true", "false"]:
+            raise ValidationError({"ota_enabled": "Use all, true, or false."})
+        if ota_sort not in ["enabled_first", "disabled_first"]:
+            raise ValidationError({"ota_sort": "Use enabled_first or disabled_first."})
+
+        room_queryset = PhysicalRoom.objects.filter(is_active=True)
+        if ota_enabled != "all":
+            filter_enabled = ota_enabled == "true"
+            room_queryset = room_queryset.filter(ota_enabled=filter_enabled)
+            queryset = queryset.filter(
+                physical_rooms__is_active=True,
+                physical_rooms__ota_enabled=filter_enabled,
+            ).distinct()
+        ota_order = "-ota_enabled" if ota_sort == "enabled_first" else "ota_enabled"
+        room_queryset = room_queryset.annotate(
+            active_ota_bookings=Count(
+                "assignments",
+                filter=Q(
+                    assignments__released_at__isnull=True,
+                    assignments__booking_room__booking__source__in=[Booking.Source.OTA, Booking.Source.DIRECT],
+                    assignments__booking_room__booking__status__in=[
+                        Booking.Status.PENDING_PAYMENT,
+                        Booking.Status.CONFIRMED,
+                        Booking.Status.CHECKED_IN,
+                    ],
+                    assignments__booking_room__booking__check_out__gt=timezone.localdate(),
+                ),
+                distinct=True,
+            ),
+        ).order_by(ota_order, "building", "floor", "room_number", "id")
+        return queryset.prefetch_related(
+            "meal_plan_links", "meal_plan_links__meal_plan",
+            Prefetch(
+                "physical_rooms",
+                queryset=room_queryset,
+                to_attr="room_type_room_list",
+            ),
+        )
 
 
 class MealPlanViewSet(AdminModelViewSet):

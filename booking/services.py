@@ -572,7 +572,7 @@ def validate_assignment_preferences(booking_room, physical_room):
 
 def _natural_sort_key(value):
     return [
-        int(part) if part.isdigit() else part.lower()
+        (0, int(part)) if part.isdigit() else (1, part.lower())
         for part in re.split(r"(\d+)", str(value or ""))
     ]
 
@@ -657,17 +657,27 @@ def _available_physical_rooms_for_booking_room(booking_room):
         start_date__lt=booking.check_out,
         end_date__gte=booking.check_in,
     ).values_list("physical_room_id", flat=True)
-    return list(
+    candidates = (
         PhysicalRoom.objects.select_for_update()
         .filter(
             hotel=booking.hotel,
             room_type=booking_room.room_type,
             is_active=True,
-            status=PhysicalRoom.Status.VACANT,
         )
+        .exclude(status=PhysicalRoom.Status.OUT_OF_SERVICE)
         .exclude(id__in=overlapping_room_ids)
         .exclude(id__in=blocked_room_ids)
     )
+    if (
+        booking.source in [Booking.Source.OTA, Booking.Source.DIRECT]
+        and booking.hotel.package in [Hotel.Package.OTA, Hotel.Package.OTA_PMS]
+    ):
+        candidates = candidates.filter(ota_enabled=True, ota_sale_open=True)
+    constraints = (booking_room.preference_snapshot or {}).get("guaranteed_constraints") or {}
+    return [
+        room for room in candidates
+        if not constraints or physical_room_matches_constraints(room, constraints)
+    ]
 
 
 def auto_assign_physical_rooms_for_booking(booking):
@@ -689,10 +699,16 @@ def auto_assign_physical_rooms_for_booking(booking):
             continue
 
         candidates = _available_physical_rooms_for_booking_room(booking_room)
-        candidates.sort(key=lambda room: (
-            -_preference_match_score(booking_room, room),
-            *_physical_room_assignment_sort_key(room),
-        ))
+        if booking.source in [Booking.Source.OTA, Booking.Source.DIRECT]:
+            # Deterministic first-fit packing prevents scattered future stays
+            # from fragmenting the OTA room pool. Reuse the lowest room number
+            # whenever its full requested date range is free, then try the next.
+            candidates.sort(key=lambda room: (_natural_sort_key(room.room_number), room.id))
+        else:
+            candidates.sort(key=lambda room: (
+                -_preference_match_score(booking_room, room),
+                *_physical_room_assignment_sort_key(room),
+            ))
         for room in candidates[:missing_count]:
             assignment = RoomAssignment.objects.create(
                 booking_room=booking_room,
