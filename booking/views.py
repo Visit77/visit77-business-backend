@@ -48,6 +48,7 @@ from booking.serializers import (
     MealPlanSerializer,
     OTARoomSelectionUpdateSerializer,
     OTARoomSaleStatusSerializer,
+    OTARoomTimelineQuerySerializer,
     PaymentCreateSerializer,
     PaymentSerializer,
     PhysicalRoomSerializer,
@@ -566,7 +567,7 @@ class OTARoomSelectionView(APIView):
         return hotel
 
     @staticmethod
-    def _payload(hotel):
+    def _payload(hotel, timeline_status="all"):
         today = timezone.localdate()
         rooms = list(PhysicalRoom.objects.filter(
             hotel=hotel, is_active=True,
@@ -591,19 +592,19 @@ class OTARoomSelectionView(APIView):
                 Booking.Status.CHECKED_IN,
             ]
             if is_live_status and booking.check_in <= today < booking.check_out:
-                timeline_status = "active_today"
+                record_timeline_status = "active_today"
                 color = "blue"
                 sort_key = (0, booking.check_in, booking.check_out, str(booking.id))
             elif is_live_status and booking.check_in > today:
-                timeline_status = "upcoming"
+                record_timeline_status = "upcoming"
                 color = "orange"
                 sort_key = (1, booking.check_in, booking.check_out, str(booking.id))
             else:
-                timeline_status = "past"
+                record_timeline_status = "past"
                 color = "grey"
                 # Closest past record first.
                 sort_key = (2, -booking.check_out.toordinal(), -booking.check_in.toordinal(), str(booking.id))
-            if timeline_status in ["active_today", "upcoming"] and assignment.released_at is None:
+            if record_timeline_status in ["active_today", "upcoming"] and assignment.released_at is None:
                 active_booking_counts[assignment.physical_room_id] += 1
             invoices = [
                 {
@@ -621,7 +622,7 @@ class OTARoomSelectionView(APIView):
                 "booking_reference": booking.reference,
                 "booking_status": booking.status,
                 "source": booking.source,
-                "timeline_status": timeline_status,
+                "timeline_status": record_timeline_status,
                 "color": color,
                 "check_in": str(booking.check_in),
                 "check_out": str(booking.check_out),
@@ -661,7 +662,18 @@ class OTARoomSelectionView(APIView):
             group["selected_count"] += int(room.ota_enabled)
             group.setdefault("open_count", 0)
             group["open_count"] += int(room.ota_enabled and room.ota_sale_open)
-            ota_records = records_by_room.get(room.id, [])
+            all_ota_records = records_by_room.get(room.id, [])
+            record_summary = {
+                "all": len(all_ota_records),
+                "active_today": sum(item["timeline_status"] == "active_today" for item in all_ota_records),
+                "upcoming": sum(item["timeline_status"] == "upcoming" for item in all_ota_records),
+                "past": sum(item["timeline_status"] == "past" for item in all_ota_records),
+            }
+            ota_records = (
+                all_ota_records
+                if timeline_status == "all"
+                else [item for item in all_ota_records if item["timeline_status"] == timeline_status]
+            )
             group["rooms"].append({
                 "physical_room_id": room.id,
                 "core_physical_room_id": room.core_physical_room_id,
@@ -679,6 +691,9 @@ class OTARoomSelectionView(APIView):
                 ),
                 "active_ota_bookings": active_booking_counts_from_query.get(room.id, active_booking_counts.get(room.id, 0)),
                 "ota_record_count": len(ota_records),
+                "ota_record_total": len(all_ota_records),
+                "ota_record_summary": record_summary,
+                "applied_timeline_status": timeline_status,
                 "ota_records": ota_records,
                 "history_url": f"/api/v1/admin/physical-rooms/{room.core_physical_room_id or room.id}/history/",
                 "sale_status_url": f"/api/v1/admin/ota-rooms/{room.id}/sale-status/",
@@ -690,11 +705,17 @@ class OTARoomSelectionView(APIView):
             "total_open_ota_rooms": sum(int(room.ota_enabled and room.ota_sale_open) for room in rooms),
             "selected_room_ids": [room.id for room in rooms if room.ota_enabled],
             "deselected_room_ids": [room.id for room in rooms if not room.ota_enabled],
+            "applied_timeline_status": timeline_status,
             "room_types": list(grouped.values()),
         }
 
     def get(self, request):
-        return success(self._payload(self._hotel(request)))
+        query = OTARoomTimelineQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        return success(self._payload(
+            self._hotel(request),
+            timeline_status=query.validated_data["timeline_status"],
+        ))
 
     @transaction.atomic
     def put(self, request):

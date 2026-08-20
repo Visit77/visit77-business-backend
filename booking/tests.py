@@ -1656,6 +1656,33 @@ class BookingApiTests(BookingServiceTests):
             [item["color"] for item in room_payload["ota_records"]],
             ["blue", "orange", "orange", "grey", "grey"],
         )
+        self.assertEqual(room_payload["ota_record_summary"], {
+            "all": 5,
+            "active_today": 1,
+            "upcoming": 2,
+            "past": 2,
+        })
+
+        for timeline_status, expected_references in [
+            ("active_today", ["OTA-CURRENT"]),
+            ("upcoming", ["OTA-UPCOMING-NEAR", "OTA-UPCOMING-FAR"]),
+            ("past", ["OTA-PAST-NEAR", "OTA-PAST-FAR"]),
+        ]:
+            filtered = self.client.get(
+                "/api/v1/admin/ota-rooms/selection/",
+                {"timeline_status": timeline_status},
+                **headers,
+            )
+            self.assertEqual(filtered.status_code, 200, filtered.data)
+            filtered_room = filtered.data["data"]["room_types"][0]["rooms"][0]
+            self.assertEqual(filtered.data["data"]["applied_timeline_status"], timeline_status)
+            self.assertEqual(filtered_room["applied_timeline_status"], timeline_status)
+            self.assertEqual(
+                [item["booking_reference"] for item in filtered_room["ota_records"]],
+                expected_references,
+            )
+            self.assertEqual(filtered_room["ota_record_count"], len(expected_references))
+            self.assertEqual(filtered_room["ota_record_total"], 5)
 
         close_conflict = self.client.post(
             f"/api/v1/admin/ota-rooms/{room.id}/sale-status/",

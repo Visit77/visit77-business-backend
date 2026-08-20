@@ -116,6 +116,13 @@ class OTARoomSaleStatusSerializer(serializers.Serializer):
     note = serializers.CharField(required=False, allow_blank=True, max_length=500)
 
 
+class OTARoomTimelineQuerySerializer(serializers.Serializer):
+    timeline_status = serializers.ChoiceField(
+        choices=["all", "active_today", "upcoming", "past"],
+        default="all",
+    )
+
+
 class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
     room_type_id = serializers.IntegerField(source="id", read_only=True)
     photos = serializers.SerializerMethodField()
