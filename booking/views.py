@@ -615,12 +615,12 @@ class RoomBoardView(APIView):
             assignment = assignment_by_room.get(room.id)
             if room.status == PhysicalRoom.Status.OUT_OF_SERVICE:
                 display_status = "out_of_service"
-            elif room.status == PhysicalRoom.Status.CLEANING:
-                display_status = "cleaning"
-            elif room.id in block_by_room:
-                display_status = "blocked"
             elif assignment and assignment.booking_room.booking.status == Booking.Status.CHECKED_IN:
                 display_status = "occupied"
+            elif room.id in block_by_room:
+                display_status = "blocked"
+            elif room.status == PhysicalRoom.Status.CLEANING:
+                display_status = "cleaning"
             elif assignment:
                 display_status = "reserved"
             elif room.status == PhysicalRoom.Status.OCCUPIED:
@@ -1452,12 +1452,12 @@ class PhysicalRoomViewSet(AdminModelViewSet):
 
         if room.status == PhysicalRoom.Status.OUT_OF_SERVICE:
             display_status = "out_of_service"
-        elif room.status == PhysicalRoom.Status.CLEANING:
-            display_status = "cleaning"
-        elif active_block:
-            display_status = "blocked"
         elif assignment and assignment.booking_room.booking.status == Booking.Status.CHECKED_IN:
             display_status = "occupied"
+        elif active_block:
+            display_status = "blocked"
+        elif room.status == PhysicalRoom.Status.CLEANING:
+            display_status = "cleaning"
         elif assignment:
             display_status = "reserved"
         elif room.status == PhysicalRoom.Status.OCCUPIED:
