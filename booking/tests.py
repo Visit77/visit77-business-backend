@@ -2432,6 +2432,22 @@ class BookingApiTests(BookingServiceTests):
             available_with_next["timeline"]["next_reservations"],
             available_with_next["next_reservations"],
         )
+        next_reservation = available_with_next["next_reservations"][0]
+        self.assertEqual(next_reservation["check_in"], future_booking.check_in)
+        self.assertEqual(next_reservation["check_out"], future_booking.check_out)
+        self.assertEqual(next_reservation["nights"], 1)
+        self.assertEqual(next_reservation["adults"], 2)
+        self.assertEqual(next_reservation["children"], 0)
+        self.assertEqual(next_reservation["guest_name"], future_booking.contact_name)
+        self.assertEqual(next_reservation["guest_phone"], future_booking.contact_phone)
+        self.assertEqual(next_reservation["currency"], "MMK")
+        self.assertEqual(next_reservation["nightly_price"], Decimal("80000"))
+        self.assertEqual(next_reservation["grand_total"], Decimal("80000"))
+        self.assertEqual(next_reservation["formatted_grand_total"], "MMK 80,000")
+        self.assertEqual(next_reservation["payment_status"], "paid")
+        self.assertEqual(next_reservation["invoice_count"], 1)
+        self.assertEqual(next_reservation["receipt_count"], 1)
+        self.assertEqual(next_reservation["total_rooms"], 1)
 
     def test_physical_room_detail_includes_current_booking(self):
         room = PhysicalRoom.objects.create(

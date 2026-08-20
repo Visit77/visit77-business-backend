@@ -1,5 +1,6 @@
 from collections import defaultdict
 from datetime import timedelta
+from decimal import Decimal
 import json
 import re
 
@@ -63,7 +64,7 @@ from booking.serializers import (
     RoomTypeSerializer,
     WalkInBookingCreateSerializer,
 )
-from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, deprovision_hotel, estimate_booking, record_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, update_reservation_for_check_in, validate_assignment_preferences
+from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, deprovision_hotel, estimate_booking, format_money, record_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, update_reservation_for_check_in, validate_assignment_preferences
 from config.response_formatter import success
 
 
@@ -575,8 +576,15 @@ class RoomBoardView(APIView):
             booking_room__booking__status=Booking.Status.CONFIRMED,
             booking_room__booking__check_in__gte=target_date,
         ).select_related(
+            "booking_room__rate_plan",
             "booking_room__room_type",
             "booking_room__booking",
+        ).prefetch_related(
+            "booking_room__nights",
+            "booking_room__booking__rooms",
+            "booking_room__booking__guests",
+            "booking_room__booking__payments",
+            "booking_room__booking__invoices",
         ).order_by("booking_room__booking__check_in", "assigned_at", "id")
         next_assignments_by_room = defaultdict(list)
         for future_assignment in future_assignments:
@@ -860,15 +868,57 @@ class RoomBoardView(APIView):
             if booking.id in seen_booking_ids:
                 continue
             seen_booking_ids.add(booking.id)
+            booking_room = assignment.booking_room
+            guests = list(booking.guests.all())
+            primary_guest = next((guest for guest in guests if guest.is_primary), guests[0] if guests else None)
+            booking_rooms = list(booking.rooms.all())
+            amount_due = max(booking.grand_total - booking.amount_paid, Decimal("0"))
+            first_night = next(iter(booking_room.nights.all()), None)
             reservations.append({
                 "assignment_id": assignment.id,
                 "booking_id": booking.id,
                 "booking_reference": booking.reference,
                 "booking_status": booking.status,
                 "contact_name": booking.contact_name,
+                "contact_phone": booking.contact_phone,
+                "guest_name": primary_guest.name if primary_guest else booking.contact_name,
+                "guest_phone": primary_guest.phone if primary_guest and primary_guest.phone else booking.contact_phone,
+                "primary_guest": {
+                    "id": primary_guest.id,
+                    "name": primary_guest.name,
+                    "phone": primary_guest.phone,
+                } if primary_guest else None,
                 "check_in": booking.check_in,
                 "check_out": booking.check_out,
                 "nights": booking.nights,
+                "adults": booking_room.adults,
+                "children": booking_room.children,
+                "extra_beds": booking_room.extra_beds,
+                "guest_count": booking_room.adults + booking_room.children,
+                "room_quantity": booking_room.quantity,
+                "booking_room_id": booking_room.id,
+                "room_type_id": booking_room.room_type_id,
+                "room_type_name": booking_room.room_type.name,
+                "rate_plan_id": booking_room.rate_plan_id,
+                "rate_plan_name": booking_room.rate_plan.name,
+                "nightly_price": first_night.unit_price if first_night else None,
+                "room_total": booking_room.total,
+                "currency": booking.currency,
+                "grand_total": booking.grand_total,
+                "formatted_grand_total": format_money(booking.grand_total, booking.currency),
+                "amount_paid": booking.amount_paid,
+                "amount_due": amount_due,
+                "payment_status": (
+                    "paid" if amount_due == 0
+                    else "partially_paid" if booking.amount_paid > 0
+                    else "unpaid"
+                ),
+                "invoice_count": len(booking.invoices.all()),
+                "receipt_count": len([
+                    payment for payment in booking.payments.all()
+                    if payment.receipt_number
+                ]),
+                "total_rooms": sum(room.quantity for room in booking_rooms),
             })
         return reservations
 
@@ -1434,7 +1484,15 @@ class PhysicalRoomViewSet(AdminModelViewSet):
             released_at__isnull=True,
             booking_room__booking__status=Booking.Status.CONFIRMED,
             booking_room__booking__check_in__gte=target_date,
-        ).select_related("booking_room__booking").order_by(
+        ).select_related(
+            "booking_room__room_type", "booking_room__rate_plan", "booking_room__booking",
+        ).prefetch_related(
+            "booking_room__nights",
+            "booking_room__booking__rooms",
+            "booking_room__booking__guests",
+            "booking_room__booking__payments",
+            "booking_room__booking__invoices",
+        ).order_by(
             "booking_room__booking__check_in", "assigned_at", "id",
         ))
 
