@@ -57,9 +57,12 @@ def inventory_window_dates(start_date=None, days=None):
 
 
 def active_sellable_room_count(room_type):
-    return room_type.physical_rooms.filter(is_active=True).exclude(
+    rooms = room_type.physical_rooms.filter(is_active=True).exclude(
         status=PhysicalRoom.Status.OUT_OF_SERVICE,
-    ).count()
+    )
+    if room_type.hotel.package in [Hotel.Package.OTA, Hotel.Package.OTA_PMS]:
+        rooms = rooms.filter(ota_enabled=True)
+    return rooms.count()
 
 
 def sellable_room_count_for_date(room_type, stay_date, base_total=None):
@@ -70,7 +73,10 @@ def sellable_room_count_for_date(room_type, stay_date, base_total=None):
         is_active=True,
         start_date__lte=stay_date,
         end_date__gte=stay_date,
-    ).values("physical_room_id").distinct().count()
+    )
+    if room_type.hotel.package in [Hotel.Package.OTA, Hotel.Package.OTA_PMS]:
+        blocked_rooms = blocked_rooms.filter(physical_room__ota_enabled=True)
+    blocked_rooms = blocked_rooms.values("physical_room_id").distinct().count()
     return max(base_total - blocked_rooms, 0)
 
 

@@ -8,11 +8,14 @@ def api_exception_handler(exc, context):
     if response is not None:
         error_data = response.data
         response_data = []
-        if isinstance(error_data, dict) and "conflict_bookings" in error_data:
+        if isinstance(error_data, dict) and any(
+            key in error_data for key in ["conflict_bookings", "conflict_dates"]
+        ):
             error_data = error_data.copy()
-            response_data = {
-                "conflict_bookings": error_data.pop("conflict_bookings"),
-            }
+            response_data = {}
+            for key in ["conflict_bookings", "conflict_dates"]:
+                if key in error_data:
+                    response_data[key] = error_data.pop(key)
         formatted = fail(
             error=error_data,
             args=response_data,

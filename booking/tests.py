@@ -533,9 +533,12 @@ class BookingServiceTests(TestCase):
         self.assertTrue(hotel.has_feature("online_booking"))
         self.assertTrue(hotel.has_feature("room_assignment"))
         room_type = RoomType.objects.get(hotel__core_business_id=99, core_room_type_id=901)
-        self.assertEqual(room_type.default_inventory, 2)
-        self.assertEqual(DailyInventory.objects.filter(room_type=room_type, total_rooms=2).count(), 3)
+        # Newly synced physical rooms are not publicly sellable until the hotel
+        # explicitly adds them to its OTA pool.
+        self.assertEqual(room_type.default_inventory, 0)
+        self.assertEqual(DailyInventory.objects.filter(room_type=room_type, total_rooms=0).count(), 3)
         room = PhysicalRoom.objects.get(core_physical_room_id=9901)
+        self.assertFalse(room.ota_enabled)
         self.assertEqual(room.core_building_id, 7001)
         self.assertEqual(room.core_floor_id, 8008)
         custom = RatePlan.objects.create(
@@ -1464,6 +1467,94 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(room_type["extra_bed_price"]["pricing_unit"], "per_bed_per_night")
         self.assertEqual(room_type["extra_bed_base_price"], Decimal("30000"))
         self.assertEqual(room_type["rate_plans"][0]["extra_bed_base_price"], Decimal("30000"))
+
+    def test_ota_room_selection_controls_public_availability(self):
+        rooms = [
+            PhysicalRoom.objects.create(
+                hotel=self.hotel,
+                room_type=self.room_type,
+                core_physical_room_id=700 + index,
+                room_number=f"OTA-{index}",
+            )
+            for index in range(1, 4)
+        ]
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        updated = self.client.put(
+            "/api/v1/admin/ota-rooms/selection/",
+            {
+                "selected_room_ids": [rooms[0].id],
+                "deselected_room_ids": [rooms[1].id, rooms[2].id],
+            },
+            format="json",
+            **headers,
+        )
+        self.assertEqual(updated.status_code, 200, updated.data)
+        self.assertEqual(updated.data["data"]["total_rooms"], 3)
+        self.assertEqual(updated.data["data"]["total_ota_rooms"], 1)
+        self.assertEqual(updated.data["data"]["selected_room_ids"], [rooms[0].id])
+        room_rows = updated.data["data"]["room_types"][0]["rooms"]
+        self.assertTrue(next(item for item in room_rows if item["physical_room_id"] == rooms[0].id)["is_ota_selected"])
+        self.assertEqual(
+            next(item for item in room_rows if item["physical_room_id"] == rooms[1].id)["ota_sale_status"],
+            "not_selected",
+        )
+
+        availability = self.client.get(
+            f"/api/v1/public/hotels/{self.hotel.core_business_id}/availability/",
+            {"check_in": self.check_in, "check_out": self.check_out, "adults": 2, "guest_market": "local"},
+        )
+        self.assertEqual(availability.status_code, 200, availability.data)
+        self.assertEqual(availability.data["data"]["room_types"][0]["available_rooms"], 1)
+
+        history = self.client.get(
+            f"/api/v1/admin/physical-rooms/{rooms[1].core_physical_room_id}/history/",
+            **headers,
+        )
+        self.assertEqual(history.status_code, 200, history.data)
+        self.assertTrue(history.data["data"][0]["metadata"]["ota_selection_changed"])
+        self.assertFalse(history.data["data"][0]["metadata"]["ota_enabled"])
+
+    def test_ota_room_deselect_rejects_capacity_below_existing_commitments(self):
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            core_physical_room_id=799,
+            room_number="OTA-CONFLICT",
+        )
+        ensure_daily_inventory_for_room_type(self.room_type, start_date=self.check_in, days=2)
+        payload = self.payload()
+        payload["rooms"][0]["quantity"] = 1
+        payload["rooms"][0]["adults"] = 2
+        create_booking(payload)
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        response = self.client.put(
+            "/api/v1/admin/ota-rooms/selection/",
+            {"selected_room_ids": [], "deselected_room_ids": [room.id]},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        room.refresh_from_db()
+        self.assertTrue(room.ota_enabled)
+        self.assertIn("conflict_dates", response.data["data"])
+
+    def test_pms_only_package_cannot_manage_ota_room_selection(self):
+        self.hotel.package = Hotel.Package.PMS
+        self.hotel.save(update_fields=["package"])
+        response = self.client.get(
+            "/api/v1/admin/ota-rooms/selection/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(response.status_code, 403, response.data)
 
     def test_public_booking_estimate_does_not_require_contact_info(self):
         self.rate_plan.extra_bed_base_price = Decimal("30000")

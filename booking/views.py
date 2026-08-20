@@ -7,13 +7,13 @@ import re
 from django.conf import settings
 from django.shortcuts import redirect
 from django.db import transaction
-from django.db.models import Max, Prefetch, Q
+from django.db.models import Count, Max, Prefetch, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django.utils.text import slugify
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
 
@@ -46,6 +46,7 @@ from booking.serializers import (
     GuestIdentityDocumentSerializer,
     GuestIdentityDocumentUploadSerializer,
     MealPlanSerializer,
+    OTARoomSelectionUpdateSerializer,
     PaymentCreateSerializer,
     PaymentSerializer,
     PhysicalRoomSerializer,
@@ -64,7 +65,7 @@ from booking.serializers import (
     RoomTypeSerializer,
     WalkInBookingCreateSerializer,
 )
-from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, deprovision_hotel, estimate_booking, format_money, record_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, update_reservation_for_check_in, validate_assignment_preferences
+from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, deprovision_hotel, ensure_daily_inventory_for_room_type, estimate_booking, format_money, record_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, update_reservation_for_check_in, validate_assignment_preferences
 from config.response_formatter import success
 
 
@@ -482,6 +483,150 @@ class AddOnTemplateView(APIView):
         for template in templates:
             latest.setdefault(template.code, template)
         return success(AddOnTemplateSerializer(latest.values(), many=True).data)
+
+
+class OTARoomSelectionView(APIView):
+    permission_classes = [HasBookingAdminKey]
+    business_scoped = True
+
+    @staticmethod
+    def _hotel(request):
+        core_business_id = getattr(request, "booking_core_business_id", None)
+        if not core_business_id:
+            raise ValidationError({"core_business_id": "X-Booking-Business-ID is required."})
+        hotel = Hotel.objects.filter(core_business_id=core_business_id, is_active=True).first()
+        if not hotel:
+            raise NotFound("Hotel is not synced in the booking engine.")
+        if hotel.package not in [Hotel.Package.OTA, Hotel.Package.OTA_PMS]:
+            raise PermissionDenied("OTA room selection is only available for OTA or OTA + PMS packages.")
+        return hotel
+
+    @staticmethod
+    def _payload(hotel):
+        rooms = list(PhysicalRoom.objects.filter(
+            hotel=hotel, is_active=True,
+        ).select_related("room_type").order_by("room_type__name", "building", "floor", "room_number", "id"))
+        active_booking_counts = dict(RoomAssignment.objects.filter(
+            physical_room__hotel=hotel,
+            physical_room__is_active=True,
+            released_at__isnull=True,
+            booking_room__booking__source__in=[Booking.Source.OTA, Booking.Source.DIRECT],
+            booking_room__booking__status__in=[Booking.Status.PENDING_PAYMENT, Booking.Status.CONFIRMED],
+            booking_room__booking__check_out__gt=timezone.localdate(),
+        ).values("physical_room_id").annotate(total=Count("id")).values_list("physical_room_id", "total"))
+        grouped = {}
+        for room in rooms:
+            group = grouped.setdefault(room.room_type_id, {
+                "room_type_id": room.room_type_id,
+                "core_room_type_id": room.room_type.core_room_type_id,
+                "room_type_name": room.room_type.name,
+                "total_rooms": 0,
+                "selected_count": 0,
+                "rooms": [],
+            })
+            group["total_rooms"] += 1
+            group["selected_count"] += int(room.ota_enabled)
+            group["rooms"].append({
+                "physical_room_id": room.id,
+                "core_physical_room_id": room.core_physical_room_id,
+                "room_number": room.room_number,
+                "building_id": room.core_building_id,
+                "building": room.building,
+                "floor_id": room.core_floor_id,
+                "floor": room.floor,
+                "is_ota_selected": room.ota_enabled,
+                "ota_sale_status": "open" if room.ota_enabled else "not_selected",
+                "active_ota_bookings": active_booking_counts.get(room.id, 0),
+                "history_url": f"/api/v1/admin/physical-rooms/{room.core_physical_room_id or room.id}/history/",
+            })
+        return {
+            "package": hotel.package,
+            "total_rooms": len(rooms),
+            "total_ota_rooms": sum(int(room.ota_enabled) for room in rooms),
+            "selected_room_ids": [room.id for room in rooms if room.ota_enabled],
+            "deselected_room_ids": [room.id for room in rooms if not room.ota_enabled],
+            "room_types": list(grouped.values()),
+        }
+
+    def get(self, request):
+        return success(self._payload(self._hotel(request)))
+
+    @transaction.atomic
+    def put(self, request):
+        hotel = self._hotel(request)
+        serializer = OTARoomSelectionUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        selected_ids = serializer.validated_data["selected_room_ids"]
+        deselected_ids = serializer.validated_data["deselected_room_ids"]
+        requested_ids = set(selected_ids + deselected_ids)
+        rooms = list(PhysicalRoom.objects.select_for_update().filter(
+            hotel=hotel, is_active=True, id__in=requested_ids,
+        ).select_related("room_type"))
+        if len(rooms) != len(requested_ids):
+            found_ids = {room.id for room in rooms}
+            raise ValidationError({
+                "room_ids": f"Rooms are inactive, missing, or belong to another business: {sorted(requested_ids - found_ids)}."
+            })
+
+        affected_room_types = {room.room_type_id: room.room_type for room in rooms}
+        selected_set = set(selected_ids)
+        deselected_set = set(deselected_ids)
+        conflicts = []
+        today = timezone.localdate()
+        for room_type_id, room_type in affected_room_types.items():
+            final_selected_ids = set(PhysicalRoom.objects.filter(
+                room_type_id=room_type_id, is_active=True, ota_enabled=True,
+            ).values_list("id", flat=True))
+            final_selected_ids.update(room.id for room in rooms if room.room_type_id == room_type_id and room.id in selected_set)
+            final_selected_ids.difference_update(room.id for room in rooms if room.room_type_id == room_type_id and room.id in deselected_set)
+            for inventory in DailyInventory.objects.select_for_update().filter(
+                room_type_id=room_type_id, stay_date__gte=today,
+            ).order_by("stay_date"):
+                blocked = PhysicalRoomBlock.objects.filter(
+                    physical_room_id__in=final_selected_ids,
+                    is_active=True,
+                    start_date__lte=inventory.stay_date,
+                    end_date__gte=inventory.stay_date,
+                ).values("physical_room_id").distinct().count()
+                capacity = max(len(final_selected_ids) - blocked, 0)
+                committed = inventory.held_rooms + inventory.reserved_rooms
+                if committed > capacity:
+                    conflicts.append({
+                        "room_type_id": room_type_id,
+                        "room_type_name": room_type.name,
+                        "date": str(inventory.stay_date),
+                        "ota_capacity_after_change": capacity,
+                        "committed_rooms": committed,
+                    })
+        if conflicts:
+            raise ValidationError({
+                "selection": "OTA room capacity would be lower than existing booking commitments.",
+                "conflict_dates": conflicts,
+            })
+
+        previous_states = {room.id: room.ota_enabled for room in rooms}
+        PhysicalRoom.objects.filter(id__in=selected_set).update(ota_enabled=True)
+        PhysicalRoom.objects.filter(id__in=deselected_set).update(ota_enabled=False)
+        actor_id = _core_user_id(request)
+        PhysicalRoomActionHistory.objects.bulk_create([
+            PhysicalRoomActionHistory(
+                physical_room=room,
+                action=PhysicalRoomActionHistory.Action.STATUS_CHANGED,
+                actor_type=PhysicalRoomActionHistory.ActorType.HOTEL_ADMIN,
+                actor_core_user_id=actor_id,
+                note="Added to OTA room pool" if room.id in selected_set else "Removed from OTA room pool",
+                metadata={
+                    "ota_selection_changed": True,
+                    "previous_ota_enabled": previous_states[room.id],
+                    "ota_enabled": room.id in selected_set,
+                },
+            )
+            for room in rooms
+            if previous_states[room.id] != (room.id in selected_set)
+        ])
+        for room_type in affected_room_types.values():
+            ensure_daily_inventory_for_room_type(room_type)
+        return success(self._payload(hotel))
 
 
 class RoomBoardView(APIView):

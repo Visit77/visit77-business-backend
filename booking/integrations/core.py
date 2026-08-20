@@ -370,6 +370,10 @@ def sync_business_from_core(core_business_id: int, client=None):
         room.building = payload.get("building") or ""
         room.is_active = payload.get("is_active", True)
         room.core_snapshot = payload
+        if created:
+            # A newly synced room must be explicitly added to the OTA pool by
+            # the hotel. Existing rooms retain their hotel-managed selection.
+            room.ota_enabled = False
         room.save()
         if created:
             room.status = payload.get("status") or PhysicalRoom.Status.VACANT

@@ -197,7 +197,7 @@ class PhysicalRoomSerializer(serializers.ModelSerializer):
     class Meta:
         model = PhysicalRoom
         fields = "__all__"
-        read_only_fields = ["hotel", "room_type", "core_physical_room_id", "room_number", "floor", "building", "is_active"]
+        read_only_fields = ["hotel", "room_type", "core_physical_room_id", "room_number", "floor", "building", "is_active", "ota_enabled"]
 
     def validate(self, attrs):
         hotel = attrs.get("hotel", getattr(self.instance, "hotel", None))
@@ -220,6 +220,31 @@ class PhysicalRoomSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({
                     "status": "A room with an active reservation or stay cannot be marked out of service."
                 })
+        return attrs
+
+
+class OTARoomSelectionUpdateSerializer(serializers.Serializer):
+    selected_room_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1), required=False, default=list,
+    )
+    deselected_room_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1), required=False, default=list,
+    )
+
+    def validate(self, attrs):
+        selected = attrs["selected_room_ids"]
+        deselected = attrs["deselected_room_ids"]
+        if len(selected) != len(set(selected)):
+            raise serializers.ValidationError({"selected_room_ids": "Duplicate room IDs are not allowed."})
+        if len(deselected) != len(set(deselected)):
+            raise serializers.ValidationError({"deselected_room_ids": "Duplicate room IDs are not allowed."})
+        overlap = sorted(set(selected).intersection(deselected))
+        if overlap:
+            raise serializers.ValidationError({
+                "room_ids": f"The same room cannot be selected and deselected: {overlap}."
+            })
+        if not selected and not deselected:
+            raise serializers.ValidationError("At least one selected or deselected room ID is required.")
         return attrs
 
 

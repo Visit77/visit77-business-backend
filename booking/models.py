@@ -184,6 +184,7 @@ class PhysicalRoom(models.Model):
     status = models.CharField(max_length=32, choices=Status.choices, default=Status.VACANT)
     note = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
+    ota_enabled = models.BooleanField(default=True)
     core_snapshot = models.JSONField(default=dict, blank=True)
 
     class Meta:
