@@ -1518,6 +1518,43 @@ class BookingApiTests(BookingServiceTests):
         self.assertTrue(history.data["data"][0]["metadata"]["ota_selection_changed"])
         self.assertFalse(history.data["data"][0]["metadata"]["ota_enabled"])
 
+    def test_admin_room_type_api_includes_physical_room_ota_selection_state(self):
+        selected = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            core_physical_room_id=781,
+            room_number="OTA-SELECTED",
+            ota_enabled=True,
+        )
+        deselected = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            core_physical_room_id=782,
+            room_number="OTA-DESELECTED",
+            ota_enabled=False,
+        )
+        response = self.client.get(
+            "/api/v1/admin/room-types/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        room_type = next(item for item in response.data["data"] if item["id"] == self.room_type.id)
+        self.assertEqual(room_type["total_room_count"], 2)
+        self.assertEqual(room_type["ota_enabled_room_count"], 1)
+        self.assertEqual(len(room_type["room_list"]), 2)
+        selected_data = next(
+            item for item in room_type["room_list"] if item["physical_room_id"] == selected.id
+        )
+        deselected_data = next(
+            item for item in room_type["room_list"] if item["physical_room_id"] == deselected.id
+        )
+        self.assertTrue(selected_data["ota_enabled"])
+        self.assertTrue(selected_data["is_ota_selected"])
+        self.assertEqual(selected_data["ota_sale_status"], "open")
+        self.assertFalse(deselected_data["ota_enabled"])
+        self.assertEqual(deselected_data["ota_sale_status"], "not_selected")
+
     def test_ota_room_deselect_rejects_capacity_below_existing_commitments(self):
         room = PhysicalRoom.objects.create(
             hotel=self.hotel,

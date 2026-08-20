@@ -1497,7 +1497,25 @@ class HotelViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins.L
 
 
 class RoomTypeViewSet(AdminModelViewSet):
-    queryset = RoomType.objects.select_related("hotel").prefetch_related("meal_plan_links", "meal_plan_links__meal_plan")
+    queryset = RoomType.objects.select_related("hotel").prefetch_related(
+        "meal_plan_links", "meal_plan_links__meal_plan",
+        Prefetch(
+            "physical_rooms",
+            queryset=PhysicalRoom.objects.filter(is_active=True).annotate(
+                active_ota_bookings=Count(
+                    "assignments",
+                    filter=Q(
+                        assignments__released_at__isnull=True,
+                        assignments__booking_room__booking__source__in=[Booking.Source.OTA, Booking.Source.DIRECT],
+                        assignments__booking_room__booking__status__in=[Booking.Status.PENDING_PAYMENT, Booking.Status.CONFIRMED],
+                        assignments__booking_room__booking__check_out__gt=timezone.localdate(),
+                    ),
+                    distinct=True,
+                ),
+            ).order_by("building", "floor", "room_number", "id"),
+            to_attr="room_type_room_list",
+        ),
+    )
     serializer_class = RoomTypeSerializer
     filterset_fields = ["hotel", "core_room_type_id", "booking_enabled", "core_active"]
     http_method_names = ["get", "patch", "head", "options"]

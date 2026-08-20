@@ -116,6 +116,9 @@ class RoomTypeSerializer(serializers.ModelSerializer):
     core_business_id = serializers.IntegerField(source="hotel.core_business_id", read_only=True)
     meal_plans = serializers.SerializerMethodField()
     breakfast = serializers.SerializerMethodField()
+    room_list = serializers.SerializerMethodField()
+    total_room_count = serializers.SerializerMethodField()
+    ota_enabled_room_count = serializers.SerializerMethodField()
 
     def get_meal_plans(self, obj):
         links = obj.meal_plan_links.select_related("meal_plan").all()
@@ -152,6 +155,41 @@ class RoomTypeSerializer(serializers.ModelSerializer):
             "meal_plan": MealPlanSerializer(plan).data if plan else None,
             "price": price,
         }
+
+    @staticmethod
+    def _rooms(obj):
+        prefetched = getattr(obj, "room_type_room_list", None)
+        if prefetched is not None:
+            return prefetched
+        return list(obj.physical_rooms.filter(is_active=True).order_by(
+            "building", "floor", "room_number", "id",
+        ))
+
+    def get_room_list(self, obj):
+        return [
+            {
+                "physical_room_id": room.id,
+                "core_physical_room_id": room.core_physical_room_id,
+                "room_number": room.room_number,
+                "building_id": room.core_building_id,
+                "building": room.building,
+                "floor_id": room.core_floor_id,
+                "floor": room.floor,
+                "operational_status": room.status,
+                "is_active": room.is_active,
+                "ota_enabled": room.ota_enabled,
+                "is_ota_selected": room.ota_enabled,
+                "ota_sale_status": "open" if room.ota_enabled else "not_selected",
+                "active_ota_bookings": getattr(room, "active_ota_bookings", 0),
+            }
+            for room in self._rooms(obj)
+        ]
+
+    def get_total_room_count(self, obj):
+        return len(self._rooms(obj))
+
+    def get_ota_enabled_room_count(self, obj):
+        return sum(1 for room in self._rooms(obj) if room.ota_enabled)
 
     class Meta:
         model = RoomType
