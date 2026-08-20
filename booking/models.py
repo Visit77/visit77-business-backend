@@ -379,6 +379,7 @@ class PhysicalRoomActionHistory(models.Model):
         CHECKED_OUT = "checked_out", "Checked out"
         CLEANING_STARTED = "cleaning_started", "Cleaning started"
         CLEANING_COMPLETED = "cleaning_completed", "Cleaning completed"
+        VACANT = "vacant", "Vacant"
         STATUS_CHANGED = "status_changed", "Status changed"
         OUT_OF_SERVICE_STARTED = "out_of_service_started", "Out of service started"
         OUT_OF_SERVICE_ENDED = "out_of_service_ended", "Out of service ended"

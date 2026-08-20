@@ -1871,7 +1871,7 @@ class PhysicalRoomViewSet(AdminModelViewSet):
             elif previous_status == PhysicalRoom.Status.OUT_OF_SERVICE:
                 action_name = PhysicalRoomActionHistory.Action.OUT_OF_SERVICE_ENDED
             elif previous_status == PhysicalRoom.Status.CLEANING and room.status == PhysicalRoom.Status.VACANT:
-                action_name = PhysicalRoomActionHistory.Action.CLEANING_COMPLETED
+                action_name = PhysicalRoomActionHistory.Action.VACANT
             else:
                 action_name = PhysicalRoomActionHistory.Action.STATUS_CHANGED
             _record_room_history(

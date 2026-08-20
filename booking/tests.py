@@ -881,6 +881,19 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(board_room["display_status"], "cleaning")
         self.assertIn("Cleaning | Checked out:", board_room["timeline_text"])
 
+        vacant = self.client.patch(
+            f"/api/v1/admin/physical-rooms/{room.id}/",
+            {"status": "vacant", "note": "Available"},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(vacant.status_code, 200, vacant.data)
+        latest_event = room.action_history.order_by("-created_at", "-id").first()
+        self.assertEqual(latest_event.action, PhysicalRoomActionHistory.Action.VACANT)
+        self.assertEqual(latest_event.get_action_display(), "Vacant")
+        self.assertEqual(latest_event.old_status, PhysicalRoom.Status.CLEANING)
+        self.assertEqual(latest_event.new_status, PhysicalRoom.Status.VACANT)
+
     def test_room_block_date_range_updates_board_inventory_and_prevents_walk_in(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="VIP-01")
         headers = {
