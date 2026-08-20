@@ -164,6 +164,87 @@ class BookingServiceTests(TestCase):
         self.assertEqual(len(assignments), 1)
         self.assertEqual(assignments[0].physical_room_id, expected.id)
 
+    def test_pms_walk_in_can_use_ota_disabled_room_in_ota_pms_hotel(self):
+        self.hotel.package = Hotel.Package.OTA_PMS
+        self.hotel.save(update_fields=["package"])
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="PMS-WALK-IN",
+            ota_enabled=False,
+        )
+
+        booking = create_walk_in_booking(
+            {
+                "physical_room_id": room.id,
+                "rate_plan_id": self.rate_plan.id,
+                "check_in": self.check_in,
+                "check_out": self.check_out,
+                "contact_name": "PMS Walk-in Guest",
+                "contact_phone": "091111111",
+                "guest_market": "local",
+                "adults": 1,
+                "children": 0,
+                "guests": [{"name": "PMS Walk-in Guest", "is_primary": True}],
+            },
+            core_business_id=self.hotel.core_business_id,
+            check_in_immediately=False,
+        )
+
+        self.assertEqual(booking.status, Booking.Status.CONFIRMED)
+        self.assertTrue(RoomAssignment.objects.filter(
+            booking_room__booking=booking,
+            physical_room=room,
+        ).exists())
+        self.assertTrue(all(
+            total == 1
+            for total in DailyInventory.objects.filter(
+                room_type=self.room_type,
+                stay_date__gte=self.check_in,
+                stay_date__lt=self.check_out,
+            ).values_list("total_rooms", flat=True)
+        ))
+
+    def test_pms_on_call_reservation_can_use_ota_disabled_room(self):
+        self.hotel.package = Hotel.Package.OTA_PMS
+        self.hotel.save(update_fields=["package"])
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="PMS-ON-CALL",
+            ota_enabled=False,
+        )
+        booking = create_admin_reservation(
+            {
+                "core_business_id": self.hotel.core_business_id,
+                "source": Booking.Source.PHONE,
+                "source_name": "Hotel hotline",
+                "check_in": self.check_in,
+                "check_out": self.check_out,
+                "contact_name": "On-call Guest",
+                "contact_phone": "092222222",
+                "guest_market": "local",
+                "rooms": [{
+                    "core_room_type_id": self.room_type.core_room_type_id,
+                    "rate_plan_id": self.rate_plan.id,
+                    "quantity": 1,
+                    "adults": 1,
+                    "children": 0,
+                    "extra_beds": 0,
+                    "physical_room_ids": [room.id],
+                }],
+                "guests": [{"name": "On-call Guest", "is_primary": True}],
+                "add_ons": [],
+            },
+            core_business_id=self.hotel.core_business_id,
+        )
+
+        self.assertEqual(booking.status, Booking.Status.CONFIRMED)
+        self.assertTrue(RoomAssignment.objects.filter(
+            booking_room__booking=booking,
+            physical_room=room,
+        ).exists())
+
     def test_paid_payment_commits_inventory(self):
         room_801 = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="801", floor="8")
         room_g01 = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="G01", floor="G")

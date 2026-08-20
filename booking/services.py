@@ -57,12 +57,17 @@ def inventory_window_dates(start_date=None, days=None):
 
 
 def active_sellable_room_count(room_type):
-    rooms = room_type.physical_rooms.filter(is_active=True).exclude(
+    return room_type.physical_rooms.filter(is_active=True).exclude(
         status=PhysicalRoom.Status.OUT_OF_SERVICE,
-    )
-    if room_type.hotel.package in [Hotel.Package.OTA, Hotel.Package.OTA_PMS]:
-        rooms = rooms.filter(ota_enabled=True, ota_sale_open=True)
-    return rooms.count()
+    ).count()
+
+
+def active_ota_sellable_room_count(room_type):
+    return room_type.physical_rooms.filter(
+        is_active=True,
+        ota_enabled=True,
+        ota_sale_open=True,
+    ).exclude(status=PhysicalRoom.Status.OUT_OF_SERVICE).count()
 
 
 def sellable_room_count_for_date(room_type, stay_date, base_total=None):
@@ -74,13 +79,38 @@ def sellable_room_count_for_date(room_type, stay_date, base_total=None):
         start_date__lte=stay_date,
         end_date__gte=stay_date,
     )
-    if room_type.hotel.package in [Hotel.Package.OTA, Hotel.Package.OTA_PMS]:
-        blocked_rooms = blocked_rooms.filter(
-            physical_room__ota_enabled=True,
-            physical_room__ota_sale_open=True,
-        )
     blocked_rooms = blocked_rooms.values("physical_room_id").distinct().count()
     return max(base_total - blocked_rooms, 0)
+
+
+def ota_sellable_room_count_for_date(room_type, stay_date):
+    eligible_room_ids = room_type.physical_rooms.filter(
+        is_active=True,
+        ota_enabled=True,
+        ota_sale_open=True,
+    ).exclude(
+        status=PhysicalRoom.Status.OUT_OF_SERVICE,
+    ).values_list("id", flat=True)
+    blocked_room_ids = PhysicalRoomBlock.objects.filter(
+        physical_room_id__in=eligible_room_ids,
+        is_active=True,
+        start_date__lte=stay_date,
+        end_date__gte=stay_date,
+    ).values_list("physical_room_id", flat=True)
+    assigned_room_ids = RoomAssignment.objects.filter(
+        physical_room_id__in=eligible_room_ids,
+        released_at__isnull=True,
+        booking_room__booking__status__in=[
+            Booking.Status.PENDING_PAYMENT,
+            Booking.Status.CONFIRMED,
+            Booking.Status.CHECKED_IN,
+        ],
+        booking_room__booking__check_in__lte=stay_date,
+        booking_room__booking__check_out__gt=stay_date,
+    ).values_list("physical_room_id", flat=True)
+    return PhysicalRoom.objects.filter(id__in=eligible_room_ids).exclude(
+        id__in=blocked_room_ids,
+    ).exclude(id__in=assigned_room_ids).count()
 
 
 @transaction.atomic
@@ -791,6 +821,16 @@ def availability_for_hotels(hotels, check_in, check_out, adults=1, children=0, g
             else room_type.default_inventory
             for day in dates
         ], default=0)
+        if room_type.hotel.package in [Hotel.Package.OTA, Hotel.Package.OTA_PMS]:
+            # DailyInventory is shared PMS capacity. Public OTA sales are
+            # additionally limited to the hotel's selected/open OTA room pool.
+            available = min(
+                available,
+                min(
+                    [ota_sellable_room_count_for_date(room_type, day) for day in dates],
+                    default=0,
+                ),
+            )
         room_plans = []
         for plan in plans_by_room_type[room_type.id]:
             overrides = overrides_by_plan[plan.id]
