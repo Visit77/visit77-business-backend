@@ -873,6 +873,7 @@ class BookingApiTests(BookingServiceTests):
         checked_out = next(item for item in history.data["data"] if item["action"] == "checked_out")
         self.assertEqual(checked_out["booking_reference"], booking.reference)
         self.assertEqual(checked_out["guest_name"], "History Guest")
+        self.assertTrue(checked_out["created_at"].endswith("Z"), checked_out["created_at"])
 
         board = self.client.get(
             "/api/v1/admin/room-board/", {"date": str(self.check_out)}, **headers,

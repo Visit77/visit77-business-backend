@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import timedelta, timezone as datetime_timezone
 from decimal import Decimal
 
 from django.db.models import Q
@@ -555,6 +555,10 @@ class PhysicalRoomBlockSerializer(serializers.ModelSerializer):
 
 
 class PhysicalRoomActionHistorySerializer(serializers.ModelSerializer):
+    created_at = serializers.DateTimeField(
+        read_only=True,
+        default_timezone=datetime_timezone.utc,
+    )
     action_label = serializers.CharField(source="get_action_display", read_only=True)
     actor_type_label = serializers.CharField(source="get_actor_type_display", read_only=True)
     booking_reference = serializers.CharField(source="booking.reference", read_only=True, allow_null=True)
