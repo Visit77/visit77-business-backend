@@ -1468,6 +1468,75 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(room_type["extra_bed_base_price"], Decimal("30000"))
         self.assertEqual(room_type["rate_plans"][0]["extra_bed_base_price"], Decimal("30000"))
 
+    def test_public_ota_room_type_catalog_only_returns_ota_selected_room_types_without_availability(self):
+        self.room_type.core_snapshot = {
+            "photos": [{"id": 3, "image": "https://media.example.com/double-room.jpg"}],
+            "amenities": [{"id": 1, "name": "Wi-Fi"}],
+            "room_view": [{"id": 4, "name": "City View"}],
+            "beds": [{"id": 5, "name": "King Bed", "quantity": 1}],
+        }
+        self.room_type.save(update_fields=["core_snapshot"])
+        self.rate_plan.is_default = True
+        self.rate_plan.save(update_fields=["is_default"])
+        PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="OTA-CATALOG-1",
+            ota_enabled=True,
+        )
+        PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="OTA-CATALOG-2",
+            ota_enabled=False,
+        )
+        hidden_room_type = RoomType.objects.create(
+            hotel=self.hotel,
+            core_room_type_id=9991,
+            name="PMS-only Room Type",
+        )
+        RatePlan.objects.create(
+            room_type=hidden_room_type,
+            code="hidden-local",
+            name="Hidden Local",
+            guest_market=RatePlan.GuestMarket.LOCAL,
+            default_price=Decimal("50000"),
+        )
+        PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=hidden_room_type,
+            room_number="PMS-ONLY-1",
+            ota_enabled=False,
+        )
+
+        response = self.client.get(
+            f"/api/v1/public/hotels/{self.hotel.core_business_id}/ota-room-types/",
+            {"guest_market": "local", "display_currency": "MMK"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        payload = response.data["data"]
+        self.assertFalse(payload["availability_calculated"])
+        self.assertEqual(len(payload["room_types"]), 1)
+        room_type = payload["room_types"][0]
+        self.assertEqual(room_type["core_room_type_id"], self.room_type.core_room_type_id)
+        self.assertEqual(room_type["ota_enabled_room_count"], 1)
+        self.assertFalse(room_type["availability_calculated"])
+        self.assertNotIn("available_rooms", room_type)
+        self.assertNotIn("room_list", room_type)
+        self.assertEqual(room_type["amenities"][0]["name"], "Wi-Fi")
+        self.assertEqual(room_type["default_price"]["rate_plan_id"], self.rate_plan.id)
+
+    def test_public_ota_room_type_catalog_rejects_pms_only_hotel(self):
+        self.hotel.package = Hotel.Package.PMS
+        self.hotel.save(update_fields=["package"])
+
+        response = self.client.get(
+            f"/api/v1/public/hotels/{self.hotel.core_business_id}/ota-room-types/",
+        )
+
+        self.assertEqual(response.status_code, 404, response.data)
+
     def test_ota_room_selection_controls_public_availability(self):
         rooms = [
             PhysicalRoom.objects.create(

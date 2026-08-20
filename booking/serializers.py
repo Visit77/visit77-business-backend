@@ -103,6 +103,182 @@ class AvailabilitySearchQuerySerializer(serializers.Serializer):
         return attrs
 
 
+class PublicOTARoomTypeCatalogQuerySerializer(serializers.Serializer):
+    guest_market = serializers.ChoiceField(
+        choices=[RatePlan.GuestMarket.LOCAL, RatePlan.GuestMarket.FOREIGN],
+        required=False,
+    )
+    display_currency = serializers.ChoiceField(choices=["MMK", "USD"], required=False)
+
+
+class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
+    room_type_id = serializers.IntegerField(source="id", read_only=True)
+    photos = serializers.SerializerMethodField()
+    amenities = serializers.SerializerMethodField()
+    facilities = serializers.SerializerMethodField()
+    policies = serializers.SerializerMethodField()
+    bed_type = serializers.SerializerMethodField()
+    beds = serializers.SerializerMethodField()
+    room_standard = serializers.SerializerMethodField()
+    room_build_type = serializers.SerializerMethodField()
+    room_view = serializers.SerializerMethodField()
+    room_area = serializers.SerializerMethodField()
+    room_area_from = serializers.SerializerMethodField()
+    room_area_to = serializers.SerializerMethodField()
+    area_unit = serializers.SerializerMethodField()
+    size_sqft = serializers.SerializerMethodField()
+    default_prices = serializers.SerializerMethodField()
+    default_price = serializers.SerializerMethodField()
+    rate_plans = serializers.SerializerMethodField()
+    breakfast = serializers.SerializerMethodField()
+    meal_plans = serializers.SerializerMethodField()
+    ota_enabled_room_count = serializers.IntegerField(read_only=True)
+    availability_calculated = serializers.SerializerMethodField()
+
+    def _snapshot_value(self, obj, key, default=None):
+        return (obj.core_snapshot or {}).get(key, default)
+
+    def get_photos(self, obj):
+        return self._snapshot_value(obj, "photos", []) or []
+
+    def get_amenities(self, obj):
+        return self._snapshot_value(obj, "amenities", []) or []
+
+    def get_facilities(self, obj):
+        return self._snapshot_value(obj, "facilities", []) or []
+
+    def get_policies(self, obj):
+        return self._snapshot_value(obj, "policies", []) or []
+
+    def get_bed_type(self, obj):
+        return self._snapshot_value(obj, "bed_type")
+
+    def get_beds(self, obj):
+        return self._snapshot_value(obj, "beds", []) or []
+
+    def get_room_standard(self, obj):
+        return self._snapshot_value(obj, "room_standard")
+
+    def get_room_build_type(self, obj):
+        return self._snapshot_value(obj, "room_build_type")
+
+    def get_room_view(self, obj):
+        return self._snapshot_value(obj, "room_view")
+
+    def get_room_area(self, obj):
+        return self._snapshot_value(obj, "room_area")
+
+    def get_room_area_from(self, obj):
+        return self._snapshot_value(obj, "room_area_from")
+
+    def get_room_area_to(self, obj):
+        return self._snapshot_value(obj, "room_area_to")
+
+    def get_area_unit(self, obj):
+        return self._snapshot_value(obj, "area_unit")
+
+    def get_size_sqft(self, obj):
+        return self._snapshot_value(obj, "size_sqft")
+
+    def get_default_prices(self, obj):
+        snapshot = obj.core_snapshot or {}
+        return {
+            "local": {
+                "base_price": snapshot.get("local_base_price"),
+                "base_currency": snapshot.get("local_base_currency") or obj.hotel.base_currency,
+                "usd_display_price": snapshot.get("local_usd_display_price"),
+            },
+            "foreign": {
+                "base_price": snapshot.get("foreign_base_price"),
+                "base_currency": snapshot.get("foreign_base_currency") or obj.hotel.base_currency,
+                "usd_display_price": snapshot.get("foreign_usd_display_price"),
+            },
+        }
+
+    def _plans(self, obj):
+        plans = getattr(obj, "ota_catalog_rate_plans", None)
+        if plans is None:
+            plans = list(obj.rate_plans.filter(is_active=True).order_by("guest_market", "code", "id"))
+        guest_market = self.context.get("guest_market")
+        if guest_market:
+            plans = [
+                plan for plan in plans
+                if plan.guest_market in [guest_market, RatePlan.GuestMarket.ALL]
+            ]
+        return plans
+
+    def _plan_payload(self, obj, plan):
+        display_currency = self.context.get("display_currency") or obj.hotel.base_currency
+        display_price = (
+            plan.usd_display_price
+            if display_currency == "USD" and plan.usd_display_price is not None
+            else plan.base_price
+        )
+        extra_bed_display_price = (
+            plan.extra_bed_usd_display_price
+            if display_currency == "USD" and plan.extra_bed_usd_display_price is not None
+            else plan.extra_bed_base_price
+        )
+        return {
+            "id": plan.id,
+            "code": plan.code,
+            "name": plan.name,
+            "guest_market": plan.guest_market,
+            "is_default": plan.is_default,
+            "base_price": plan.base_price,
+            "base_currency": obj.hotel.base_currency,
+            "usd_display_price": plan.usd_display_price,
+            "display_price": display_price,
+            "display_currency": display_currency,
+            "extra_bed_base_price": plan.extra_bed_base_price,
+            "extra_bed_usd_display_price": plan.extra_bed_usd_display_price,
+            "extra_bed_display_price": extra_bed_display_price,
+            "breakfast_included": plan.breakfast_included,
+            "refundable": plan.refundable,
+            "cancellation_policy": plan.cancellation_policy,
+        }
+
+    def get_rate_plans(self, obj):
+        return [self._plan_payload(obj, plan) for plan in self._plans(obj)]
+
+    def get_default_price(self, obj):
+        plans = self._plans(obj)
+        if not plans:
+            return None
+        plan = next((item for item in plans if item.is_default), plans[0])
+        payload = self._plan_payload(obj, plan)
+        return {
+            "rate_plan_id": payload["id"],
+            "guest_market": payload["guest_market"],
+            "base_price": payload["base_price"],
+            "base_currency": payload["base_currency"],
+            "usd_display_price": payload["usd_display_price"],
+            "display_price": payload["display_price"],
+            "display_currency": payload["display_currency"],
+        }
+
+    def get_breakfast(self, obj):
+        return RoomTypeSerializer(context=self.context).get_breakfast(obj)
+
+    def get_meal_plans(self, obj):
+        links = obj.meal_plan_links.select_related("meal_plan").filter(meal_plan__core_active=True)
+        return RoomTypeMealPlanSerializer(links, many=True).data
+
+    def get_availability_calculated(self, obj):
+        return False
+
+    class Meta:
+        model = RoomType
+        fields = [
+            "room_type_id", "core_room_type_id", "name", "description", "cover_image_url",
+            "photos", "amenities", "facilities", "policies", "bed_type", "beds",
+            "room_standard", "room_build_type", "room_view", "room_area", "room_area_from",
+            "room_area_to", "area_unit", "size_sqft", "max_adults", "max_children",
+            "max_occupancy", "default_prices", "default_price", "rate_plans", "breakfast",
+            "meal_plans", "ota_enabled_room_count", "availability_calculated",
+        ]
+
+
 class RoomBoardQuerySerializer(serializers.Serializer):
     core_business_id = serializers.IntegerField(min_value=1, required=False)
     date = serializers.DateField(required=False)

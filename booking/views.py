@@ -52,6 +52,8 @@ from booking.serializers import (
     PhysicalRoomSerializer,
     PhysicalRoomActionHistorySerializer,
     PhysicalRoomBlockSerializer,
+    PublicOTARoomTypeCatalogQuerySerializer,
+    PublicOTARoomTypeCatalogSerializer,
     PublicHotelSerializer,
     RatePlanSerializer,
     RatePeriodSerializer,
@@ -224,6 +226,65 @@ class PublicAvailabilityView(APIView):
             request.query_params.get("display_currency") or None,
         )
         return success({"hotel": PublicHotelSerializer(hotel).data, "room_types": results})
+
+
+class PublicOTARoomTypeCatalogView(APIView):
+    """List OTA-selected room types without calculating date availability."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, core_business_id):
+        query = PublicOTARoomTypeCatalogQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        hotel = Hotel.objects.filter(
+            core_business_id=core_business_id,
+            is_active=True,
+            package__in=[Hotel.Package.OTA, Hotel.Package.OTA_PMS],
+        ).first()
+        if not hotel:
+            raise NotFound("OTA hotel is not available in the booking engine.")
+
+        room_types = list(
+            RoomType.objects.filter(
+                hotel=hotel,
+                booking_enabled=True,
+                core_active=True,
+                physical_rooms__is_active=True,
+                physical_rooms__ota_enabled=True,
+                rate_plans__is_active=True,
+            ).annotate(
+                ota_enabled_room_count=Count(
+                    "physical_rooms",
+                    filter=Q(
+                        physical_rooms__is_active=True,
+                        physical_rooms__ota_enabled=True,
+                    ),
+                    distinct=True,
+                ),
+            ).select_related("hotel").prefetch_related(
+                "meal_plan_links", "meal_plan_links__meal_plan",
+                Prefetch(
+                    "rate_plans",
+                    queryset=RatePlan.objects.filter(is_active=True).order_by("guest_market", "code", "id"),
+                    to_attr="ota_catalog_rate_plans",
+                ),
+            ).distinct().order_by("name", "id")
+        )
+        context = {
+            "request": request,
+            "guest_market": query.validated_data.get("guest_market"),
+            "display_currency": query.validated_data.get("display_currency"),
+        }
+        return success({
+            "hotel": PublicHotelSerializer(hotel).data,
+            "room_types": PublicOTARoomTypeCatalogSerializer(
+                room_types,
+                many=True,
+                context=context,
+            ).data,
+            "availability_calculated": False,
+            "availability_url": f"/api/v1/public/hotels/{core_business_id}/availability/",
+        })
 
 
 class PublicGlobalAvailabilityView(APIView):
