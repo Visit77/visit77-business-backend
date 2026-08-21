@@ -799,6 +799,7 @@ class BookingApiTests(BookingServiceTests):
             "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
             "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
             "HTTP_X_CORE_USER_ID": "501",
+            "HTTP_X_CORE_USER_NAME": "Staff One",
         }
 
         oos = self.client.patch(
@@ -864,15 +865,18 @@ class BookingApiTests(BookingServiceTests):
         )
         self.assertEqual(history.status_code, 200, history.data)
         actions = [item["action"] for item in history.data["data"]]
-        self.assertIn("out_of_service_started", actions)
-        self.assertIn("out_of_service_ended", actions)
+        self.assertIn("out_of_service", actions)
+        self.assertIn("oos_repaired", actions)
         self.assertIn("block_created", actions)
         self.assertIn("unblocked", actions)
         self.assertIn("checked_out", actions)
-        self.assertIn("cleaning_started", actions)
+        self.assertNotIn("cleaning_started", actions)
         checked_out = next(item for item in history.data["data"] if item["action"] == "checked_out")
         self.assertEqual(checked_out["booking_reference"], booking.reference)
         self.assertEqual(checked_out["guest_name"], "History Guest")
+        self.assertEqual(checked_out["actor"]["core_user_id"], 501)
+        self.assertEqual(checked_out["actor"]["name"], "Staff One")
+        self.assertEqual(checked_out["guest"]["name"], "History Guest")
         self.assertTrue(checked_out["created_at"].endswith("Z"), checked_out["created_at"])
 
         board = self.client.get(
@@ -890,10 +894,25 @@ class BookingApiTests(BookingServiceTests):
         )
         self.assertEqual(vacant.status_code, 200, vacant.data)
         latest_event = room.action_history.order_by("-created_at", "-id").first()
-        self.assertEqual(latest_event.action, PhysicalRoomActionHistory.Action.VACANT)
-        self.assertEqual(latest_event.get_action_display(), "Vacant")
+        self.assertEqual(latest_event.action, PhysicalRoomActionHistory.Action.CLEANING_COMPLETED)
         self.assertEqual(latest_event.old_status, PhysicalRoom.Status.CLEANING)
         self.assertEqual(latest_event.new_status, PhysicalRoom.Status.VACANT)
+
+        history = self.client.get(
+            f"/api/v1/admin/physical-rooms/{room.core_physical_room_id}/history/", **headers,
+        )
+        cleaned = next(item for item in history.data["data"] if item["action"] == "cleaned")
+        self.assertEqual(cleaned["raw_action"], "cleaning_completed")
+        self.assertEqual(cleaned["action_label"], "Cleaned")
+
+        raw_history = self.client.get(
+            f"/api/v1/admin/physical-rooms/{room.core_physical_room_id}/history/",
+            {"include_system_events": "true"},
+            **headers,
+        )
+        self.assertIn("cleaning_started", [
+            item["raw_action"] for item in raw_history.data["data"]
+        ])
 
     def test_room_block_date_range_updates_board_inventory_and_prevents_walk_in(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="VIP-01")
@@ -2206,6 +2225,10 @@ class BookingApiTests(BookingServiceTests):
         guest = booking.guests.get(is_primary=True)
         self.assertEqual(booking.status, Booking.Status.CONFIRMED)
         self.assertFalse(booking.payments.exists())
+        self.assertFalse(PhysicalRoomActionHistory.objects.filter(
+            booking=booking,
+            action=PhysicalRoomActionHistory.Action.RESERVED,
+        ).exists())
 
         checked_in = self.client.post(
             f"/api/v1/admin/bookings/{booking_id}/check-in/",
@@ -2220,6 +2243,44 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(booking.checked_in_by_core_user_id, 501)
         self.assertEqual(room.status, PhysicalRoom.Status.OCCUPIED)
         self.assertFalse(booking.guests.filter(identity_documents__isnull=False).exists())
+        self.assertEqual(
+            list(PhysicalRoomActionHistory.objects.filter(booking=booking).values_list("action", flat=True)),
+            [PhysicalRoomActionHistory.Action.CHECKED_IN],
+        )
+
+    def test_walk_in_v2_reservation_workflow_records_reserved_action(self):
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel, room_type=self.room_type, room_number="306-RSV",
+        )
+        response = self.client.post(
+            "/api/v1/admin/walk-in-booking-v2/",
+            {
+                "workflow": "reservation",
+                "physical_room_id": room.id,
+                "rate_plan_id": self.rate_plan.id,
+                "check_in": str(self.check_in),
+                "check_out": str(self.check_out),
+                "contact_name": "Reserved Walk In Guest",
+                "contact_phone": "092222223",
+                "guest_market": "local",
+                "adults": 1,
+                "children": 0,
+                "guests": [{"name": "Reserved Walk In Guest", "is_primary": True}],
+            },
+            format="json",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+            HTTP_X_CORE_USER_ID="501",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        booking = Booking.objects.get(id=response.data["data"]["booking"]["id"])
+        event = PhysicalRoomActionHistory.objects.get(
+            booking=booking,
+            action=PhysicalRoomActionHistory.Action.RESERVED,
+        )
+        self.assertEqual(event.actor_type, PhysicalRoomActionHistory.ActorType.HOTEL_ADMIN)
+        self.assertEqual(event.actor_core_user_id, 501)
 
     def test_walk_in_v2_reserves_occupied_room_after_current_checkout(self):
         room = PhysicalRoom.objects.create(

@@ -555,12 +555,21 @@ class PhysicalRoomBlockSerializer(serializers.ModelSerializer):
 
 
 class PhysicalRoomActionHistorySerializer(serializers.ModelSerializer):
+    action = serializers.SerializerMethodField()
+    raw_action = serializers.CharField(source="action", read_only=True)
     created_at = serializers.DateTimeField(
         read_only=True,
         default_timezone=datetime_timezone.utc,
     )
-    action_label = serializers.CharField(source="get_action_display", read_only=True)
+    performed_at = serializers.DateTimeField(
+        source="created_at",
+        read_only=True,
+        default_timezone=datetime_timezone.utc,
+    )
+    action_label = serializers.SerializerMethodField()
     actor_type_label = serializers.CharField(source="get_actor_type_display", read_only=True)
+    actor = serializers.SerializerMethodField()
+    guest = serializers.SerializerMethodField()
     booking_reference = serializers.CharField(source="booking.reference", read_only=True, allow_null=True)
     guest_name = serializers.CharField(source="booking.contact_name", read_only=True, allow_null=True)
     invoice_numbers = serializers.SerializerMethodField()
@@ -568,12 +577,43 @@ class PhysicalRoomActionHistorySerializer(serializers.ModelSerializer):
     class Meta:
         model = PhysicalRoomActionHistory
         fields = [
-            "id", "physical_room", "action", "action_label", "created_at",
+            "id", "physical_room", "action", "raw_action", "action_label",
+            "created_at", "performed_at", "actor", "guest",
             "old_status", "new_status", "note", "actor_type", "actor_type_label",
             "actor_core_user_id", "booking", "booking_reference", "guest_name",
             "block", "invoice_numbers", "metadata",
         ]
         read_only_fields = fields
+
+    ACTION_PRESENTATION = {
+        PhysicalRoomActionHistory.Action.CLEANING_COMPLETED: ("cleaned", "Cleaned"),
+        PhysicalRoomActionHistory.Action.VACANT: ("cleaned", "Cleaned"),
+        PhysicalRoomActionHistory.Action.OUT_OF_SERVICE_STARTED: ("out_of_service", "Out of Service"),
+        PhysicalRoomActionHistory.Action.OUT_OF_SERVICE_ENDED: ("oos_repaired", "OOS Repaired"),
+    }
+
+    def get_action(self, obj):
+        return self.ACTION_PRESENTATION.get(obj.action, (obj.action, obj.get_action_display()))[0]
+
+    def get_action_label(self, obj):
+        return self.ACTION_PRESENTATION.get(obj.action, (obj.action, obj.get_action_display()))[1]
+
+    def get_actor(self, obj):
+        return {
+            "type": obj.actor_type,
+            "type_label": obj.get_actor_type_display(),
+            "core_user_id": obj.actor_core_user_id,
+            "name": obj.metadata.get("actor_name") or None,
+            "email": obj.metadata.get("actor_email") or None,
+        }
+
+    def get_guest(self, obj):
+        if not obj.booking_id:
+            return None
+        return {
+            "name": obj.booking.contact_name,
+            "phone": obj.booking.contact_phone,
+        }
 
     def get_invoice_numbers(self, obj):
         if not obj.booking_id:
@@ -1191,6 +1231,11 @@ class WalkInPaymentSerializer(InitialPaymentSerializer):
 
 
 class WalkInBookingCreateSerializer(serializers.Serializer):
+    workflow = serializers.ChoiceField(
+        choices=["direct_check_in", "reservation"],
+        default="direct_check_in",
+        write_only=True,
+    )
     physical_room_id = serializers.IntegerField(min_value=1)
     rate_plan_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     meal_plan_link_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)

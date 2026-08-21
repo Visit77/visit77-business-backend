@@ -339,7 +339,6 @@ def _resolve_booking_breakfast(room_type, requested, guest_market):
     plan = None
     if plan_type in {
         RoomType.BreakfastPlanType.HOTEL_DEFAULT_PRICE,
-        RoomType.BreakfastPlanType.CUSTOM_PRICE,
     }:
         plan = room_type.hotel.meal_plans.filter(
             is_default_for_room_type_breakfast=True,

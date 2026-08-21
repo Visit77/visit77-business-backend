@@ -95,6 +95,21 @@ def _record_room_history(
     room, action, *, request=None, booking=None, block=None,
     old_status="", new_status="", note="", metadata=None,
 ):
+    event_metadata = dict(metadata or {})
+    if request is not None:
+        actor_name = request.headers.get("X-Core-User-Name", "").strip()
+        actor_email = request.headers.get("X-Core-User-Email", "").strip()
+        user = getattr(request, "user", None)
+        if user is not None and getattr(user, "is_authenticated", False):
+            get_full_name = getattr(user, "get_full_name", None)
+            if callable(get_full_name):
+                actor_name = actor_name or get_full_name().strip()
+            actor_email = actor_email or str(getattr(user, "email", "") or "").strip()
+            actor_name = actor_name or actor_email or str(getattr(user, "username", "") or "").strip()
+        if actor_name:
+            event_metadata.setdefault("actor_name", actor_name)
+        if actor_email:
+            event_metadata.setdefault("actor_email", actor_email)
     return PhysicalRoomActionHistory.objects.create(
         physical_room=room,
         booking=booking,
@@ -105,7 +120,7 @@ def _record_room_history(
         old_status=old_status or "",
         new_status=new_status or "",
         note=note or "",
-        metadata=metadata or {},
+        metadata=event_metadata,
     )
 
 
@@ -1871,7 +1886,7 @@ class PhysicalRoomViewSet(AdminModelViewSet):
             elif previous_status == PhysicalRoom.Status.OUT_OF_SERVICE:
                 action_name = PhysicalRoomActionHistory.Action.OUT_OF_SERVICE_ENDED
             elif previous_status == PhysicalRoom.Status.CLEANING and room.status == PhysicalRoom.Status.VACANT:
-                action_name = PhysicalRoomActionHistory.Action.VACANT
+                action_name = PhysicalRoomActionHistory.Action.CLEANING_COMPLETED
             else:
                 action_name = PhysicalRoomActionHistory.Action.STATUS_CHANGED
             _record_room_history(
@@ -1903,6 +1918,14 @@ class PhysicalRoomViewSet(AdminModelViewSet):
         queryset = room.action_history.select_related("booking", "block").prefetch_related(
             "booking__payments",
         )
+        include_system_events = str(
+            request.query_params.get("include_system_events", "")
+        ).strip().lower() in {"1", "true", "yes"}
+        if not include_system_events:
+            queryset = queryset.exclude(action__in=[
+                PhysicalRoomActionHistory.Action.CLEANING_STARTED,
+                PhysicalRoomActionHistory.Action.STATUS_CHANGED,
+            ])
         date_from = parse_date(request.query_params.get("date_from", ""))
         date_to = parse_date(request.query_params.get("date_to", ""))
         if request.query_params.get("date_from") and not date_from:
@@ -2987,9 +3010,10 @@ class WalkInBookingV2View(APIView):
             core_business_id=getattr(request, "booking_core_business_id", None),
             check_in_immediately=False,
         )
-        _record_booking_room_assignments(
-            booking, request, PhysicalRoomActionHistory.Action.RESERVED,
-        )
+        if serializer.validated_data["workflow"] == "reservation":
+            _record_booking_room_assignments(
+                booking, request, PhysicalRoomActionHistory.Action.RESERVED,
+            )
         created_guests = list(booking.guests.order_by("id"))
         for index, file, guest_data in identity_photos:
             if index >= len(created_guests):
