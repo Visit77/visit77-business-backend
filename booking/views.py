@@ -361,13 +361,95 @@ class PublicGlobalAvailabilityView(APIView):
 class PublicBookingCreateView(APIView):
     permission_classes = [AllowAny]
 
+    @transaction.atomic
     def post(self, request):
-        serializer = BookingCreateSerializer(data=request.data)
+        data = request.data.dict() if hasattr(request.data, "dict") else request.data.copy()
+        nested_guests = {}
+        nested_rooms = {}
+        identity_photos = {}
+        guest_field_pattern = re.compile(
+            r"^guests?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+        )
+        room_field_pattern = re.compile(
+            r"^rooms?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+        )
+        room_preference_field_pattern = re.compile(
+            r"^rooms?\[(\d+)\]\[(?:['\"])?preferences(?:['\"])?\]"
+            r"\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+        )
+        for key, value in request.data.items():
+            match = guest_field_pattern.match(key)
+            if match:
+                index = int(match.group(1))
+                field = match.group(2)
+                if field in {"photo", "identity_photo"}:
+                    if key in request.FILES:
+                        identity_photos[index] = request.FILES[key]
+                    continue
+                nested_guests.setdefault(index, {})[field] = value
+                continue
+
+            room_preference_match = room_preference_field_pattern.match(key)
+            if room_preference_match:
+                index = int(room_preference_match.group(1))
+                field = room_preference_match.group(2)
+                nested_rooms.setdefault(index, {}).setdefault("preferences", {})[field] = value
+                continue
+
+            room_match = room_field_pattern.match(key)
+            if room_match:
+                index = int(room_match.group(1))
+                field = room_match.group(2)
+                if field == "preferences" and isinstance(value, str):
+                    try:
+                        value = json.loads(value)
+                    except (TypeError, ValueError):
+                        raise ValidationError({key: "Must be valid JSON."})
+                nested_rooms.setdefault(index, {})[field] = value
+
+        if nested_guests:
+            indexes = sorted(nested_guests)
+            if indexes != list(range(len(indexes))):
+                raise ValidationError({"guests": "Guest indexes must start at 0 and be consecutive."})
+            data["guests"] = [nested_guests[index] for index in indexes]
+        if nested_rooms:
+            indexes = sorted(nested_rooms)
+            if indexes != list(range(len(indexes))):
+                raise ValidationError({"rooms": "Room indexes must start at 0 and be consecutive."})
+            data["rooms"] = [nested_rooms[index] for index in indexes]
+
+        for field in ("rooms", "guests", "add_ons"):
+            raw_value = data.get(field)
+            if isinstance(raw_value, str):
+                try:
+                    data[field] = json.loads(raw_value)
+                except (TypeError, ValueError):
+                    raise ValidationError({field: "Must be valid JSON when using multipart/form-data."})
+
+        serializer = BookingCreateSerializer(data=data)
         serializer.is_valid(raise_exception=True)
         try:
             booking, created = create_booking(serializer.validated_data, request.headers.get("Idempotency-Key"))
         except Hotel.DoesNotExist:
             raise NotFound("Hotel is not available in the booking engine.")
+        if created and identity_photos:
+            created_guests = list(booking.guests.order_by("id"))
+            guests_data = serializer.validated_data.get("guests") or []
+            for index, file in identity_photos.items():
+                if index >= len(created_guests):
+                    raise ValidationError({f"guest[{index}][photo]": "Guest index does not exist."})
+                guest_data = guests_data[index]
+                GuestIdentityDocument.objects.create(
+                    guest=created_guests[index],
+                    document_type=GuestIdentityDocument.DocumentType.IDENTITY_PHOTO,
+                    document_number=(
+                        guest_data.get("identity_number")
+                        or guest_data.get("nrc_number")
+                        or guest_data.get("passport_number")
+                        or ""
+                    ),
+                    file=file,
+                )
         response_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
         return success(
             BookingSerializer(booking).data,

@@ -12,7 +12,7 @@ from rest_framework.test import APIClient
 from rest_framework.exceptions import ValidationError
 from rest_framework_simplejwt.backends import TokenBackend
 
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, GuestIdentityDocument, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import sync_business_from_core
 from booking.services import auto_assign_physical_rooms_for_booking, auto_cancel_no_show_reservations, availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, record_payment, refund_payment, refund_quote
 
@@ -2811,6 +2811,51 @@ class BookingApiTests(BookingServiceTests):
         detail = self.client.get(f"/api/v1/public/bookings/{token}/")
         self.assertEqual(detail.status_code, 200)
         self.assertEqual(detail.data["data"]["contact_name"], "Myo Myo")
+
+    def test_public_booking_accepts_optional_guest_identity_photo_form_data(self):
+        payload = self.payload()
+        response = self.client.post(
+            "/api/v1/public/bookings/",
+            {
+                "core_business_id": payload["core_business_id"],
+                "check_in": str(payload["check_in"]),
+                "check_out": str(payload["check_out"]),
+                "contact_name": payload["contact_name"],
+                "contact_phone": payload["contact_phone"],
+                "guest_market": payload["guest_market"],
+                "rooms[0][core_room_type_id]": payload["rooms"][0]["core_room_type_id"],
+                "rooms[0][rate_plan_id]": payload["rooms"][0]["rate_plan_id"],
+                "rooms[0][quantity]": 1,
+                "rooms[0][adults]": 2,
+                "rooms[0][children]": 0,
+                "rooms[1][core_room_type_id]": payload["rooms"][0]["core_room_type_id"],
+                "rooms[1][rate_plan_id]": payload["rooms"][0]["rate_plan_id"],
+                "rooms[1][quantity]": 1,
+                "rooms[1][adults]": 2,
+                "rooms[1][children]": 0,
+                "guest[0][name]": "Myo Myo",
+                "guest[0][nrc_number]": "12/ABC(N)123456",
+                "guest[0][identity_type]": "nrc",
+                "guest[0][identity_number]": "12/ABC(N)123456",
+                "guest[0][is_primary]": "true",
+                "guest[0][photo]": SimpleUploadedFile(
+                    "myo-myo.jpg", b"identity-image", content_type="image/jpeg"
+                ),
+                "guest[1][name]": "Su Su",
+                "guest[1][is_primary]": "false",
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        booking = Booking.objects.get(id=response.data["data"]["id"])
+        self.assertEqual(booking.rooms.count(), 2)
+        self.assertEqual(booking.guests.count(), 2)
+        primary_guest = booking.guests.get(is_primary=True)
+        self.assertEqual(primary_guest.identity_number, "12/ABC(N)123456")
+        document = GuestIdentityDocument.objects.get(guest=primary_guest)
+        self.assertEqual(document.document_number, "12/ABC(N)123456")
+        self.assertFalse(booking.guests.get(name="Su Su").identity_documents.exists())
 
     @override_settings(DEMO_PAYMENT_ENABLED=True)
     def test_demo_payment_confirms_booking_and_reserves_inventory(self):
