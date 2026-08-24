@@ -166,6 +166,7 @@ DEMO_PAYMENT_ENABLED = env.bool("DEMO_PAYMENT_ENABLED", default=False)
 CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://redis:6379/0")
 CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default="redis://redis:6379/1")
 CELERY_TASK_TRACK_STARTED = True
+CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULE = {
     "expire-unpaid-booking-holds-every-minute": {
         "task": "booking.tasks.expire_booking_holds_task",
@@ -174,6 +175,10 @@ CELERY_BEAT_SCHEDULE = {
     "ensure-rolling-daily-inventory": {
         "task": "booking.tasks.ensure_rolling_daily_inventory_task",
         "schedule": crontab(hour=1, minute=0),
+    },
+    "auto-cancel-no-show-reservations": {
+        "task": "booking.tasks.auto_cancel_no_show_reservations_task",
+        "schedule": crontab(hour=0, minute=5),
     },
 }
 

@@ -2167,6 +2167,34 @@ def cancel_booking(booking):
     return booking
 
 
+def auto_cancel_no_show_reservations(as_of=None):
+    """Cancel confirmed reservations whose arrival date has already passed.
+
+    This deliberately reuses the normal cancellation bookkeeping (inventory and
+    assignment release), but does not create physical-room action history: a
+    no-show never performed a room action such as check-in or check-out.
+    """
+    as_of = as_of or timezone.localdate()
+    booking_ids = list(
+        Booking.objects.filter(
+            status=Booking.Status.CONFIRMED,
+            check_in__lt=as_of,
+        ).order_by("check_in", "id").values_list("id", flat=True)
+    )
+    canceled = 0
+    for booking_id in booking_ids:
+        booking = Booking.objects.filter(pk=booking_id).first()
+        if not booking:
+            continue
+        try:
+            cancel_booking(booking)
+        except ValidationError:
+            # The status may have changed after the candidate list was read.
+            continue
+        canceled += 1
+    return canceled
+
+
 @transaction.atomic
 def expire_pending_bookings():
     expired = 0

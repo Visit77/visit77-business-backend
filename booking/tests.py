@@ -14,7 +14,7 @@ from rest_framework_simplejwt.backends import TokenBackend
 
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import sync_business_from_core
-from booking.services import auto_assign_physical_rooms_for_booking, availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, record_payment, refund_payment, refund_quote
+from booking.services import auto_assign_physical_rooms_for_booking, auto_cancel_no_show_reservations, availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, record_payment, refund_payment, refund_quote
 
 
 class BookingServiceTests(TestCase):
@@ -358,6 +358,53 @@ class BookingServiceTests(TestCase):
         booking.refresh_from_db()
         self.assertEqual(booking.status, Booking.Status.CANCELED)
         self.assertEqual(list(DailyInventory.objects.values_list("held_rooms", flat=True)), [0, 0])
+
+    def test_auto_cancel_no_show_releases_assignment_without_room_history(self):
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="NO-SHOW-1",
+        )
+        booking, _ = create_booking(self.payload())
+        record_payment(booking, {
+            "provider": "cash",
+            "amount": booking.grand_total,
+            "status": Payment.Status.PAID,
+        })
+        booking.refresh_from_db()
+        assignment = RoomAssignment.objects.create(
+            booking_room=booking.rooms.first(),
+            physical_room=room,
+        )
+        history_count_before_cancel = PhysicalRoomActionHistory.objects.filter(
+            physical_room=room,
+        ).count()
+
+        canceled_count = auto_cancel_no_show_reservations(as_of=booking.check_in + timedelta(days=1))
+
+        booking.refresh_from_db()
+        assignment.refresh_from_db()
+        self.assertEqual(canceled_count, 1)
+        self.assertEqual(booking.status, Booking.Status.CANCELED)
+        self.assertIsNotNone(assignment.released_at)
+        self.assertEqual(
+            PhysicalRoomActionHistory.objects.filter(physical_room=room).count(),
+            history_count_before_cancel,
+        )
+
+    def test_auto_cancel_no_show_does_not_cancel_today_arrival(self):
+        booking, _ = create_booking(self.payload())
+        record_payment(booking, {
+            "provider": "cash",
+            "amount": booking.grand_total,
+            "status": Payment.Status.PAID,
+        })
+
+        canceled_count = auto_cancel_no_show_reservations(as_of=booking.check_in)
+
+        booking.refresh_from_db()
+        self.assertEqual(canceled_count, 0)
+        self.assertEqual(booking.status, Booking.Status.CONFIRMED)
 
     def test_extra_bed_is_priced_for_each_night(self):
         self.rate_plan.extra_bed_price = Decimal("30000")
