@@ -677,6 +677,24 @@ class BookingServiceTests(TestCase):
                             "foreign_base_price": 30000,
                             "foreign_usd_display_price": 15,
                             "is_active": True,
+                        },
+                        {
+                            "id": 502,
+                            "name": "Half Board Package",
+                            "description": "Breakfast and dinner.",
+                            "plan_type": "package",
+                            "package_pricing_mode": "sum_default_prices",
+                            "components": [{"id": 501, "name": "Breakfast"}, {"id": 503, "name": "Dinner"}],
+                            "effective_included_meals": ["breakfast", "dinner"],
+                            "effective_meal_windows": {
+                                "breakfast": {"start": "06:30", "end": "10:00"},
+                                "dinner": {"start": "18:00", "end": "21:00"},
+                            },
+                            "effective_local_base_price": 100000,
+                            "effective_local_usd_display_price": 25,
+                            "effective_foreign_base_price": 130000,
+                            "effective_foreign_usd_display_price": 33,
+                            "is_active": True,
                         }
                     ],
                     "room_types": [{
@@ -751,11 +769,16 @@ class BookingServiceTests(TestCase):
         self.assertEqual(hotel.package, Hotel.Package.OTA_PMS)
         self.assertTrue(hotel.has_feature("online_booking"))
         self.assertTrue(hotel.has_feature("room_assignment"))
+        package = hotel.meal_plans.get(core_meal_plan_id=502)
+        self.assertEqual(package.plan_type, "package")
+        self.assertEqual(package.local_base_price, Decimal("100000"))
+        self.assertEqual(package.included_meals, ["breakfast", "dinner"])
+        self.assertEqual(len(package.components), 2)
         room_type = RoomType.objects.get(hotel__core_business_id=99, core_room_type_id=901)
-        # Newly synced physical rooms are not publicly sellable until the hotel
-        # explicitly adds them to its OTA pool.
-        self.assertEqual(room_type.default_inventory, 0)
-        self.assertEqual(DailyInventory.objects.filter(room_type=room_type, total_rooms=0).count(), 3)
+        # PMS inventory includes all active rooms; OTA availability applies the
+        # separate ota_enabled selection when serving public inventory.
+        self.assertEqual(room_type.default_inventory, 2)
+        self.assertEqual(DailyInventory.objects.filter(room_type=room_type, total_rooms=2).count(), 3)
         room = PhysicalRoom.objects.get(core_physical_room_id=9901)
         self.assertFalse(room.ota_enabled)
         self.assertEqual(room.core_building_id, 7001)
@@ -1639,6 +1662,7 @@ class BookingApiTests(BookingServiceTests):
         second_booking = self.client.post(
             "/api/v1/admin/walk-in-booking-v2/",
             {
+                "workflow": "direct_check_in",
                 "physical_room_id": room.id,
                 "rate_plan_id": self.rate_plan.id,
                 "check_in": str(self.check_in),
@@ -2246,6 +2270,7 @@ class BookingApiTests(BookingServiceTests):
         created = self.client.post(
             "/api/v1/admin/walk-in-booking-v2/",
             {
+                "workflow": "direct_check_in",
                 "physical_room_id": room.id,
                 "rate_plan_id": self.rate_plan.id,
                 "check_in": str(self.check_in),
@@ -2295,14 +2320,13 @@ class BookingApiTests(BookingServiceTests):
             [PhysicalRoomActionHistory.Action.CHECKED_IN],
         )
 
-    def test_walk_in_v2_reservation_workflow_records_reserved_action(self):
+    def test_walk_in_v2_defaults_to_reservation_and_records_reserved_action(self):
         room = PhysicalRoom.objects.create(
             hotel=self.hotel, room_type=self.room_type, room_number="306-RSV",
         )
         response = self.client.post(
             "/api/v1/admin/walk-in-booking-v2/",
             {
-                "workflow": "reservation",
                 "physical_room_id": room.id,
                 "rate_plan_id": self.rate_plan.id,
                 "check_in": str(self.check_in),

@@ -398,7 +398,8 @@ class MealPlanSerializer(serializers.ModelSerializer):
         model = MealPlan
         fields = "__all__"
         read_only_fields = [
-            "hotel", "core_meal_plan_id", "name", "description", "included_meals",
+            "hotel", "core_meal_plan_id", "name", "description", "plan_type",
+            "package_pricing_mode", "components", "included_meals", "meal_windows",
             "availability", "local_base_price", "local_usd_display_price",
             "foreign_base_price", "foreign_usd_display_price", "core_active",
             "core_snapshot", "synced_at",
@@ -1233,7 +1234,7 @@ class WalkInPaymentSerializer(InitialPaymentSerializer):
 class WalkInBookingCreateSerializer(serializers.Serializer):
     workflow = serializers.ChoiceField(
         choices=["direct_check_in", "reservation"],
-        default="direct_check_in",
+        default="reservation",
         write_only=True,
     )
     physical_room_id = serializers.IntegerField(min_value=1)
