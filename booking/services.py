@@ -405,7 +405,7 @@ def room_type_extra_bed_config(room_type):
         count = 0
     if not available:
         count = 0
-    return {"extra_bed_available": available and count > 0, "extra_bed_count": count}
+    return {"extra_bed_available": available and count > 0, "extra_bed_quantity": count}
 
 
 def validate_requested_extra_beds(room_type, extra_beds, room_quantity):
