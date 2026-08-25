@@ -410,7 +410,7 @@ def room_type_extra_bed_config(room_type):
 
 def validate_requested_extra_beds(room_type, extra_beds, room_quantity):
     config = room_type_extra_bed_config(room_type)
-    maximum = config["extra_bed_count"] * room_quantity
+    maximum = config["extra_bed_quantity"] * room_quantity
     if extra_beds > maximum:
         if maximum == 0:
             raise ValidationError({
