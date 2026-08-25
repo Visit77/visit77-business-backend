@@ -28,6 +28,10 @@ class BookingServiceTests(TestCase):
             max_children=1,
             max_occupancy=3,
             default_inventory=3,
+            core_snapshot={
+                "extra_bed_available": True,
+                "extra_bed_quantity": 1,
+            },
         )
         self.rate_plan = RatePlan.objects.create(
             room_type=self.room_type,
@@ -1700,6 +1704,14 @@ class BookingApiTests(BookingServiceTests):
         })
 
     def test_public_availability(self):
+        for number in range(1, 4):
+            PhysicalRoom.objects.create(
+                hotel=self.hotel,
+                room_type=self.room_type,
+                room_number=f"OTA-{number}",
+                ota_enabled=True,
+                ota_sale_open=True,
+            )
         self.room_type.core_snapshot = {
             "amenities": [{"id": 1, "name": "Wi-Fi"}],
             "facilities": [{"id": 2, "name": "Air Conditioning"}],
@@ -1714,6 +1726,8 @@ class BookingApiTests(BookingServiceTests):
             "foreign_base_price": "100000.00",
             "foreign_base_currency": "MMK",
             "foreign_usd_display_price": "25.00",
+            "extra_bed_available": True,
+            "extra_bed_quantity": 1,
         }
         self.room_type.save(update_fields=["core_snapshot"])
         self.rate_plan.is_default = True
@@ -1743,6 +1757,8 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(room_type["extra_bed_price"]["pricing_unit"], "per_bed_per_night")
         self.assertEqual(room_type["extra_bed_base_price"], Decimal("30000"))
         self.assertEqual(room_type["rate_plans"][0]["extra_bed_base_price"], Decimal("30000"))
+        self.assertTrue(room_type["extra_bed_available"])
+        self.assertEqual(room_type["extra_bed_count"], 1)
 
     def test_public_ota_room_type_catalog_only_returns_ota_selected_room_types_without_availability(self):
         self.room_type.core_snapshot = {
@@ -2156,6 +2172,25 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(data["summary_text"], "2 Rooms x 2 Nights x 1 Extra Bed")
         self.assertEqual(data["summary_items"][0]["label"], "2 x Double Room")
         self.assertEqual(data["summary_items"][1]["label"], "1 x Extra Bed(s)")
+
+    def test_public_ota_estimate_and_booking_reject_extra_beds_over_room_type_limit(self):
+        payload = self.payload()
+        payload["check_in"] = str(payload["check_in"])
+        payload["check_out"] = str(payload["check_out"])
+        payload["rooms"][0]["quantity"] = 2
+        payload["rooms"][0]["extra_beds"] = 3
+
+        estimate = self.client.post(
+            "/api/v1/public/bookings/estimate/", payload, format="json",
+        )
+        booking = self.client.post(
+            "/api/v1/public/bookings/", payload, format="json",
+        )
+
+        self.assertEqual(estimate.status_code, 400, estimate.data)
+        self.assertEqual(booking.status_code, 400, booking.data)
+        self.assertTrue(any("at most 2 extra bed" in error for error in estimate.data["error"]))
+        self.assertTrue(any("at most 2 extra bed" in error for error in booking.data["error"]))
 
     def test_phone_reservation_creates_confirmed_booking_without_checking_in(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="305")

@@ -396,6 +396,35 @@ def room_type_booking_options(room_type):
     }
 
 
+def room_type_extra_bed_config(room_type):
+    snapshot = room_type.core_snapshot or {}
+    available = bool(snapshot.get("extra_bed_available", False))
+    try:
+        count = max(int(snapshot.get("extra_bed_quantity") or 0), 0)
+    except (TypeError, ValueError):
+        count = 0
+    if not available:
+        count = 0
+    return {"extra_bed_available": available and count > 0, "extra_bed_count": count}
+
+
+def validate_requested_extra_beds(room_type, extra_beds, room_quantity):
+    config = room_type_extra_bed_config(room_type)
+    maximum = config["extra_bed_count"] * room_quantity
+    if extra_beds > maximum:
+        if maximum == 0:
+            raise ValidationError({
+                "rooms": f"Extra beds are unavailable for {room_type.name}."
+            })
+        raise ValidationError({
+            "rooms": (
+                f"{room_type.name} allows at most {maximum} extra bed(s) "
+                f"for {room_quantity} selected room(s)."
+            )
+        })
+    return maximum
+
+
 def _decimal(value):
     return Decimal(str(value or "0"))
 
@@ -903,6 +932,7 @@ def availability_for_hotels(hotels, check_in, check_out, adults=1, children=0, g
                 RoomType.BreakfastPlanType.CUSTOM_PRICE,
             }
             snapshot = room_type.core_snapshot or {}
+            extra_bed_config = room_type_extra_bed_config(room_type)
             default_rate_plan = next(
                 (plan for plan in room_plans if plan["is_default"]),
                 room_plans[0],
@@ -961,6 +991,7 @@ def availability_for_hotels(hotels, check_in, check_out, adults=1, children=0, g
                 "extra_bed_base_price": default_rate_plan["extra_bed_base_price"],
                 "extra_bed_usd_display_price": default_rate_plan["extra_bed_usd_display_price"],
                 "extra_bed_display_price": default_rate_plan["extra_bed_display_price"],
+                **extra_bed_config,
                 "default_rate_plan": default_rate_plan,
                 "max_adults": room_type.max_adults,
                 "max_children": room_type.max_children,
@@ -1030,6 +1061,7 @@ def estimate_booking(data):
             raise ValidationError({"rooms": "A selected room type or rate plan is unavailable."})
         quantity = requested["quantity"]
         extra_beds = requested.get("extra_beds", 0)
+        validate_requested_extra_beds(room_type, extra_beds, quantity)
         preference_snapshot, option_total = resolve_room_preferences(
             room_type,
             requested.get("preferences") or {},
@@ -1228,6 +1260,9 @@ def create_booking(data, idempotency_key=None):
         except (RoomType.DoesNotExist, RatePlan.DoesNotExist):
             raise ValidationError({"rooms": "A selected room type or rate plan is unavailable."})
         quantity = requested["quantity"]
+        validate_requested_extra_beds(
+            room_type, requested.get("extra_beds", 0), quantity,
+        )
         if requested.get("adults", 1) > room_type.max_adults * quantity or requested.get("children", 0) > room_type.max_children * quantity:
             raise ValidationError({"rooms": f"Guest count exceeds {room_type.name} capacity."})
         preference_snapshot, option_total = resolve_room_preferences(
