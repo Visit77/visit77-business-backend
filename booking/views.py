@@ -1894,6 +1894,11 @@ class RoomBoardView(APIView):
             "max_adults": room_type.max_adults,
             "max_children": room_type.max_children,
             "max_occupancy": room_type.max_occupancy,
+            "extra_bed_quantity": (
+                snapshot.get("extra_bed_quantity")
+                if snapshot.get("extra_bed_quantity") is not None
+                else snapshot.get("extra_bed_count", 0)
+            ),
             "default_inventory": room_type.default_inventory,
             "booking_enabled": room_type.booking_enabled,
             "price": self.serialize_room_board_rate_plan(primary_rate_plan),
