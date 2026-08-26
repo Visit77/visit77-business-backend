@@ -147,6 +147,9 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
     meal_plans = serializers.SerializerMethodField()
     ota_enabled_room_count = serializers.IntegerField(read_only=True)
     availability_calculated = serializers.SerializerMethodField()
+    hotel_cancellation_policy = serializers.SerializerMethodField()
+    room_cancellation_policy = serializers.SerializerMethodField()
+    cancellation_policy = serializers.SerializerMethodField()
 
     def _snapshot_value(self, obj, key, default=None):
         return (obj.core_snapshot or {}).get(key, default)
@@ -162,6 +165,38 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
 
     def get_policies(self, obj):
         return self._snapshot_value(obj, "policies", []) or []
+
+    def get_hotel_cancellation_policy(self, obj):
+        policy = (obj.hotel.core_snapshot or {}).get("hotel_cancellation_policy") or self._snapshot_value(
+            obj, "hotel_cancellation_policy"
+        )
+        if policy:
+            return policy
+        snapshot = obj.core_snapshot or {}
+        if not snapshot.get("room_cancellation_policy"):
+            plans = self._plans(obj)
+            default_plan = next((plan for plan in plans if plan.is_default), None)
+            default_plan = default_plan or next(iter(plans), None)
+            return default_plan.cancellation_policy if default_plan else None
+        return None
+
+    def get_room_cancellation_policy(self, obj):
+        snapshot = obj.core_snapshot or {}
+        return snapshot.get("room_cancellation_policy")
+
+    def get_cancellation_policy(self, obj):
+        snapshot = obj.core_snapshot or {}
+        policy = (
+            snapshot.get("effective_cancellation_policy")
+            or snapshot.get("cancellation_policy")
+            or self.get_hotel_cancellation_policy(obj)
+        )
+        if policy:
+            return policy
+        plans = self._plans(obj)
+        default_plan = next((plan for plan in plans if plan.is_default), None)
+        default_plan = default_plan or next(iter(plans), None)
+        return default_plan.cancellation_policy if default_plan else None
 
     def get_bed_type(self, obj):
         return self._snapshot_value(obj, "bed_type")
@@ -289,6 +324,7 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
             "room_area_to", "area_unit", "size_sqft", "max_adults", "max_children",
             "max_occupancy", "default_prices", "default_price", "rate_plans", "breakfast",
             "meal_plans", "ota_enabled_room_count", "availability_calculated",
+            "hotel_cancellation_policy", "room_cancellation_policy", "cancellation_policy",
         ]
 
 
@@ -355,8 +391,25 @@ class RoomTypeSerializer(serializers.ModelSerializer):
         ))
 
     def get_room_list(self, obj):
-        return [
-            {
+        room_type_snapshot = obj.core_snapshot or {}
+        room_list = []
+        for room in self._rooms(obj):
+            room_snapshot = room.core_snapshot or {}
+            room_views = room_snapshot.get("room_views") or []
+            beds = room_snapshot.get("beds") or []
+            room_view = room_snapshot.get("room_view") or (room_views[0] if room_views else None)
+            room_view = room_view or room_type_snapshot.get("room_view")
+            bed_type = room_snapshot.get("bed_type")
+            if not bed_type and beds:
+                bed_type = beds[0].get("bed_type") or beds[0]
+            bed_type = bed_type or room_type_snapshot.get("bed_type")
+            room_area = room_snapshot.get("room_area")
+            if room_area is None:
+                room_area = room_snapshot.get("size_sqft")
+            if room_area is None:
+                room_area = room_type_snapshot.get("room_area") or room_type_snapshot.get("size_sqft")
+            area_unit = room_snapshot.get("area_unit") or room_type_snapshot.get("area_unit")
+            room_list.append({
                 "physical_room_id": room.id,
                 "core_physical_room_id": room.core_physical_room_id,
                 "room_number": room.room_number,
@@ -375,9 +428,15 @@ class RoomTypeSerializer(serializers.ModelSerializer):
                     else "closed"
                 ),
                 "active_ota_bookings": getattr(room, "active_ota_bookings", 0),
-            }
-            for room in self._rooms(obj)
-        ]
+                "room_standard": room_snapshot.get("room_standard") or room_type_snapshot.get("room_standard"),
+                "bed_type": bed_type,
+                "room_view": room_view,
+                "room_area": room_area,
+                "area_unit": area_unit,
+                "size_sqft": room_area if area_unit == "sqft" else room_snapshot.get("size_sqft"),
+                "room_area_text": f"{room_area} {area_unit}" if room_area is not None and area_unit else None,
+            })
+        return room_list
 
     def get_total_room_count(self, obj):
         return len(self._rooms(obj))

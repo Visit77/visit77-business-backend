@@ -138,6 +138,16 @@ def sync_business_from_core(core_business_id: int, client=None):
         or (existing_hotel.base_currency if existing_hotel else None)
         or "MMK"
     )
+    hotel_policies = bundle.get("hotel_policies", []) or []
+    hotel_cancellation_policy = next((
+        policy.get("config") or {}
+        for policy in hotel_policies
+        if policy.get("policy_type") == "cancellation"
+        and policy.get("is_active", True)
+        and policy.get("is_configured", True)
+    ), {})
+    business_snapshot = dict(business_data)
+    business_snapshot["hotel_cancellation_policy"] = hotel_cancellation_policy or None
     hotel, _ = Hotel.objects.update_or_create(
         core_business_id=core_business_id,
         defaults={
@@ -150,7 +160,7 @@ def sync_business_from_core(core_business_id: int, client=None):
             "package": package,
             "features": features,
             "is_active": bool(business_data.get("status", business_data.get("is_active", True))),
-            "core_snapshot": business_data,
+            "core_snapshot": business_snapshot,
             "access_snapshot": access_data,
             "synced_at": now,
         },

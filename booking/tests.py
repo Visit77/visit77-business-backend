@@ -1704,6 +1704,9 @@ class BookingApiTests(BookingServiceTests):
         })
 
     def test_public_availability(self):
+        cancellation_policy = {"type": "refund_rules", "rules": [{"hours": 24, "refund_percentage": 50}]}
+        self.hotel.core_snapshot = {"hotel_cancellation_policy": cancellation_policy}
+        self.hotel.save(update_fields=["core_snapshot"])
         for number in range(1, 4):
             PhysicalRoom.objects.create(
                 hotel=self.hotel,
@@ -1759,8 +1762,13 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(room_type["rate_plans"][0]["extra_bed_base_price"], Decimal("30000"))
         self.assertTrue(room_type["extra_bed_available"])
         self.assertEqual(room_type["extra_bed_count"], 1)
+        self.assertEqual(room_type["hotel_cancellation_policy"], cancellation_policy)
+        self.assertEqual(room_type["cancellation_policy"], cancellation_policy)
 
     def test_public_ota_room_type_catalog_only_returns_ota_selected_room_types_without_availability(self):
+        cancellation_policy = {"type": "free_full_refund"}
+        self.hotel.core_snapshot = {"hotel_cancellation_policy": cancellation_policy}
+        self.hotel.save(update_fields=["core_snapshot"])
         self.room_type.core_snapshot = {
             "photos": [{"id": 3, "image": "https://media.example.com/double-room.jpg"}],
             "amenities": [{"id": 1, "name": "Wi-Fi"}],
@@ -1818,6 +1826,8 @@ class BookingApiTests(BookingServiceTests):
         self.assertNotIn("room_list", room_type)
         self.assertEqual(room_type["amenities"][0]["name"], "Wi-Fi")
         self.assertEqual(room_type["default_price"]["rate_plan_id"], self.rate_plan.id)
+        self.assertEqual(room_type["hotel_cancellation_policy"], cancellation_policy)
+        self.assertEqual(room_type["cancellation_policy"], cancellation_policy)
 
     def test_public_ota_room_type_catalog_rejects_pms_only_hotel(self):
         self.hotel.package = Hotel.Package.PMS
@@ -2012,6 +2022,14 @@ class BookingApiTests(BookingServiceTests):
         self.assertTrue(room.ota_sale_open)
 
     def test_admin_room_type_api_includes_physical_room_ota_selection_state(self):
+        self.room_type.core_snapshot = {
+            "room_standard": {"id": 11, "name": "Double Room"},
+            "bed_type": {"id": 12, "name": "King Bed"},
+            "room_view": {"id": 13, "name": "Garden View"},
+            "room_area": 305,
+            "area_unit": "sqft",
+        }
+        self.room_type.save(update_fields=["core_snapshot"])
         selected = PhysicalRoom.objects.create(
             hotel=self.hotel,
             room_type=self.room_type,
@@ -2045,6 +2063,13 @@ class BookingApiTests(BookingServiceTests):
         self.assertTrue(selected_data["ota_enabled"])
         self.assertTrue(selected_data["is_ota_selected"])
         self.assertEqual(selected_data["ota_sale_status"], "open")
+        self.assertEqual(selected_data["room_standard"]["name"], "Double Room")
+        self.assertEqual(selected_data["bed_type"]["name"], "King Bed")
+        self.assertEqual(selected_data["room_view"]["name"], "Garden View")
+        self.assertEqual(selected_data["room_area"], 305)
+        self.assertEqual(selected_data["area_unit"], "sqft")
+        self.assertEqual(selected_data["size_sqft"], 305)
+        self.assertEqual(selected_data["room_area_text"], "305 sqft")
         self.assertFalse(deselected_data["ota_enabled"])
         self.assertEqual(deselected_data["ota_sale_status"], "not_selected")
         self.assertEqual(
@@ -2640,6 +2665,9 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(data["summary_items"][1]["type"], "meal_plan")
 
     def test_global_availability_returns_rooms_from_multiple_hotels(self):
+        cancellation_policy = {"type": "non_refundable"}
+        self.hotel.core_snapshot = {"hotel_cancellation_policy": cancellation_policy}
+        self.hotel.save(update_fields=["core_snapshot"])
         second_hotel = Hotel.objects.create(
             core_business_id=88,
             name="Yangon Riverside Hotel",
@@ -2680,6 +2708,8 @@ class BookingApiTests(BookingServiceTests):
             {77, 88},
         )
         self.assertNotIn("access_snapshot", results[0]["hotel"])
+        first_result = next(item for item in results if item["hotel"]["core_business_id"] == 77)
+        self.assertEqual(first_result["room_types"][0]["cancellation_policy"], cancellation_policy)
         second_result = next(item for item in results if item["hotel"]["core_business_id"] == 88)
         self.assertEqual(second_result["room_types"][0]["rate_plans"][0]["total"], Decimal("180000"))
 

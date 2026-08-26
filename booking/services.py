@@ -932,11 +932,25 @@ def availability_for_hotels(hotels, check_in, check_out, adults=1, children=0, g
                 RoomType.BreakfastPlanType.CUSTOM_PRICE,
             }
             snapshot = room_type.core_snapshot or {}
+            hotel_cancellation_policy = (
+                (room_type.hotel.core_snapshot or {}).get("hotel_cancellation_policy")
+                or snapshot.get("hotel_cancellation_policy")
+            )
+            room_cancellation_policy = snapshot.get("room_cancellation_policy")
+            effective_cancellation_policy = (
+                snapshot.get("effective_cancellation_policy")
+                or snapshot.get("cancellation_policy")
+                or hotel_cancellation_policy
+            )
             extra_bed_config = room_type_extra_bed_config(room_type)
             default_rate_plan = next(
                 (plan for plan in room_plans if plan["is_default"]),
                 room_plans[0],
             )
+            if not effective_cancellation_policy and default_rate_plan:
+                effective_cancellation_policy = default_rate_plan.get("cancellation_policy")
+                if not room_cancellation_policy:
+                    hotel_cancellation_policy = hotel_cancellation_policy or effective_cancellation_policy
             results[room_type.hotel_id].append({
                 "room_type_id": room_type.id,
                 "core_room_type_id": room_type.core_room_type_id,
@@ -947,6 +961,9 @@ def availability_for_hotels(hotels, check_in, check_out, adults=1, children=0, g
                 "amenities": snapshot.get("amenities") or [],
                 "facilities": snapshot.get("facilities") or [],
                 "policies": snapshot.get("policies") or [],
+                "hotel_cancellation_policy": hotel_cancellation_policy,
+                "room_cancellation_policy": room_cancellation_policy,
+                "cancellation_policy": effective_cancellation_policy,
                 "bed_type": snapshot.get("bed_type"),
                 "beds": snapshot.get("beds") or [],
                 "room_standard": snapshot.get("room_standard"),
