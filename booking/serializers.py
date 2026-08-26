@@ -1,5 +1,6 @@
 from datetime import timedelta, timezone as datetime_timezone
 from decimal import Decimal
+import json
 
 from django.db.models import Q
 from rest_framework import serializers
@@ -1211,6 +1212,59 @@ class AdminReservationCreateSerializer(BookingCreateSerializer):
         return attrs
 
 
+class PMSAvailableRoomSearchSerializer(serializers.Serializer):
+    check_in = serializers.DateField()
+    check_out = serializers.DateField()
+    adults = serializers.IntegerField(min_value=1, default=1)
+    children = serializers.IntegerField(min_value=0, default=0)
+    guest_market = serializers.ChoiceField(
+        choices=RatePlan.GuestMarket.choices,
+        default=RatePlan.GuestMarket.LOCAL,
+    )
+    workflow = serializers.ChoiceField(
+        choices=[("reserve", "Reserve"), ("check_in", "Immediate check-in")],
+        default="reserve",
+    )
+    selected_room_ids = serializers.CharField(required=False, allow_blank=True, default="")
+    current_room_id = serializers.IntegerField(min_value=1, required=False)
+    current_rate_plan_id = serializers.IntegerField(min_value=1, required=False)
+
+    @staticmethod
+    def _parse_room_ids(raw_value):
+        if not raw_value:
+            return []
+        if isinstance(raw_value, (list, tuple)):
+            values = raw_value
+        else:
+            raw_value = str(raw_value).strip()
+            if raw_value.startswith("["):
+                try:
+                    values = json.loads(raw_value)
+                except (TypeError, ValueError):
+                    raise serializers.ValidationError("Use comma-separated IDs or a JSON array.")
+            else:
+                values = [item.strip() for item in raw_value.split(",") if item.strip()]
+        try:
+            room_ids = [int(item) for item in values]
+        except (TypeError, ValueError):
+            raise serializers.ValidationError("Every selected room ID must be an integer.")
+        if any(room_id <= 0 for room_id in room_ids):
+            raise serializers.ValidationError("Every selected room ID must be positive.")
+        if len(room_ids) != len(set(room_ids)):
+            raise serializers.ValidationError("Duplicate selected room IDs are not allowed.")
+        return room_ids
+
+    def validate_selected_room_ids(self, value):
+        return self._parse_room_ids(value)
+
+    def validate(self, attrs):
+        if attrs["check_out"] <= attrs["check_in"]:
+            raise serializers.ValidationError({"check_out": "Must be after check_in."})
+        if (attrs["check_out"] - attrs["check_in"]).days > 90:
+            raise serializers.ValidationError({"check_out": "A stay cannot exceed 90 nights."})
+        return attrs
+
+
 class BookingEstimateSerializer(serializers.Serializer):
     core_business_id = serializers.IntegerField(min_value=1)
     check_in = serializers.DateField()
@@ -1231,15 +1285,27 @@ class WalkInPaymentSerializer(InitialPaymentSerializer):
     pass
 
 
+class WalkInRoomSerializer(serializers.Serializer):
+    physical_room_id = serializers.IntegerField(min_value=1)
+    rate_plan_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    meal_plan_link_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    breakfast_selected = serializers.BooleanField(required=False, default=False)
+    adults = serializers.IntegerField(min_value=1, max_value=100, default=1)
+    children = serializers.IntegerField(min_value=0, max_value=100, default=0)
+    extra_beds = serializers.IntegerField(min_value=0, max_value=20, default=0)
+    preferences = RequestedRoomPreferenceSerializer(required=False, default=dict)
+
+
 class WalkInBookingCreateSerializer(serializers.Serializer):
     workflow = serializers.ChoiceField(
         choices=["direct_check_in", "reservation"],
         default="reservation",
         write_only=True,
     )
-    physical_room_id = serializers.IntegerField(min_value=1)
+    physical_room_id = serializers.IntegerField(min_value=1, required=False)
     rate_plan_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     meal_plan_link_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    breakfast_selected = serializers.BooleanField(required=False, default=False)
     core_customer_user_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     check_in = serializers.DateField()
     check_out = serializers.DateField()
@@ -1255,12 +1321,32 @@ class WalkInBookingCreateSerializer(serializers.Serializer):
     guests = RequestedGuestSerializer(many=True, allow_empty=False)
     special_request = serializers.CharField(required=False, allow_blank=True)
     payment = WalkInPaymentSerializer(required=False, allow_null=True)
+    rooms = WalkInRoomSerializer(many=True, required=False, allow_empty=False)
 
     def validate(self, attrs):
         if attrs["check_out"] <= attrs["check_in"]:
             raise serializers.ValidationError({"check_out": "Must be after check_in."})
         if (attrs["check_out"] - attrs["check_in"]).days > 90:
             raise serializers.ValidationError({"check_out": "A stay cannot exceed 90 nights."})
+        has_legacy_room = attrs.get("physical_room_id") is not None
+        has_rooms = bool(attrs.get("rooms"))
+        if has_legacy_room == has_rooms:
+            raise serializers.ValidationError({
+                "rooms": "Send either rooms or the legacy physical_room_id fields, not both."
+            })
+        if has_rooms and any(
+            field in self.initial_data
+            for field in [
+                "rate_plan_id", "meal_plan_link_id", "breakfast_selected",
+                "adults", "children", "extra_beds", "preferences",
+            ]
+        ):
+            raise serializers.ValidationError({
+                "rooms": "When rooms is provided, send room-specific fields inside each room."
+            })
+        room_ids = [item["physical_room_id"] for item in attrs.get("rooms", [])]
+        if len(room_ids) != len(set(room_ids)):
+            raise serializers.ValidationError({"rooms": "The same physical room cannot be selected twice."})
         return attrs
 
 

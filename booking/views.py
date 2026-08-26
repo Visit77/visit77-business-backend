@@ -51,6 +51,7 @@ from booking.serializers import (
     OTARoomTimelineQuerySerializer,
     PaymentCreateSerializer,
     PaymentSerializer,
+    PMSAvailableRoomSearchSerializer,
     PhysicalRoomSerializer,
     PhysicalRoomActionHistorySerializer,
     PhysicalRoomBlockSerializer,
@@ -645,6 +646,236 @@ class AddOnTemplateView(APIView):
         for template in templates:
             latest.setdefault(template.code, template)
         return success(AddOnTemplateSerializer(latest.values(), many=True).data)
+
+
+class PMSAvailableRoomSearchView(APIView):
+    """Search assignable PMS rooms and group them for the multi-room form."""
+
+    permission_classes = [HasBookingAdminKey]
+    business_scoped = True
+
+    @staticmethod
+    def _natural_room_number(value):
+        return tuple(
+            int(part) if part.isdigit() else part.lower()
+            for part in re.split(r"(\d+)", value or "")
+        )
+
+    @staticmethod
+    def _room_details(room):
+        snapshot = room.core_snapshot or {}
+        beds = snapshot.get("beds") or []
+        bed_types = [
+            bed.get("bed_type") for bed in beds
+            if isinstance(bed, dict) and bed.get("bed_type")
+        ]
+        room_view = snapshot.get("room_view") or snapshot.get("view")
+        return {
+            "id": room.id,
+            "physical_room_id": room.id,
+            "core_physical_room_id": room.core_physical_room_id,
+            "room_number": room.room_number,
+            "building_id": room.core_building_id,
+            "building": room.building,
+            "floor_id": room.core_floor_id,
+            "floor": room.floor,
+            "operational_status": room.status,
+            "room_standard": snapshot.get("room_standard"),
+            "beds": beds,
+            "bed_type": snapshot.get("bed_type") or (bed_types[0] if bed_types else None),
+            "bed_types": bed_types,
+            "room_view": room_view,
+            "room_views": snapshot.get("room_views") or ([room_view] if room_view else []),
+            "bath_type": snapshot.get("bath_type"),
+            "bath_types": snapshot.get("bath_types") or ([snapshot.get("bath_type")] if snapshot.get("bath_type") else []),
+            "room_area": snapshot.get("room_area"),
+            "area_unit": snapshot.get("area_unit"),
+            "size_sqft": snapshot.get("size_sqft") or (
+                snapshot.get("room_area") if snapshot.get("area_unit") == "sqft" else None
+            ),
+        }
+
+    @staticmethod
+    def _effective_plan_price(plan, dates):
+        overrides = {
+            row.stay_date: row
+            for row in DailyRate.objects.filter(rate_plan=plan, stay_date__in=dates)
+        }
+        periods = list(RatePeriod.objects.filter(
+            rate_plan=plan,
+            is_active=True,
+            start_date__lte=dates[-1],
+        ).filter(Q(end_date__isnull=True) | Q(end_date__gte=dates[0])).order_by("-start_date", "-id"))
+        nightly = []
+        for day in dates:
+            rule = overrides.get(day) or next((
+                period for period in periods
+                if period.start_date <= day and (period.end_date is None or period.end_date >= day)
+            ), None)
+            nightly.append({
+                "date": day.isoformat(),
+                "price": rule.base_price if rule else plan.base_price,
+            })
+        return nightly
+
+    @staticmethod
+    def _plan_for(room_type, guest_market):
+        plans = RatePlan.objects.filter(
+            room_type=room_type,
+            is_active=True,
+            guest_market__in=[guest_market, RatePlan.GuestMarket.ALL],
+        )
+        return (
+            plans.filter(guest_market=guest_market, is_default=True).order_by("id").first()
+            or plans.filter(guest_market=RatePlan.GuestMarket.ALL, is_default=True).order_by("id").first()
+            or plans.filter(guest_market=guest_market).order_by("id").first()
+            or plans.filter(guest_market=RatePlan.GuestMarket.ALL).order_by("id").first()
+        )
+
+    def get(self, request):
+        serializer = PMSAvailableRoomSearchSerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        core_business_id = getattr(request, "booking_core_business_id", None)
+        if not core_business_id:
+            raise ValidationError({"core_business_id": "X-Booking-Business-ID is required."})
+        hotel = Hotel.objects.filter(core_business_id=core_business_id, is_active=True).first()
+        if not hotel:
+            raise NotFound("Hotel is not synced in the booking engine.")
+        if hotel.package not in [Hotel.Package.FREE, Hotel.Package.PMS, Hotel.Package.OTA_PMS]:
+            raise PermissionDenied("Available-room search requires a PMS or OTA + PMS package.")
+
+        check_in, check_out = data["check_in"], data["check_out"]
+        selected_ids = set(data["selected_room_ids"])
+        current_room = None
+        if data.get("current_room_id"):
+            current_room = PhysicalRoom.objects.select_related("room_type").filter(
+                id=data["current_room_id"], hotel=hotel, is_active=True,
+            ).first()
+            if not current_room:
+                raise ValidationError({"current_room_id": "Current room does not belong to this hotel."})
+            selected_ids.add(current_room.id)
+
+        overlapping_ids = RoomAssignment.objects.filter(
+            released_at__isnull=True,
+            booking_room__booking__status__in=[
+                Booking.Status.PENDING_PAYMENT,
+                Booking.Status.CONFIRMED,
+                Booking.Status.CHECKED_IN,
+            ],
+            booking_room__booking__check_in__lt=check_out,
+            booking_room__booking__check_out__gt=check_in,
+        ).values_list("physical_room_id", flat=True)
+        blocked_ids = PhysicalRoomBlock.objects.filter(
+            is_active=True,
+            start_date__lt=check_out,
+            end_date__gte=check_in,
+        ).values_list("physical_room_id", flat=True)
+        rooms = PhysicalRoom.objects.filter(
+            hotel=hotel,
+            is_active=True,
+            room_type__booking_enabled=True,
+            room_type__core_active=True,
+        ).exclude(
+            status=PhysicalRoom.Status.OUT_OF_SERVICE,
+        ).exclude(
+            id__in=selected_ids,
+        ).exclude(
+            id__in=overlapping_ids,
+        ).exclude(
+            id__in=blocked_ids,
+        ).select_related("room_type")
+        if data["workflow"] == "check_in":
+            rooms = rooms.filter(status=PhysicalRoom.Status.VACANT)
+
+        adults, children = data["adults"], data["children"]
+        rooms = list(rooms.filter(
+            room_type__max_adults__gte=adults,
+            room_type__max_children__gte=children,
+            room_type__max_occupancy__gte=adults + children,
+        ))
+        dates = [check_in + timedelta(days=offset) for offset in range((check_out - check_in).days)]
+
+        current_plan = None
+        if data.get("current_rate_plan_id"):
+            current_plan = RatePlan.objects.filter(
+                id=data["current_rate_plan_id"], room_type__hotel=hotel, is_active=True,
+            ).first()
+            if not current_plan:
+                raise ValidationError({"current_rate_plan_id": "Current rate plan does not belong to this hotel."})
+            if current_room and current_plan.room_type_id != current_room.room_type_id:
+                raise ValidationError({
+                    "current_rate_plan_id": "Current rate plan must belong to the current room type."
+                })
+        elif current_room:
+            current_plan = self._plan_for(current_room.room_type, data["guest_market"])
+        current_total = None
+        if current_plan:
+            current_total = sum(
+                (item["price"] for item in self._effective_plan_price(current_plan, dates)),
+                Decimal("0"),
+            )
+
+        grouped = {}
+        for room in rooms:
+            plan = self._plan_for(room.room_type, data["guest_market"])
+            if not plan:
+                continue
+            nightly = self._effective_plan_price(plan, dates)
+            total = sum((item["price"] for item in nightly), Decimal("0"))
+            same_type = bool(current_room and room.room_type_id == current_room.room_type_id)
+            same_price = current_total is not None and total == current_total
+            priority = 0 if same_type and same_price else 1
+            key = (priority, room.room_type_id, plan.id)
+            group = grouped.setdefault(key, {
+                "priority": "same_type_same_price" if priority == 0 else "other",
+                "room_type": {
+                    "id": room.room_type_id,
+                    "core_room_type_id": room.room_type.core_room_type_id,
+                    "name": room.room_type.name,
+                    "cover_image_url": room.room_type.cover_image_url,
+                    "max_adults": room.room_type.max_adults,
+                    "max_children": room.room_type.max_children,
+                    "max_occupancy": room.room_type.max_occupancy,
+                },
+                "rate_plan": {
+                    "id": plan.id,
+                    "name": plan.name,
+                    "guest_market": plan.guest_market,
+                    "currency": plan.currency,
+                },
+                "nightly_prices": nightly,
+                "total_price": total,
+                "rooms": [],
+            })
+            group["rooms"].append(self._room_details(room))
+
+        groups = list(grouped.values())
+        for group in groups:
+            group["rooms"].sort(key=lambda room: (
+                room["building"], room["floor"], self._natural_room_number(room["room_number"]), room["id"],
+            ))
+            group["room_count"] = len(group["rooms"])
+        groups.sort(key=lambda group: (
+            0 if group["priority"] == "same_type_same_price" else 1,
+            group["room_type"]["name"].lower(),
+            group["total_price"],
+        ))
+        return success({
+            "criteria": {
+                "check_in": check_in,
+                "check_out": check_out,
+                "adults": adults,
+                "children": children,
+                "guest_market": data["guest_market"],
+                "workflow": data["workflow"],
+                "current_room_id": data.get("current_room_id"),
+                "current_rate_plan_id": current_plan.id if current_plan else None,
+                "excluded_selected_room_ids": sorted(selected_ids),
+            },
+            "total_rooms": sum(group["room_count"] for group in groups),
+            "groups": groups,
+        })
 
 
 class OTARoomSelectionView(APIView):
@@ -3016,6 +3247,7 @@ class WalkInBookingV2View(APIView):
         nested_identity_photos = {}
         nested_payment = {}
         nested_add_ons = {}
+        nested_rooms = {}
         guest_field_pattern = re.compile(
             r"^guests?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
         )
@@ -3024,6 +3256,13 @@ class WalkInBookingV2View(APIView):
         )
         add_on_field_pattern = re.compile(
             r"^add_ons?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+        )
+        room_field_pattern = re.compile(
+            r"^rooms?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+        )
+        room_preference_field_pattern = re.compile(
+            r"^rooms?\[(\d+)\]\[(?:['\"])?preferences(?:['\"])?\]"
+            r"\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
         )
         for key, value in request.data.items():
             match = guest_field_pattern.match(key)
@@ -3051,6 +3290,23 @@ class WalkInBookingV2View(APIView):
                     except (TypeError, ValueError):
                         raise ValidationError({key: "Must be valid JSON."})
                 nested_add_ons.setdefault(index, {})[field] = value
+                continue
+            room_preference_match = room_preference_field_pattern.match(key)
+            if room_preference_match:
+                index = int(room_preference_match.group(1))
+                field = room_preference_match.group(2)
+                nested_rooms.setdefault(index, {}).setdefault("preferences", {})[field] = value
+                continue
+            room_match = room_field_pattern.match(key)
+            if room_match:
+                index = int(room_match.group(1))
+                field = room_match.group(2)
+                if field == "preferences" and isinstance(value, str):
+                    try:
+                        value = json.loads(value)
+                    except (TypeError, ValueError):
+                        raise ValidationError({key: "Must be valid JSON."})
+                nested_rooms.setdefault(index, {})[field] = value
 
         if nested_guests:
             indexes = sorted(nested_guests)
@@ -3064,8 +3320,13 @@ class WalkInBookingV2View(APIView):
             if indexes != list(range(len(indexes))):
                 raise ValidationError({"add_ons": "Add-on indexes must start at 0 and be consecutive."})
             data["add_ons"] = [nested_add_ons[index] for index in indexes]
+        if nested_rooms:
+            indexes = sorted(nested_rooms)
+            if indexes != list(range(len(indexes))):
+                raise ValidationError({"rooms": "Room indexes must start at 0 and be consecutive."})
+            data["rooms"] = [nested_rooms[index] for index in indexes]
 
-        for field in ("guests", "payment", "preferences", "add_ons"):
+        for field in ("guests", "payment", "preferences", "add_ons", "rooms"):
             raw_value = data.get(field)
             if isinstance(raw_value, str):
                 try:

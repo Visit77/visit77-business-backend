@@ -3528,6 +3528,232 @@ class BookingApiTests(BookingServiceTests):
         self.assertFalse(self.room_type.booking_enabled)
 
 
+    def test_pms_available_room_search_groups_same_type_price_first_and_excludes_selected_conflicts(self):
+        self.hotel.package = Hotel.Package.PMS
+        self.hotel.save(update_fields=["package"])
+        current = PhysicalRoom.objects.create(
+            hotel=self.hotel, room_type=self.room_type, room_number="101", status=PhysicalRoom.Status.OCCUPIED,
+        )
+        same_type = PhysicalRoom.objects.create(
+            hotel=self.hotel, room_type=self.room_type, room_number="102",
+            core_snapshot={"room_view": {"id": 1, "name": "City"}, "room_area": 300, "area_unit": "sqft"},
+        )
+        selected = PhysicalRoom.objects.create(
+            hotel=self.hotel, room_type=self.room_type, room_number="103",
+        )
+        conflicting = PhysicalRoom.objects.create(
+            hotel=self.hotel, room_type=self.room_type, room_number="104",
+        )
+        other_type = RoomType.objects.create(
+            hotel=self.hotel,
+            core_room_type_id=302,
+            name="Suite",
+            max_adults=4,
+            max_children=2,
+            max_occupancy=6,
+            default_inventory=1,
+        )
+        other_plan = RatePlan.objects.create(
+            room_type=other_type,
+            code="suite-local",
+            name="Suite Local",
+            guest_market=RatePlan.GuestMarket.LOCAL,
+            currency="MMK",
+            default_price=Decimal("120000"),
+            is_default=True,
+        )
+        other = PhysicalRoom.objects.create(hotel=self.hotel, room_type=other_type, room_number="201")
+        conflict_booking = Booking.objects.create(
+            reference="PMS-CONFLICT",
+            hotel=self.hotel,
+            status=Booking.Status.CONFIRMED,
+            source=Booking.Source.PHONE,
+            check_in=self.check_in,
+            check_out=self.check_out,
+            contact_name="Conflict",
+            contact_phone="091111111",
+        )
+        conflict_booking_room = BookingRoom.objects.create(
+            booking=conflict_booking,
+            room_type=self.room_type,
+            rate_plan=self.rate_plan,
+        )
+        RoomAssignment.objects.create(booking_room=conflict_booking_room, physical_room=conflicting)
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        response = self.client.get(
+            "/api/v1/admin/available-rooms/search/",
+            {
+                "check_in": str(self.check_in),
+                "check_out": str(self.check_out),
+                "adults": 1,
+                "children": 0,
+                "guest_market": "local",
+                "workflow": "reserve",
+                "current_room_id": current.id,
+                "current_rate_plan_id": self.rate_plan.id,
+                "selected_room_ids": f"[{selected.id}]",
+            },
+            **headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        groups = response.data["data"]["groups"]
+        self.assertEqual(groups[0]["priority"], "same_type_same_price")
+        self.assertEqual(groups[0]["room_type"]["id"], self.room_type.id)
+        returned_ids = {
+            room["id"] for group in groups for room in group["rooms"]
+        }
+        self.assertIn(same_type.id, returned_ids)
+        self.assertIn(other.id, returned_ids)
+        self.assertNotIn(selected.id, returned_ids)
+        self.assertNotIn(conflicting.id, returned_ids)
+        self.assertNotIn(current.id, returned_ids)
+        self.assertEqual(groups[-1]["rate_plan"]["id"], other_plan.id)
+
+    def test_walk_in_v2_creates_one_booking_with_multiple_physical_rooms(self):
+        first_room = PhysicalRoom.objects.create(
+            hotel=self.hotel, room_type=self.room_type, room_number="W-MULTI-1",
+        )
+        second_room = PhysicalRoom.objects.create(
+            hotel=self.hotel, room_type=self.room_type, room_number="W-MULTI-2",
+        )
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+        response = self.client.post(
+            "/api/v1/admin/walk-in-booking-v2/",
+            {
+                "workflow": "direct_check_in",
+                "check_in": str(self.check_in),
+                "check_out": str(self.check_out),
+                "contact_name": "Multi Room Guest",
+                "contact_phone": "091111111",
+                "guest_market": "local",
+                "rooms": [
+                    {
+                        "physical_room_id": first_room.id,
+                        "rate_plan_id": self.rate_plan.id,
+                        "adults": 2,
+                        "children": 0,
+                        "extra_beds": 0,
+                    },
+                    {
+                        "physical_room_id": second_room.id,
+                        "rate_plan_id": self.rate_plan.id,
+                        "adults": 1,
+                        "children": 1,
+                        "extra_beds": 0,
+                    },
+                ],
+                "guests": [
+                    {"name": "Multi Room Guest", "is_primary": True},
+                    {"name": "Second Guest", "is_primary": False},
+                ],
+                "payment": {
+                    "payment_type": "full_payment",
+                    "provider": "cash",
+                    "status": "paid",
+                },
+            },
+            format="json",
+            **headers,
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        booking = Booking.objects.get(id=response.data["data"]["booking"]["id"])
+        self.assertEqual(booking.rooms.count(), 2)
+        self.assertEqual(booking.rooms.aggregate(total=Count("assignments"))["total"], 2)
+        self.assertEqual(
+            set(RoomAssignment.objects.filter(booking_room__booking=booking).values_list("physical_room_id", flat=True)),
+            {first_room.id, second_room.id},
+        )
+        self.assertEqual(booking.grand_total, Decimal("320000"))
+        self.assertEqual(booking.amount_paid, booking.grand_total)
+        self.assertFalse(PhysicalRoomActionHistory.objects.filter(
+            booking=booking,
+            action=PhysicalRoomActionHistory.Action.RESERVED,
+        ).exists())
+
+    def test_walk_in_v2_accepts_multiple_rooms_in_multipart_form_data(self):
+        first_room = PhysicalRoom.objects.create(
+            hotel=self.hotel, room_type=self.room_type, room_number="W-FORM-1",
+        )
+        second_room = PhysicalRoom.objects.create(
+            hotel=self.hotel, room_type=self.room_type, room_number="W-FORM-2",
+        )
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+        response = self.client.post(
+            "/api/v1/admin/walk-in-booking-v2/",
+            {
+                "workflow": "reservation",
+                "check_in": str(self.check_in),
+                "check_out": str(self.check_out),
+                "contact_name": "Multipart Multi Guest",
+                "contact_phone": "092222222",
+                "guest_market": "local",
+                "rooms[0][physical_room_id]": str(first_room.id),
+                "rooms[0][rate_plan_id]": str(self.rate_plan.id),
+                "rooms[0][adults]": "1",
+                "rooms[0][children]": "0",
+                "rooms[1][physical_room_id]": str(second_room.id),
+                "rooms[1][rate_plan_id]": str(self.rate_plan.id),
+                "rooms[1][adults]": "1",
+                "rooms[1][children]": "0",
+                "guest[0][name]": "Multipart Multi Guest",
+                "guest[0][is_primary]": "true",
+            },
+            format="multipart",
+            **headers,
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        booking = Booking.objects.get(id=response.data["data"]["booking"]["id"])
+        self.assertEqual(booking.rooms.count(), 2)
+        self.assertEqual(RoomAssignment.objects.filter(booking_room__booking=booking).count(), 2)
+        self.assertEqual(PhysicalRoomActionHistory.objects.filter(
+            booking=booking,
+            action=PhysicalRoomActionHistory.Action.RESERVED,
+        ).count(), 2)
+
+    def test_pms_available_room_search_reserve_allows_non_overlapping_occupied_but_check_in_does_not(self):
+        self.hotel.package = Hotel.Package.PMS
+        self.hotel.save(update_fields=["package"])
+        occupied = PhysicalRoom.objects.create(
+            hotel=self.hotel, room_type=self.room_type, room_number="301", status=PhysicalRoom.Status.OCCUPIED,
+        )
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+        params = {
+            "check_in": str(self.check_in),
+            "check_out": str(self.check_out),
+            "adults": 1,
+            "children": 0,
+            "workflow": "reserve",
+        }
+        reserve = self.client.get("/api/v1/admin/available-rooms/search/", params, **headers)
+        self.assertEqual(reserve.status_code, 200, reserve.data)
+        self.assertIn(occupied.id, {
+            room["id"] for group in reserve.data["data"]["groups"] for room in group["rooms"]
+        })
+
+        params["workflow"] = "check_in"
+        check_in = self.client.get("/api/v1/admin/available-rooms/search/", params, **headers)
+        self.assertEqual(check_in.status_code, 200, check_in.data)
+        self.assertNotIn(occupied.id, {
+            room["id"] for group in check_in.data["data"]["groups"] for room in group["rooms"]
+        })
+
+
 class DemoSeedCommandTests(TestCase):
     def test_seed_demo_data_is_idempotent_and_builds_complete_flow(self):
         output = StringIO()

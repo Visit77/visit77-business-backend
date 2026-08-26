@@ -1672,56 +1672,85 @@ def _initial_payment_payload(booking, payment_data, *, default_to_full_payment=F
 
 @transaction.atomic
 def create_walk_in_booking(data, idempotency_key=None, core_business_id=None, check_in_immediately=True):
-    physical_room = PhysicalRoom.objects.select_for_update().select_related(
-        "hotel",
-        "room_type",
-    ).filter(id=data["physical_room_id"], is_active=True).first()
-    if not physical_room:
-        raise ValidationError({"physical_room_id": "Selected physical room is unavailable."})
-    if core_business_id and physical_room.hotel.core_business_id != core_business_id:
-        raise ValidationError({"physical_room_id": "Selected physical room does not belong to this business."})
+    requested_rooms = data.get("rooms") or [{
+        "physical_room_id": data["physical_room_id"],
+        "rate_plan_id": data.get("rate_plan_id"),
+        "meal_plan_link_id": data.get("meal_plan_link_id"),
+        "breakfast_selected": data.get("breakfast_selected", False),
+        "adults": data.get("adults", 1),
+        "children": data.get("children", 0),
+        "extra_beds": data.get("extra_beds", 0),
+        "preferences": data.get("preferences") or {},
+    }]
+    requested_room_ids = [item["physical_room_id"] for item in requested_rooms]
+    if len(requested_room_ids) != len(set(requested_room_ids)):
+        raise ValidationError({"rooms": "The same physical room cannot be selected twice."})
+    locked_rooms = list(PhysicalRoom.objects.select_for_update().select_related(
+        "hotel", "room_type",
+    ).filter(id__in=requested_room_ids, is_active=True))
+    rooms_by_id = {room.id: room for room in locked_rooms}
+    if len(rooms_by_id) != len(requested_room_ids):
+        raise ValidationError({"rooms": "One or more selected physical rooms are unavailable."})
+    physical_rooms = [rooms_by_id[room_id] for room_id in requested_room_ids]
+    hotel = physical_rooms[0].hotel
+    if any(room.hotel_id != hotel.id for room in physical_rooms):
+        raise ValidationError({"rooms": "All selected physical rooms must belong to the same hotel."})
+    if core_business_id and hotel.core_business_id != core_business_id:
+        raise ValidationError({"rooms": "One or more selected physical rooms do not belong to this business."})
     allowed_statuses = [PhysicalRoom.Status.VACANT]
     if not check_in_immediately:
         # V2 first creates a reservation. An occupied room can be reserved for
         # a future non-overlapping stay, while immediate/legacy check-in must
         # still use a room that is vacant right now.
         allowed_statuses.append(PhysicalRoom.Status.OCCUPIED)
-    if physical_room.status not in allowed_statuses:
-        message = (
-            "Only a vacant physical room can be used for walk-in check-in."
-            if check_in_immediately
-            else "Only a vacant or currently occupied physical room can be reserved."
-        )
-        raise ValidationError({"physical_room_id": message})
-
     check_in, check_out = data["check_in"], data["check_out"]
     if check_out <= check_in:
         raise ValidationError({"check_out": "Must be after check_in."})
-    if _has_overlapping_room_assignment(physical_room, check_in, check_out):
-        raise ValidationError({"physical_room_id": "Selected physical room is assigned to an overlapping booking."})
-    if _has_overlapping_room_block(physical_room, check_in, check_out):
-        raise ValidationError({"physical_room_id": "Selected physical room is blocked for one or more stay dates."})
-    reconcile_daily_inventory_for_room_type(
-        physical_room.room_type, check_in, check_out,
-    )
-
     guest_market = data.get("guest_market", RatePlan.GuestMarket.LOCAL)
-    rate_plan_id = data.get("rate_plan_id")
-    if rate_plan_id:
-        rate_plan = RatePlan.objects.filter(
-            id=rate_plan_id,
-            room_type=physical_room.room_type,
-            is_active=True,
-            guest_market__in=[guest_market, RatePlan.GuestMarket.ALL],
-        ).first()
-    else:
-        rate_plan = _default_rate_plan_for_room_type(physical_room.room_type, guest_market)
-    if not rate_plan:
-        raise ValidationError({"rate_plan_id": "No active rate plan is available for this physical room."})
+    resolved_rooms = []
+    reconciled_room_type_ids = set()
+    for index, (requested, physical_room) in enumerate(zip(requested_rooms, physical_rooms)):
+        if physical_room.status not in allowed_statuses:
+            message = (
+                "Only a vacant physical room can be used for walk-in check-in."
+                if check_in_immediately
+                else "Only a vacant or currently occupied physical room can be reserved."
+            )
+            raise ValidationError({f"rooms[{index}].physical_room_id": message})
+        if _has_overlapping_room_assignment(physical_room, check_in, check_out):
+            raise ValidationError({
+                f"rooms[{index}].physical_room_id": (
+                    f"Room {physical_room.room_number} is assigned to an overlapping booking."
+                )
+            })
+        if _has_overlapping_room_block(physical_room, check_in, check_out):
+            raise ValidationError({
+                f"rooms[{index}].physical_room_id": (
+                    f"Room {physical_room.room_number} is blocked for one or more stay dates."
+                )
+            })
+        if physical_room.room_type_id not in reconciled_room_type_ids:
+            reconcile_daily_inventory_for_room_type(physical_room.room_type, check_in, check_out)
+            reconciled_room_type_ids.add(physical_room.room_type_id)
+        rate_plan_id = requested.get("rate_plan_id")
+        if rate_plan_id:
+            rate_plan = RatePlan.objects.filter(
+                id=rate_plan_id,
+                room_type=physical_room.room_type,
+                is_active=True,
+                guest_market__in=[guest_market, RatePlan.GuestMarket.ALL],
+            ).first()
+        else:
+            rate_plan = _default_rate_plan_for_room_type(physical_room.room_type, guest_market)
+        if not rate_plan:
+            raise ValidationError({
+                f"rooms[{index}].rate_plan_id": "No active rate plan is available for this physical room."
+            })
+        resolved_rooms.append((physical_room, rate_plan, requested))
 
-    booking, _created = create_booking(
+    booking, created = create_booking(
         {
-            "core_business_id": physical_room.hotel.core_business_id,
+            "core_business_id": hotel.core_business_id,
             "core_customer_user_id": data.get("core_customer_user_id"),
             "source": Booking.Source.WALK_IN,
             "source_name": "Walk-in",
@@ -1736,13 +1765,15 @@ def create_walk_in_booking(data, idempotency_key=None, core_business_id=None, ch
                 {
                     "core_room_type_id": physical_room.room_type.core_room_type_id,
                     "rate_plan_id": rate_plan.id,
-                    "meal_plan_link_id": data.get("meal_plan_link_id"),
+                    "meal_plan_link_id": requested.get("meal_plan_link_id"),
+                    "breakfast_selected": requested.get("breakfast_selected", False),
                     "quantity": 1,
-                    "adults": data.get("adults", 1),
-                    "children": data.get("children", 0),
-                    "extra_beds": data.get("extra_beds", 0),
-                    "preferences": data.get("preferences") or {},
+                    "adults": requested.get("adults", 1),
+                    "children": requested.get("children", 0),
+                    "extra_beds": requested.get("extra_beds", 0),
+                    "preferences": requested.get("preferences") or {},
                 }
+                for physical_room, rate_plan, requested in resolved_rooms
             ],
             "guests": data.get("guests") or [],
             "add_ons": data.get("add_ons") or [],
@@ -1752,6 +1783,18 @@ def create_walk_in_booking(data, idempotency_key=None, core_business_id=None, ch
     booking = Booking.objects.select_for_update().prefetch_related("rooms").get(pk=booking.pk)
     if booking.status == Booking.Status.CHECKED_IN:
         return booking
+    if not created:
+        assigned_room_ids = list(
+            RoomAssignment.objects.filter(
+                booking_room__booking=booking,
+                released_at__isnull=True,
+            ).order_by("booking_room_id", "id").values_list("physical_room_id", flat=True)
+        )
+        if assigned_room_ids == requested_room_ids:
+            return booking
+        raise ValidationError({
+            "rooms": "Idempotency key already belongs to a booking with a different room selection."
+        })
 
     payment_payload = _initial_payment_payload(
         booking,
@@ -1761,9 +1804,15 @@ def create_walk_in_booking(data, idempotency_key=None, core_business_id=None, ch
     )
     if payment_payload:
         payment_payload["metadata"].update({
-            "physical_room_id": physical_room.id,
-            "room_number": physical_room.room_number,
+            "physical_room_ids": [room.id for room in physical_rooms],
+            "room_numbers": [room.room_number for room in physical_rooms],
         })
+        if len(physical_rooms) == 1:
+            # Keep the original metadata keys for existing single-room clients.
+            payment_payload["metadata"].update({
+                "physical_room_id": physical_rooms[0].id,
+                "room_number": physical_rooms[0].room_number,
+            })
     if payment_payload and payment_payload["status"] == Payment.Status.PAID:
         record_payment(booking, payment_payload, auto_assign=False)
         booking = Booking.objects.select_for_update().prefetch_related("rooms").get(pk=booking.pk)
@@ -1792,23 +1841,31 @@ def create_walk_in_booking(data, idempotency_key=None, core_business_id=None, ch
         booking.hold_expires_at = None
         booking.save(update_fields=["status", "hold_expires_at", "updated_at"])
 
-    physical_room = PhysicalRoom.objects.select_for_update().get(pk=physical_room.pk)
-    if physical_room.status not in allowed_statuses:
-        message = (
-            "Selected physical room is no longer vacant."
-            if check_in_immediately
-            else "Selected physical room can no longer be reserved."
-        )
-        raise ValidationError({"physical_room_id": message})
-    if _has_overlapping_room_assignment(physical_room, check_in, check_out, exclude_booking=booking):
-        raise ValidationError({"physical_room_id": "Selected physical room is assigned to an overlapping booking."})
-
-    booking_room = booking.rooms.select_related("room_type").get()
-    validate_assignment_preferences(booking_room, physical_room)
-    RoomAssignment.objects.create(booking_room=booking_room, physical_room=physical_room)
+    booking_rooms = list(booking.rooms.select_related("room_type").order_by("id"))
+    if len(booking_rooms) != len(physical_rooms):
+        raise ValidationError({"rooms": "Booking room selection does not match the requested physical rooms."})
+    for index, (booking_room, physical_room) in enumerate(zip(booking_rooms, physical_rooms)):
+        physical_room = PhysicalRoom.objects.select_for_update().get(pk=physical_room.pk)
+        if physical_room.status not in allowed_statuses:
+            message = (
+                "Selected physical room is no longer vacant."
+                if check_in_immediately
+                else "Selected physical room can no longer be reserved."
+            )
+            raise ValidationError({f"rooms[{index}].physical_room_id": message})
+        if _has_overlapping_room_assignment(physical_room, check_in, check_out, exclude_booking=booking):
+            raise ValidationError({
+                f"rooms[{index}].physical_room_id": "Selected physical room is assigned to an overlapping booking."
+            })
+        validate_assignment_preferences(booking_room, physical_room)
+        existing_assignment = booking_room.assignments.filter(released_at__isnull=True).first()
+        if existing_assignment:
+            if existing_assignment.physical_room_id != physical_room.id:
+                raise ValidationError({"rooms": "Idempotent booking already has a different room assignment."})
+        else:
+            RoomAssignment.objects.create(booking_room=booking_room, physical_room=physical_room)
     if check_in_immediately:
-        physical_room.status = PhysicalRoom.Status.OCCUPIED
-        physical_room.save(update_fields=["status"])
+        PhysicalRoom.objects.filter(id__in=requested_room_ids).update(status=PhysicalRoom.Status.OCCUPIED)
         booking.status = Booking.Status.CHECKED_IN
         booking.hold_expires_at = None
         booking.save(update_fields=["status", "hold_expires_at", "updated_at"])

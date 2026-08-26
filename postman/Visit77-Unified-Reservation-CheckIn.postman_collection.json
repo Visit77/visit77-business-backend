@@ -46,7 +46,7 @@
       "request": {
         "method": "POST",
         "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Idempotency-Key", "value": "walkin-v2-{{$guid}}"}],
-        "body": {"mode": "raw", "raw": "{\n  \"physical_room_id\": {{physical_room_id}},\n  \"rate_plan_id\": {{rate_plan_id}},\n  \"check_in\": \"{{check_in}}\",\n  \"check_out\": \"{{check_out}}\",\n  \"contact_name\": \"Walk-in V2 Guest\",\n  \"contact_phone\": \"092222222\",\n  \"guest_market\": \"local\",\n  \"adults\": 1,\n  \"children\": 0,\n  \"guests\": [{\"name\": \"Walk-in V2 Guest\", \"is_primary\": true}]\n}", "options": {"raw": {"language": "json"}}},
+        "body": {"mode": "raw", "raw": "{\n  \"workflow\": \"reservation\",\n  \"check_in\": \"{{check_in}}\",\n  \"check_out\": \"{{check_out}}\",\n  \"contact_name\": \"Walk-in V2 Guest\",\n  \"contact_phone\": \"092222222\",\n  \"guest_market\": \"local\",\n  \"rooms\": [\n    {\n      \"physical_room_id\": {{physical_room_id}},\n      \"rate_plan_id\": {{rate_plan_id}},\n      \"adults\": 1,\n      \"children\": 0,\n      \"extra_beds\": 0\n    },\n    {\n      \"physical_room_id\": {{second_physical_room_id}},\n      \"rate_plan_id\": {{rate_plan_id}},\n      \"adults\": 1,\n      \"children\": 0,\n      \"extra_beds\": 0\n    }\n  ],\n  \"guests\": [{\"name\": \"Walk-in V2 Guest\", \"is_primary\": true}]\n}", "options": {"raw": {"language": "json"}}},
         "url": "{{booking_base_url}}/api/v1/admin/walk-in-booking-v2/"
       },
       "event": [{"listen": "test", "script": {"exec": [
