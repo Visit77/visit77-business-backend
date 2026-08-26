@@ -109,7 +109,7 @@ class CoreClient:
 
 
 @transaction.atomic
-def sync_business_from_core(core_business_id: int, client=None):
+def sync_business_from_core(core_business_id: int, client=None, *, preserve_access=False):
     client = client or CoreClient()
     bundle = client.provisioning_bundle(core_business_id)
     business_data = bundle.get("business") if isinstance(bundle, dict) else None
@@ -148,22 +148,29 @@ def sync_business_from_core(core_business_id: int, client=None):
     ), {})
     business_snapshot = dict(business_data)
     business_snapshot["hotel_cancellation_policy"] = hotel_cancellation_policy or None
+    hotel_defaults = {
+        "name": business_data.get("name_1") or business_data.get("name") or f"Business {core_business_id}",
+        "slug": business_data.get("slug") or "",
+        "address": business_data.get("address_info") or business_data.get("address") or "",
+        "phone": business_data.get("phone") or business_data.get("phone_no") or "",
+        "cover_image_url": _image_url(business_data.get("profile")),
+        "base_currency": base_currency,
+        "package": package,
+        "features": features,
+        "is_active": bool(business_data.get("status", business_data.get("is_active", True))),
+        "core_snapshot": business_snapshot,
+        "access_snapshot": access_data,
+        "synced_at": now,
+    }
+    if preserve_access and existing_hotel:
+        # Catalog-only bulk syncs must never downgrade or otherwise replace
+        # the locally active subscription/package projection.
+        hotel_defaults.pop("package")
+        hotel_defaults.pop("features")
+        hotel_defaults.pop("access_snapshot")
     hotel, _ = Hotel.objects.update_or_create(
         core_business_id=core_business_id,
-        defaults={
-            "name": business_data.get("name_1") or business_data.get("name") or f"Business {core_business_id}",
-            "slug": business_data.get("slug") or "",
-            "address": business_data.get("address_info") or business_data.get("address") or "",
-            "phone": business_data.get("phone") or business_data.get("phone_no") or "",
-            "cover_image_url": _image_url(business_data.get("profile")),
-            "base_currency": base_currency,
-            "package": package,
-            "features": features,
-            "is_active": bool(business_data.get("status", business_data.get("is_active", True))),
-            "core_snapshot": business_snapshot,
-            "access_snapshot": access_data,
-            "synced_at": now,
-        },
+        defaults=hotel_defaults,
     )
 
     synced_room_types = []
@@ -413,4 +420,5 @@ def sync_business_from_core(core_business_id: int, client=None):
         "new_physical_rooms": physical_room_count,
         "inventory_created": inventory_created,
         "inventory_updated": inventory_updated,
+        "access_preserved": bool(preserve_access and existing_hotel),
     }

@@ -833,6 +833,17 @@ class BookingServiceTests(TestCase):
         self.assertEqual(custom.source, RatePlan.Source.BOOKING)
         self.assertEqual(room_type.rate_plans.count(), 3)
 
+        hotel.package = Hotel.Package.PMS
+        hotel.features = {"pms": True, "locally_preserved": True}
+        hotel.access_snapshot = {"subscription_id": 123, "status": "active"}
+        hotel.save(update_fields=["package", "features", "access_snapshot"])
+        result = sync_business_from_core(99, client=client, preserve_access=True)
+        hotel.refresh_from_db()
+        self.assertTrue(result["access_preserved"])
+        self.assertEqual(hotel.package, Hotel.Package.PMS)
+        self.assertEqual(hotel.features, {"pms": True, "locally_preserved": True})
+        self.assertEqual(hotel.access_snapshot, {"subscription_id": 123, "status": "active"})
+
     @override_settings(BOOKING_INVENTORY_WINDOW_DAYS=2)
     def test_daily_inventory_auto_seed_adjusts_with_physical_room_count(self):
         PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="801")
