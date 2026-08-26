@@ -146,6 +146,9 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
     breakfast = serializers.SerializerMethodField()
     meal_plans = serializers.SerializerMethodField()
     ota_enabled_room_count = serializers.IntegerField(read_only=True)
+    ota_open_room_count = serializers.IntegerField(read_only=True, default=0)
+    ota_enabled = serializers.SerializerMethodField()
+    ota_available = serializers.SerializerMethodField()
     availability_calculated = serializers.SerializerMethodField()
     hotel_cancellation_policy = serializers.SerializerMethodField()
     room_cancellation_policy = serializers.SerializerMethodField()
@@ -315,6 +318,18 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
     def get_availability_calculated(self, obj):
         return False
 
+    def get_ota_available(self, obj):
+        return (
+            obj.hotel.package in [Hotel.Package.OTA, Hotel.Package.OTA_PMS]
+            and int(getattr(obj, "ota_open_room_count", 0) or 0) > 0
+        )
+
+    def get_ota_enabled(self, obj):
+        return (
+            obj.hotel.package in [Hotel.Package.OTA, Hotel.Package.OTA_PMS]
+            and int(getattr(obj, "ota_enabled_room_count", 0) or 0) > 0
+        )
+
     class Meta:
         model = RoomType
         fields = [
@@ -323,7 +338,8 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
             "room_standard", "room_build_type", "room_view", "room_area", "room_area_from",
             "room_area_to", "area_unit", "size_sqft", "max_adults", "max_children",
             "max_occupancy", "default_prices", "default_price", "rate_plans", "breakfast",
-            "meal_plans", "ota_enabled_room_count", "availability_calculated",
+            "meal_plans", "ota_enabled_room_count", "ota_open_room_count", "ota_enabled", "ota_available",
+            "availability_calculated",
             "hotel_cancellation_policy", "room_cancellation_policy", "cancellation_policy",
         ]
 

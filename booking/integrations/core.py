@@ -144,7 +144,7 @@ def sync_business_from_core(core_business_id: int, client=None, *, preserve_acce
         for policy in hotel_policies
         if policy.get("policy_type") == "cancellation"
         and policy.get("is_active", True)
-        and policy.get("is_configured", True)
+        and (policy.get("is_configured", True) or bool(policy.get("config")))
     ), {})
     business_snapshot = dict(business_data)
     business_snapshot["hotel_cancellation_policy"] = hotel_cancellation_policy or None

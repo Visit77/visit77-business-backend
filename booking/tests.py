@@ -1850,6 +1850,59 @@ class BookingApiTests(BookingServiceTests):
 
         self.assertEqual(response.status_code, 404, response.data)
 
+    def test_public_hotel_room_type_catalog_returns_ota_and_regular_room_types(self):
+        self.hotel.package = Hotel.Package.OTA_PMS
+        self.hotel.save(update_fields=["package"])
+        PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="PUBLIC-OTA-1",
+            ota_enabled=True,
+            ota_sale_open=True,
+        )
+        regular_room_type = RoomType.objects.create(
+            hotel=self.hotel,
+            core_room_type_id=9912,
+            name="Regular Room Type",
+        )
+        RatePlan.objects.create(
+            room_type=regular_room_type,
+            code="regular-local",
+            name="Regular Local",
+            guest_market=RatePlan.GuestMarket.LOCAL,
+            default_price=Decimal("50000"),
+        )
+        PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=regular_room_type,
+            room_number="PUBLIC-PMS-1",
+            ota_enabled=False,
+        )
+
+        response = self.client.get(
+            f"/api/v1/public/hotels/{self.hotel.core_business_id}/room-types/",
+            {"guest_market": "local"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        room_types = response.data["data"]["room_types"]
+        self.assertEqual(len(room_types), 2)
+        ota_room_type = next(item for item in room_types if item["room_type_id"] == self.room_type.id)
+        regular = next(item for item in room_types if item["room_type_id"] == regular_room_type.id)
+        self.assertTrue(ota_room_type["ota_enabled"])
+        self.assertTrue(ota_room_type["ota_available"])
+        self.assertEqual(ota_room_type["ota_enabled_room_count"], 1)
+        self.assertFalse(regular["ota_enabled"])
+        self.assertFalse(regular["ota_available"])
+        self.assertEqual(regular["ota_enabled_room_count"], 0)
+
+        query_response = self.client.get(
+            "/api/v1/public/room-types/",
+            {"business_id": self.hotel.core_business_id, "guest_market": "local"},
+        )
+        self.assertEqual(query_response.status_code, 200, query_response.data)
+        self.assertEqual(len(query_response.data["data"]["room_types"]), 2)
+
     def test_ota_room_selection_controls_public_availability(self):
         rooms = [
             PhysicalRoom.objects.create(
