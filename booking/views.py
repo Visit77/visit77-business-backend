@@ -1098,7 +1098,7 @@ class OTARoomSelectionView(APIView):
                 "sale_status_url": f"/api/v1/admin/ota-rooms/{room.id}/sale-status/",
             })
         return {
-            "package": hotel.package,
+            "direct_booking_package": hotel.package,
             "total_rooms": len(rooms),
             "total_ota_rooms": sum(int(room.ota_enabled) for room in rooms),
             "total_open_ota_rooms": sum(int(room.ota_enabled and room.ota_sale_open) for room in rooms),
@@ -2863,17 +2863,36 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
         if request.method == "PATCH":
             request_data = request.data.dict() if hasattr(request.data, "dict") else request.data.copy()
             nested_guests = {}
+            nested_rooms = {}
             nested_add_ons = {}
+            nested_payment = {}
+            identity_photos = {}
             guest_field_pattern = re.compile(
                 r"^guests?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+            )
+            room_field_pattern = re.compile(
+                r"^rooms?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
             )
             add_on_field_pattern = re.compile(
                 r"^add_ons?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
             )
+            payment_field_pattern = re.compile(
+                r"^payment\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+            )
             for key, value in request.data.items():
                 match = guest_field_pattern.match(key)
-                if match and match.group(2) not in {"photo", "identity_photo"}:
-                    nested_guests.setdefault(int(match.group(1)), {})[match.group(2)] = value
+                if match:
+                    index = int(match.group(1))
+                    field = match.group(2)
+                    if field in {"photo", "identity_photo"}:
+                        if key in request.FILES:
+                            identity_photos[index] = request.FILES[key]
+                        continue
+                    nested_guests.setdefault(index, {})[field] = value
+                    continue
+                room_match = room_field_pattern.match(key)
+                if room_match:
+                    nested_rooms.setdefault(int(room_match.group(1)), {})[room_match.group(2)] = value
                     continue
                 add_on_match = add_on_field_pattern.match(key)
                 if add_on_match:
@@ -2885,6 +2904,10 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
                         except (TypeError, ValueError):
                             raise ValidationError({key: "Must be valid JSON."})
                     nested_add_ons.setdefault(index, {})[field] = value
+                    continue
+                payment_match = payment_field_pattern.match(key)
+                if payment_match:
+                    nested_payment[payment_match.group(1)] = value
             if nested_guests:
                 indexes = sorted(nested_guests)
                 if indexes != list(range(len(indexes))):
@@ -2895,6 +2918,34 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
                     request_data["guests"] = json.loads(request_data["guests"])
                 except (TypeError, ValueError):
                     raise ValidationError({"guests": "Must be valid JSON when using multipart/form-data."})
+            if nested_rooms:
+                indexes = sorted(nested_rooms)
+                if indexes != list(range(len(indexes))):
+                    raise ValidationError({"rooms": "Room indexes must start at 0 and be consecutive."})
+                normalized_rooms = []
+                for index in indexes:
+                    room_data = nested_rooms[index]
+                    physical_room_id = room_data.pop("physical_room_id", None)
+                    if physical_room_id is not None:
+                        physical_room = PhysicalRoom.objects.select_related("room_type").filter(
+                            id=physical_room_id,
+                            hotel=booking.hotel,
+                            is_active=True,
+                        ).first()
+                        if not physical_room:
+                            raise ValidationError({
+                                f"rooms[{index}][physical_room_id]": "Selected physical room is unavailable."
+                            })
+                        room_data["core_room_type_id"] = physical_room.room_type.core_room_type_id
+                        room_data["physical_room_ids"] = [physical_room.id]
+                        room_data.setdefault("quantity", 1)
+                    normalized_rooms.append(room_data)
+                request_data["rooms"] = normalized_rooms
+            elif isinstance(request_data.get("rooms"), str):
+                try:
+                    request_data["rooms"] = json.loads(request_data["rooms"])
+                except (TypeError, ValueError):
+                    raise ValidationError({"rooms": "Must be valid JSON when using multipart/form-data."})
             if nested_add_ons:
                 indexes = sorted(nested_add_ons)
                 if indexes != list(range(len(indexes))):
@@ -2905,12 +2956,21 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
                     request_data["add_ons"] = json.loads(request_data["add_ons"])
                 except (TypeError, ValueError):
                     raise ValidationError({"add_ons": "Must be valid JSON when using multipart/form-data."})
+            if nested_payment:
+                request_data["payment"] = nested_payment
+            elif isinstance(request_data.get("payment"), str):
+                try:
+                    request_data["payment"] = json.loads(request_data["payment"])
+                except (TypeError, ValueError):
+                    raise ValidationError({"payment": "Must be valid JSON when using multipart/form-data."})
             serializer = CheckInFormUpdateSerializer(
                 data=request_data, partial=True, context={"booking": booking},
             )
             serializer.is_valid(raise_exception=True)
             data = serializer.validated_data
             guest_updates = data.pop("guests", [])
+            payment_data = data.pop("payment", None)
+            data.pop("workflow", None)
             booking = update_reservation_for_check_in(booking, data)
             existing_guests = list(booking.guests.order_by("id"))
             for guest_index, guest_data in enumerate(guest_updates):
@@ -2928,6 +2988,32 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
                     guest.save()
                 else:
                     Guest.objects.create(booking=booking, **guest_data)
+            if identity_photos:
+                current_guests = list(booking.guests.order_by("id"))
+                for guest_index, file in identity_photos.items():
+                    if guest_index >= len(current_guests):
+                        raise ValidationError({f"guest[{guest_index}][photo]": "Guest index does not exist."})
+                    guest = current_guests[guest_index]
+                    GuestIdentityDocument.objects.update_or_create(
+                        guest=guest,
+                        document_type=GuestIdentityDocument.DocumentType.IDENTITY_PHOTO,
+                        defaults={
+                            "document_number": (
+                                guest.identity_number or guest.nrc_number or guest.passport_number or ""
+                            ),
+                            "file": file,
+                            "is_verified": False,
+                            "verified_at": None,
+                            "verified_by_core_user_id": None,
+                        },
+                    )
+            if payment_data:
+                payment_data = dict(payment_data)
+                if "amount" not in payment_data:
+                    payment_data["amount"] = max(booking.grand_total - booking.amount_paid, Decimal("0"))
+                if payment_data["amount"] <= 0:
+                    raise ValidationError({"payment": "This booking has no outstanding balance."})
+                record_payment(booking, payment_data, auto_assign=False)
         booking = self.get_queryset().prefetch_related("guests__identity_documents").get(pk=booking.pk)
         return success({
             "booking": BookingSerializer(booking, context={"request": request}).data,

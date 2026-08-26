@@ -1389,6 +1389,82 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(invoice.total, Decimal("300000"))
         self.assertEqual(invoice.lines.count(), 2)
 
+    def test_check_in_form_accepts_multi_room_payment_and_photo_multipart_fields(self):
+        first_room = PhysicalRoom.objects.create(
+            hotel=self.hotel, room_type=self.room_type, room_number="CHECKIN-MULTI-1",
+        )
+        second_room = PhysicalRoom.objects.create(
+            hotel=self.hotel, room_type=self.room_type, room_number="CHECKIN-MULTI-2",
+        )
+        booking = create_admin_reservation({
+            **self.payload(),
+            "source": Booking.Source.PHONE,
+            "rooms": [{
+                "core_room_type_id": self.room_type.core_room_type_id,
+                "rate_plan_id": self.rate_plan.id,
+                "quantity": 1,
+                "adults": 1,
+                "children": 0,
+                "physical_room_ids": [first_room.id],
+            }],
+        })
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        response = self.client.patch(
+            f"/api/v1/admin/bookings/{booking.id}/check-in-form/",
+            {
+                "workflow": "direct_check_in",
+                "check_in": str(self.check_in),
+                "check_out": str(self.check_out),
+                "contact_name": "Mg Mg",
+                "contact_phone": "091111111",
+                "guest_market": "local",
+                "rooms[0][physical_room_id]": str(first_room.id),
+                "rooms[0][rate_plan_id]": str(self.rate_plan.id),
+                "rooms[0][adults]": "2",
+                "rooms[0][children]": "0",
+                "rooms[0][extra_beds]": "0",
+                "rooms[0][breakfast_selected]": "false",
+                "rooms[1][physical_room_id]": str(second_room.id),
+                "rooms[1][rate_plan_id]": str(self.rate_plan.id),
+                "rooms[1][adults]": "1",
+                "rooms[1][children]": "1",
+                "rooms[1][extra_beds]": "0",
+                "guest[0][name]": "Mg Mg",
+                "guest[0][is_primary]": "true",
+                "guest[0][photo]": SimpleUploadedFile(
+                    "identity.jpg", b"identity-photo", content_type="image/jpeg",
+                ),
+                "payment[payment_type]": "full_payment",
+                "payment[provider]": "cash",
+                "payment[status]": "paid",
+            },
+            format="multipart",
+            **headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        booking.refresh_from_db()
+        self.assertEqual(booking.rooms.count(), 2)
+        self.assertEqual(
+            set(RoomAssignment.objects.filter(booking_room__booking=booking).values_list(
+                "physical_room_id", flat=True,
+            )),
+            {first_room.id, second_room.id},
+        )
+        self.assertEqual(booking.amount_paid, booking.grand_total)
+        self.assertTrue(booking.payments.filter(
+            payment_type=Payment.Type.FULL_PAYMENT,
+            provider=Payment.Provider.CASH,
+            status=Payment.Status.PAID,
+        ).exists())
+        self.assertTrue(booking.guests.get(is_primary=True).identity_documents.filter(
+            document_type=GuestIdentityDocument.DocumentType.IDENTITY_PHOTO,
+        ).exists())
+
     def test_stay_bill_lists_separate_invoices_and_receipts(self):
         booking, _ = create_booking(self.payload())
         headers = {
@@ -1885,6 +1961,11 @@ class BookingApiTests(BookingServiceTests):
         )
 
         self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            response.data["data"]["hotel"]["direct_booking_package"],
+            Hotel.Package.OTA_PMS,
+        )
+        self.assertNotIn("package", response.data["data"]["hotel"])
         room_types = response.data["data"]["room_types"]
         self.assertEqual(len(room_types), 2)
         ota_room_type = next(item for item in room_types if item["room_type_id"] == self.room_type.id)

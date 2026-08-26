@@ -52,12 +52,19 @@ def validate_request_business_scope(serializer, attrs):
 
 
 class HotelSerializer(serializers.ModelSerializer):
+    direct_booking_package = serializers.CharField(source="package", read_only=True)
+
+    def get_fields(self):
+        fields = super().get_fields()
+        fields.pop("package", None)
+        return fields
+
     class Meta:
         model = Hotel
         fields = "__all__"
         read_only_fields = [
             "core_business_id", "name", "slug", "address", "phone", "cover_image_url",
-            "package", "features", "core_snapshot", "access_snapshot", "synced_at",
+            "features", "core_snapshot", "access_snapshot", "synced_at",
         ]
 
     def validate_base_currency(self, value):
@@ -68,6 +75,8 @@ class HotelSerializer(serializers.ModelSerializer):
 
 
 class PublicHotelSerializer(serializers.ModelSerializer):
+    direct_booking_package = serializers.CharField(source="package", read_only=True)
+
     class Meta:
         model = Hotel
         fields = [
@@ -78,7 +87,7 @@ class PublicHotelSerializer(serializers.ModelSerializer):
             "phone",
             "cover_image_url",
             "base_currency",
-            "package",
+            "direct_booking_package",
             "check_in_time",
             "check_out_time",
         ]
@@ -1192,6 +1201,11 @@ class CheckInAddOnUpdateSerializer(serializers.Serializer):
 
 
 class CheckInFormUpdateSerializer(serializers.Serializer):
+    workflow = serializers.ChoiceField(
+        choices=["direct_check_in", "reservation"],
+        required=False,
+        write_only=True,
+    )
     physical_room_id = serializers.IntegerField(min_value=1, required=False)
     rate_plan_id = serializers.IntegerField(min_value=1, required=False)
     check_in = serializers.DateField(required=False)
@@ -1207,6 +1221,7 @@ class CheckInFormUpdateSerializer(serializers.Serializer):
     rooms = AdminReservationRoomSerializer(many=True, required=False)
     add_ons = CheckInAddOnUpdateSerializer(many=True, required=False)
     guests = CheckInGuestUpdateSerializer(many=True, required=False)
+    payment = InitialPaymentSerializer(required=False, allow_null=True)
 
     def validate(self, attrs):
         booking = self.context.get("booking")
