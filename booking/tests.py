@@ -844,6 +844,61 @@ class BookingServiceTests(TestCase):
         self.assertEqual(hotel.features, {"pms": True, "locally_preserved": True})
         self.assertEqual(hotel.access_snapshot, {"subscription_id": 123, "status": "active"})
 
+    @override_settings(BOOKING_INVENTORY_WINDOW_DAYS=1)
+    def test_core_sync_reconciles_recreated_room_by_hotel_and_room_number(self):
+        hotel = Hotel.objects.create(core_business_id=99, name="Recreated Room Hotel")
+        stale_room_type = RoomType.objects.create(
+            hotel=hotel,
+            core_room_type_id=700,
+            name="Deleted Core Type",
+        )
+        stale_room = PhysicalRoom.objects.create(
+            hotel=hotel,
+            room_type=stale_room_type,
+            core_physical_room_id=9001,
+            room_number="101",
+            status=PhysicalRoom.Status.VACANT,
+            is_active=True,
+        )
+
+        class StubCoreClient:
+            def provisioning_bundle(self, core_business_id):
+                return {
+                    "access": {"package": "ota_pms", "features": {}},
+                    "business": {"id": core_business_id, "name": "Recreated Room Hotel", "status": True},
+                    "meal_plans": [],
+                    "room_types": [{
+                        "id": 701,
+                        "name": "Current Core Type",
+                        "max_adults": 2,
+                        "max_children": 0,
+                        "max_occupancy": 2,
+                        "is_active": True,
+                        "rate_plans": [],
+                        "meal_plans": [],
+                    }],
+                    "physical_rooms": [{
+                        "id": 9002,
+                        "room_type_id": 701,
+                        "room_no": "101",
+                        "floor": "1",
+                        "building": "Main",
+                        "is_active": True,
+                    }],
+                }
+
+        result = sync_business_from_core(99, client=StubCoreClient())
+
+        stale_room.refresh_from_db()
+        stale_room_type.refresh_from_db()
+        self.assertEqual(stale_room.core_physical_room_id, 9002)
+        self.assertEqual(stale_room.room_type.core_room_type_id, 701)
+        self.assertTrue(stale_room.is_active)
+        self.assertFalse(stale_room_type.core_active)
+        self.assertFalse(stale_room_type.booking_enabled)
+        self.assertEqual(PhysicalRoom.objects.filter(hotel=hotel, room_number="101").count(), 1)
+        self.assertEqual(result["new_physical_rooms"], 0)
+
     @override_settings(BOOKING_INVENTORY_WINDOW_DAYS=2)
     def test_daily_inventory_auto_seed_adjusts_with_physical_room_count(self):
         PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="801")

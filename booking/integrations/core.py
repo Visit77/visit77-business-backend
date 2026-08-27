@@ -342,6 +342,9 @@ def sync_business_from_core(core_business_id: int, client=None, *, preserve_acce
     room_type_by_core_id = {item.core_room_type_id: item for item in synced_room_types}
     physical_room_count = 0
     core_rooms = bundle.get("physical_rooms", []) or []
+    incoming_core_room_ids = {
+        payload.get("id") for payload in core_rooms if payload.get("id") is not None
+    }
     seen_core_room_ids = []
     for payload in core_rooms:
         core_room_type = payload.get("room_type") or {}
@@ -359,6 +362,25 @@ def sync_business_from_core(core_business_id: int, client=None, *, preserve_acce
             (item for item in matching_rooms if item.room_number == room_number),
             matching_rooms[0] if matching_rooms else None,
         )
+
+        # Core allows a room to be deleted and recreated. In that case its Core
+        # id changes while the hotel and room number still identify the same
+        # logical physical room. Reuse the stale Booking projection instead of
+        # inserting a second row that violates uniq_room_number_per_hotel. This
+        # also preserves assignments, blocks, and action history for the room.
+        if room is None:
+            room_number_match = PhysicalRoom.objects.select_for_update().filter(
+                hotel=hotel,
+                room_number=room_number,
+            ).first()
+            if room_number_match:
+                if room_number_match.core_physical_room_id in incoming_core_room_ids:
+                    raise CoreIntegrationError(
+                        f"Visit77 Core returned duplicate physical room number "
+                        f"{room_number!r} for business {core_business_id}."
+                    )
+                room = room_number_match
+
         created = room is None
         if room is None:
             room = PhysicalRoom(hotel=hotel, core_physical_room_id=payload["id"])
