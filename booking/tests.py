@@ -3376,6 +3376,13 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(reserved["room_type"]["room_area"], 301)
         self.assertEqual(reserved["room_type"]["area_unit"], "sqft")
         self.assertEqual(reserved["room_type"]["extra_bed_quantity"], 2)
+        self.assertEqual(reserved["room_type"]["breakfast"], {
+            "type": "no_breakfast",
+            "included": False,
+            "selectable": False,
+            "meal_plan": None,
+            "price": None,
+        })
         self.assertEqual(reserved["room_type"]["price"]["base_price"], Decimal("80000"))
         self.assertEqual(reserved["room_type"]["price"]["currency"], "MMK")
         self.assertEqual(reserved["assignment"]["booking_reference"], booking.reference)

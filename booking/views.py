@@ -1882,6 +1882,11 @@ class RoomBoardView(APIView):
     def serialize_room_board_room_type(self, room_type):
         rate_plans = list(getattr(room_type, "room_board_rate_plans", None) or room_type.rate_plans.filter(is_active=True).order_by("-is_default", "guest_market", "id"))
         primary_rate_plan = next((rate_plan for rate_plan in rate_plans if rate_plan.is_default), None) or (rate_plans[0] if rate_plans else None)
+        breakfast_cache = getattr(self, "_room_board_breakfast_cache", None)
+        if breakfast_cache is None:
+            breakfast_cache = self._room_board_breakfast_cache = {}
+        if room_type.id not in breakfast_cache:
+            breakfast_cache[room_type.id] = RoomTypeSerializer().get_breakfast(room_type)
         snapshot = room_type.core_snapshot or {}
         photos = snapshot.get("photos") or []
         beds = snapshot.get("beds") or []
@@ -1918,6 +1923,7 @@ class RoomBoardView(APIView):
             ),
             "default_inventory": room_type.default_inventory,
             "booking_enabled": room_type.booking_enabled,
+            "breakfast": breakfast_cache[room_type.id],
             "price": self.serialize_room_board_rate_plan(primary_rate_plan),
             "rate_plans": [self.serialize_room_board_rate_plan(rate_plan) for rate_plan in rate_plans],
         }
