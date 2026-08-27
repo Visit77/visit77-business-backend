@@ -20,7 +20,7 @@ class Hotel(models.Model):
     name = models.CharField(max_length=255)
     slug = models.SlugField(max_length=255, blank=True)
     address = models.TextField(blank=True)
-    phone = models.CharField(max_length=64, blank=True)
+    phone = models.TextField(blank=True)
     cover_image_url = models.URLField(max_length=1000, blank=True)
     base_currency = models.CharField(max_length=3, default="MMK")
     package = models.CharField(max_length=24, choices=Package.choices, default=Package.OTA)

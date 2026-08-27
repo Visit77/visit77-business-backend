@@ -865,7 +865,16 @@ class BookingServiceTests(TestCase):
             def provisioning_bundle(self, core_business_id):
                 return {
                     "access": {"package": "ota_pms", "features": {}},
-                    "business": {"id": core_business_id, "name": "Recreated Room Hotel", "status": True},
+                    "business": {
+                        "id": core_business_id,
+                        "name": "Recreated Room Hotel",
+                        "phone": [
+                            "+95 9 123456789 extension 1001",
+                            "+95 9 987654321 extension 2002",
+                            "+95 1 234567 extension 3003",
+                        ],
+                        "status": True,
+                    },
                     "meal_plans": [],
                     "room_types": [{
                         "id": 701,
@@ -896,6 +905,11 @@ class BookingServiceTests(TestCase):
         self.assertTrue(stale_room.is_active)
         self.assertFalse(stale_room_type.core_active)
         self.assertFalse(stale_room_type.booking_enabled)
+        hotel.refresh_from_db()
+        self.assertEqual(
+            hotel.phone,
+            "+95 9 123456789 extension 1001, +95 9 987654321 extension 2002, +95 1 234567 extension 3003",
+        )
         self.assertEqual(PhysicalRoom.objects.filter(hotel=hotel, room_number="101").count(), 1)
         self.assertEqual(result["new_physical_rooms"], 0)
 

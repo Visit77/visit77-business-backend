@@ -29,6 +29,17 @@ def _image_url(value):
     return ""
 
 
+def _phone_text(value):
+    """Normalize Core's single- or multi-phone representation for the projection."""
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(str(item).strip() for item in value if str(item).strip())
+    if isinstance(value, dict):
+        return ", ".join(str(item).strip() for item in value.values() if str(item).strip())
+    return str(value).strip()
+
+
 def _first_present(payload, *keys, default=None):
     for key in keys:
         if key in payload and payload[key] is not None:
@@ -152,7 +163,7 @@ def sync_business_from_core(core_business_id: int, client=None, *, preserve_acce
         "name": business_data.get("name_1") or business_data.get("name") or f"Business {core_business_id}",
         "slug": business_data.get("slug") or "",
         "address": business_data.get("address_info") or business_data.get("address") or "",
-        "phone": business_data.get("phone") or business_data.get("phone_no") or "",
+        "phone": _phone_text(business_data.get("phone") or business_data.get("phone_no")),
         "cover_image_url": _image_url(business_data.get("profile")),
         "base_currency": base_currency,
         "package": package,
