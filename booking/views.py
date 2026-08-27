@@ -735,12 +735,14 @@ class PMSAvailableRoomSearchView(APIView):
     @staticmethod
     def _room_details(room):
         snapshot = room.core_snapshot or {}
+        room_type_snapshot = room.room_type.core_snapshot or {}
         beds = snapshot.get("beds") or []
         bed_types = [
             bed.get("bed_type") for bed in beds
             if isinstance(bed, dict) and bed.get("bed_type")
         ]
         room_view = snapshot.get("room_view") or snapshot.get("view")
+        room_standard = snapshot.get("room_standard") or room_type_snapshot.get("room_standard")
         return {
             "id": room.id,
             "physical_room_id": room.id,
@@ -751,7 +753,14 @@ class PMSAvailableRoomSearchView(APIView):
             "floor_id": room.core_floor_id,
             "floor": room.floor,
             "operational_status": room.status,
-            "room_standard": snapshot.get("room_standard"),
+            # Room standard is owned by the room type in Core, but repeating it
+            # here keeps each selectable physical-room card self-contained.
+            "room_standard": room_standard,
+            "room_standard_id": (
+                room_standard.get("id") if isinstance(room_standard, dict) else None
+            ),
+            "extra_bed_available": bool(snapshot.get("extra_bed_available", False)),
+            "extra_bed_quantity": int(snapshot.get("extra_bed_quantity") or 0),
             "beds": beds,
             "bed_type": snapshot.get("bed_type") or (bed_types[0] if bed_types else None),
             "bed_types": bed_types,
@@ -908,6 +917,7 @@ class PMSAvailableRoomSearchView(APIView):
                     "max_adults": room.room_type.max_adults,
                     "max_children": room.room_type.max_children,
                     "max_occupancy": room.room_type.max_occupancy,
+                    "breakfast": RoomTypeSerializer().get_breakfast(room.room_type),
                 },
                 "rate_plan": {
                     "id": plan.id,

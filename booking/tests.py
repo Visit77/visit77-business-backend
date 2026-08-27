@@ -3708,12 +3708,23 @@ class BookingApiTests(BookingServiceTests):
     def test_pms_available_room_search_groups_same_type_price_first_and_excludes_selected_conflicts(self):
         self.hotel.package = Hotel.Package.PMS
         self.hotel.save(update_fields=["package"])
+        self.room_type.core_snapshot = {
+            **(self.room_type.core_snapshot or {}),
+            "room_standard": {"id": 13, "name": "Double Room"},
+        }
+        self.room_type.save(update_fields=["core_snapshot"])
         current = PhysicalRoom.objects.create(
             hotel=self.hotel, room_type=self.room_type, room_number="101", status=PhysicalRoom.Status.OCCUPIED,
         )
         same_type = PhysicalRoom.objects.create(
             hotel=self.hotel, room_type=self.room_type, room_number="102",
-            core_snapshot={"room_view": {"id": 1, "name": "City"}, "room_area": 300, "area_unit": "sqft"},
+            core_snapshot={
+                "room_view": {"id": 1, "name": "City"},
+                "room_area": 300,
+                "area_unit": "sqft",
+                "extra_bed_available": True,
+                "extra_bed_quantity": 2,
+            },
         )
         selected = PhysicalRoom.objects.create(
             hotel=self.hotel, room_type=self.room_type, room_number="103",
@@ -3781,6 +3792,14 @@ class BookingApiTests(BookingServiceTests):
         groups = response.data["data"]["groups"]
         self.assertEqual(groups[0]["priority"], "same_type_same_price")
         self.assertEqual(groups[0]["room_type"]["id"], self.room_type.id)
+        self.assertEqual(groups[0]["room_type"]["breakfast"]["type"], "no_breakfast")
+        same_type_payload = next(
+            room for group in groups for room in group["rooms"] if room["id"] == same_type.id
+        )
+        self.assertEqual(same_type_payload["room_standard"], {"id": 13, "name": "Double Room"})
+        self.assertEqual(same_type_payload["room_standard_id"], 13)
+        self.assertTrue(same_type_payload["extra_bed_available"])
+        self.assertEqual(same_type_payload["extra_bed_quantity"], 2)
         returned_ids = {
             room["id"] for group in groups for room in group["rooms"]
         }
