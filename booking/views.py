@@ -1625,6 +1625,11 @@ class RoomBoardView(APIView):
         bath_type = snapshot.get("bath_type")
         bath_types = snapshot.get("bath_types") or ([bath_type] if bath_type else [])
         room_standard = snapshot.get("room_standard") or room_type_snapshot.get("room_standard")
+        extra_bed_quantity = (
+            snapshot.get("extra_bed_quantity")
+            if snapshot.get("extra_bed_quantity") is not None
+            else snapshot.get("extra_bed_count", 0)
+        )
         return {
             "room_standard": room_standard,
             "room_standard_id": (
@@ -1643,6 +1648,8 @@ class RoomBoardView(APIView):
             "size_sqft": snapshot.get("size_sqft") or (
                 snapshot.get("room_area") if snapshot.get("area_unit") == "sqft" else None
             ),
+            "extra_bed_available": bool(snapshot.get("extra_bed_available", False)),
+            "extra_bed_quantity": int(extra_bed_quantity or 0),
         }
 
     def serialize_room_block_state(self, *, target_date, current_block=None, upcoming_blocks=None):

@@ -3282,6 +3282,8 @@ class BookingApiTests(BookingServiceTests):
                 "beds": [{"bed_type": {"id": 9, "name": "Physical King Bed"}, "quantity": 1}],
                 "room_area": 315,
                 "area_unit": "sqft",
+                "extra_bed_available": True,
+                "extra_bed_quantity": 1,
             },
         )
         PhysicalRoom.objects.create(
@@ -3364,6 +3366,8 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(reserved["room_area"], 315)
         self.assertEqual(reserved["area_unit"], "sqft")
         self.assertEqual(reserved["size_sqft"], 315)
+        self.assertTrue(reserved["extra_bed_available"])
+        self.assertEqual(reserved["extra_bed_quantity"], 1)
         self.assertEqual(reserved["room_type"]["name"], self.room_type.name)
         self.assertEqual(reserved["room_type"]["room_type_name"], self.room_type.name)
         self.assertEqual(reserved["room_type"]["photos"][0]["id"], 11)
