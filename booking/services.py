@@ -1056,6 +1056,8 @@ def estimate_booking(data):
     dates = list(stay_dates(check_in, check_out))
     guest_market = data.get("guest_market", RatePlan.GuestMarket.LOCAL)
     room_total = Decimal("0")
+    breakfast_total = Decimal("0")
+    grand_total = Decimal("0")
     rooms = []
     summary_items = []
     selected_room_count = 0
@@ -1124,7 +1126,9 @@ def estimate_booking(data):
             extra_bed_stay_total += extra_bed_total
             meal_plan_stay_total += meal_plan_night_total
             breakfast_stay_total += breakfast_night_total
-        room_total += item_total
+        room_total += item_total - breakfast_stay_total
+        breakfast_total += breakfast_stay_total
+        grand_total += item_total
         selected_room_count += quantity
         selected_extra_bed_count += extra_beds
         room_stay_total = item_total - extra_bed_stay_total - option_total - meal_plan_stay_total - breakfast_stay_total
@@ -1217,6 +1221,7 @@ def estimate_booking(data):
         "check_out": check_out,
         "nights": len(dates),
         "currency": hotel.base_currency,
+        "guests": data.get("guests", []),
         "rooms": rooms,
         "summary_items": summary_items,
         "summary_text": " x ".join(summary_text_parts[:2]) + (
@@ -1224,9 +1229,11 @@ def estimate_booking(data):
             if selected_extra_bed_count else ""
         ),
         "room_total": room_total,
-        "grand_total": room_total,
+        "breakfast_total": breakfast_total,
+        "grand_total": grand_total,
         "formatted_room_total": format_money(room_total, hotel.base_currency),
-        "formatted_grand_total": format_money(room_total, hotel.base_currency),
+        "formatted_breakfast_total": format_money(breakfast_total, hotel.base_currency),
+        "formatted_grand_total": format_money(grand_total, hotel.base_currency),
     }
 
 

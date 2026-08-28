@@ -2086,12 +2086,26 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(len(query_response.data["data"]["room_types"]), 2)
 
     def test_ota_room_selection_controls_public_availability(self):
+        self.room_type.core_snapshot = {
+            **self.room_type.core_snapshot,
+            "room_standard": {"id": 4, "name": "Double Room"},
+        }
+        self.room_type.save(update_fields=["core_snapshot"])
         rooms = [
             PhysicalRoom.objects.create(
                 hotel=self.hotel,
                 room_type=self.room_type,
                 core_physical_room_id=700 + index,
                 room_number=f"OTA-{index}",
+                core_snapshot={
+                    "beds": [{
+                        "quantity": 1,
+                        "bed_type": {"id": 2, "name": "King Bed"},
+                    }],
+                    "room_views": [{"id": 3, "name": "Garden View"}],
+                    "room_area": 305,
+                    "area_unit": "sqft",
+                },
             )
             for index in range(1, 4)
         ]
@@ -2114,7 +2128,16 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(updated.data["data"]["total_ota_rooms"], 1)
         self.assertEqual(updated.data["data"]["selected_room_ids"], [rooms[0].id])
         room_rows = updated.data["data"]["room_types"][0]["rooms"]
-        self.assertTrue(next(item for item in room_rows if item["physical_room_id"] == rooms[0].id)["is_ota_selected"])
+        selected_room = next(item for item in room_rows if item["physical_room_id"] == rooms[0].id)
+        self.assertTrue(selected_room["is_ota_selected"])
+        self.assertEqual(selected_room["room_type_name"], "Double Room")
+        self.assertEqual(selected_room["room_standard"]["name"], "Double Room")
+        self.assertEqual(selected_room["bed_type"]["name"], "King Bed")
+        self.assertEqual(selected_room["room_view"]["name"], "Garden View")
+        self.assertEqual(selected_room["room_area"], 305)
+        self.assertEqual(selected_room["area_unit"], "sqft")
+        self.assertEqual(selected_room["size_sqft"], 305)
+        self.assertEqual(selected_room["room_area_text"], "305 sqft")
         self.assertEqual(
             next(item for item in room_rows if item["physical_room_id"] == rooms[1].id)["ota_sale_status"],
             "not_selected",
@@ -2443,6 +2466,56 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(data["summary_text"], "2 Rooms x 2 Nights x 1 Extra Bed")
         self.assertEqual(data["summary_items"][0]["label"], "2 x Double Room")
         self.assertEqual(data["summary_items"][1]["label"], "1 x Extra Bed(s)")
+
+    def test_public_booking_estimate_echoes_guests_and_splits_breakfast_total(self):
+        self.room_type.breakfast_plan_type = RoomType.BreakfastPlanType.CUSTOM_PRICE
+        self.room_type.breakfast_custom_local_base_price = Decimal("10000")
+        self.room_type.save(update_fields=[
+            "breakfast_plan_type",
+            "breakfast_custom_local_base_price",
+        ])
+        MealPlan.objects.create(
+            hotel=self.hotel,
+            core_meal_plan_id=991,
+            name="Breakfast",
+            included_meals=["breakfast"],
+            local_base_price=Decimal("10000"),
+            foreign_base_price=Decimal("15000"),
+            is_default_for_room_type_breakfast=True,
+        )
+        guests = [{
+            "name": "Myo Myo",
+            "phone": "09112233445",
+            "email": "myomyo@example.com",
+            "nationality": "Myanmar",
+            "nrc_number": "1/MaGaNa(N)112233",
+            "is_primary": True,
+        }]
+        payload = {
+            "core_business_id": self.hotel.core_business_id,
+            "check_in": str(self.check_in),
+            "check_out": str(self.check_out),
+            "guest_market": "local",
+            "guests": guests,
+            "rooms": [{
+                "core_room_type_id": self.room_type.core_room_type_id,
+                "rate_plan_id": self.rate_plan.id,
+                "quantity": 1,
+                "adults": 1,
+                "children": 0,
+                "breakfast_selected": True,
+            }],
+        }
+
+        response = self.client.post("/api/v1/public/bookings/estimate/", payload, format="json")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.data["data"]
+        self.assertEqual(data["guests"], guests)
+        self.assertEqual(data["room_total"], Decimal("160000"))
+        self.assertEqual(data["breakfast_total"], Decimal("20000"))
+        self.assertEqual(data["grand_total"], Decimal("180000"))
+        self.assertEqual(data["formatted_breakfast_total"], "MMK 20,000")
 
     def test_public_ota_estimate_and_booking_reject_extra_beds_over_room_type_limit(self):
         payload = self.payload()

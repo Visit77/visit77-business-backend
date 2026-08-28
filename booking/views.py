@@ -976,6 +976,69 @@ class OTARoomSelectionView(APIView):
         return hotel
 
     @staticmethod
+    def _room_card_details(room):
+        snapshot = room.core_snapshot or {}
+        room_type_snapshot = room.room_type.core_snapshot or {}
+        beds = snapshot.get("beds") or room_type_snapshot.get("beds") or []
+        bed_types = [
+            bed.get("bed_type")
+            for bed in beds
+            if isinstance(bed, dict) and bed.get("bed_type")
+        ]
+        room_views = snapshot.get("room_views") or []
+        room_view = (
+            snapshot.get("room_view")
+            or snapshot.get("view")
+            or (room_views[0] if room_views else None)
+        )
+        if not room_view:
+            type_room_views = room_type_snapshot.get("room_views") or []
+            room_view = (
+                room_type_snapshot.get("room_view")
+                or room_type_snapshot.get("view")
+                or (type_room_views[0] if type_room_views else None)
+            )
+            room_views = type_room_views
+        if not room_views and room_view:
+            room_views = [room_view]
+        room_area = snapshot.get("room_area")
+        if room_area is None:
+            room_area = snapshot.get("size_sqft")
+        if room_area is None:
+            room_area = room_type_snapshot.get("room_area") or room_type_snapshot.get("size_sqft")
+        area_unit = snapshot.get("area_unit") or room_type_snapshot.get("area_unit")
+        room_standard = snapshot.get("room_standard") or room_type_snapshot.get("room_standard")
+        return {
+            "room_type": {
+                "id": room.room_type_id,
+                "core_room_type_id": room.room_type.core_room_type_id,
+                "name": room.room_type.name,
+            },
+            "room_type_name": room.room_type.name,
+            "room_standard": room_standard,
+            "room_standard_id": (
+                room_standard.get("id") if isinstance(room_standard, dict) else None
+            ),
+            "beds": beds,
+            "bed_type": snapshot.get("bed_type") or (bed_types[0] if bed_types else None),
+            "bed_types": bed_types,
+            "room_view": room_view,
+            "room_views": room_views,
+            "room_area": room_area,
+            "area_unit": area_unit,
+            "size_sqft": (
+                snapshot.get("size_sqft")
+                or room_type_snapshot.get("size_sqft")
+                or (room_area if area_unit == "sqft" else None)
+            ),
+            "room_area_text": (
+                f"{room_area} {area_unit}"
+                if room_area is not None and area_unit
+                else None
+            ),
+        }
+
+    @staticmethod
     def _payload(hotel, timeline_status="all"):
         today = timezone.localdate()
         rooms = list(PhysicalRoom.objects.filter(
@@ -1091,6 +1154,7 @@ class OTARoomSelectionView(APIView):
                 "building": room.building,
                 "floor_id": room.core_floor_id,
                 "floor": room.floor,
+                **OTARoomSelectionView._room_card_details(room),
                 "is_ota_selected": room.ota_enabled,
                 "ota_sale_open": room.ota_sale_open,
                 "ota_sale_status": (

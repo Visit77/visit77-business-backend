@@ -1362,6 +1362,7 @@ class BookingEstimateSerializer(serializers.Serializer):
     guest_market = serializers.ChoiceField(choices=RatePlan.GuestMarket.choices, default=RatePlan.GuestMarket.LOCAL)
     rooms = RequestedRoomSerializer(many=True, allow_empty=False)
     add_ons = RequestedAddOnSerializer(many=True, required=False)
+    guests = RequestedGuestSerializer(many=True, required=False, default=list)
 
     def validate(self, attrs):
         if attrs["check_out"] <= attrs["check_in"]:
