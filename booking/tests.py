@@ -13,7 +13,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework_simplejwt.backends import TokenBackend
 
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, GuestIdentityDocument, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
-from booking.integrations.core import sync_business_from_core
+from booking.integrations.core import CoreIntegrationError, sync_business_from_core
 from booking.services import auto_assign_physical_rooms_for_booking, auto_cancel_no_show_reservations, availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, record_payment, refund_payment, refund_quote
 
 
@@ -3774,6 +3774,26 @@ class BookingApiTests(BookingServiceTests):
         self.assertTrue(second.data["duplicate"])
         sync_business.assert_called_once_with(77)
         self.assertTrue(CoreIntegrationEvent.objects.filter(event_id=event_id).exists())
+
+    @patch("booking.views.sync_business_from_core")
+    def test_failed_core_event_sync_rolls_back_event_claim_for_retry(self, sync_business):
+        sync_business.side_effect = CoreIntegrationError("Temporary Core failure")
+        event_id = uuid.uuid4()
+        payload = {
+            "event_id": str(event_id),
+            "event_type": "direct_booking.catalog_changed",
+            "business_id": 77,
+        }
+
+        response = self.client.post(
+            "/api/v1/admin/core-events/",
+            payload,
+            format="json",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+        )
+
+        self.assertEqual(response.status_code, 502)
+        self.assertFalse(CoreIntegrationEvent.objects.filter(event_id=event_id).exists())
 
     def test_core_revoke_event_deprovisions_hotel(self):
         payload = {"event_id": str(uuid.uuid4()), "event_type": "direct_booking.revoked", "business_id": 77}

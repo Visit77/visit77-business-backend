@@ -2122,20 +2122,27 @@ class CoreEventView(APIView):
         serializer = CoreEventSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        existing = CoreIntegrationEvent.objects.filter(event_id=data["event_id"]).first()
-        if existing:
-            return success([], extra_dict={"duplicate": True})
+        # Claim the inbox event before processing it. get_or_create relies on
+        # the unique event_id constraint, so concurrent deliveries of the same
+        # Core outbox event cannot both pass an exists-then-create race. Keeping
+        # the claim and processing in one transaction also means a failed sync
+        # rolls the claim back and Core can safely retry the event.
+        with transaction.atomic():
+            _, claimed = CoreIntegrationEvent.objects.get_or_create(
+                event_id=data["event_id"],
+                defaults={
+                    "event_type": data["event_type"],
+                    "core_business_id": data["business_id"],
+                    "payload": data.get("payload", {}),
+                },
+            )
+            if not claimed:
+                return success([], extra_dict={"duplicate": True})
 
-        if data["event_type"] in ["direct_booking.revoked", "direct_booking.expired"]:
-            deprovision_hotel(data["business_id"])
-        else:
-            sync_business_from_core(data["business_id"])
-        CoreIntegrationEvent.objects.create(
-            event_id=data["event_id"],
-            event_type=data["event_type"],
-            core_business_id=data["business_id"],
-            payload=data.get("payload", {}),
-        )
+            if data["event_type"] in ["direct_booking.revoked", "direct_booking.expired"]:
+                deprovision_hotel(data["business_id"])
+            else:
+                sync_business_from_core(data["business_id"])
         return success([])
 
 
