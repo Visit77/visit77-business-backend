@@ -509,12 +509,12 @@ def resolve_room_preferences(room_type, preferences, nights, quantity):
 
     smoking_type = preferences.get("smoking_type")
     if smoking_type:
-        if not snapshot.get("allow_guest_smoking_preference", False):
-            raise ValidationError({"preferences": f"Smoking preference is not enabled for {room_type.name}."})
-        if smoking_type == "smoking" and not snapshot.get("supports_smoking", False):
-            raise ValidationError({"preferences": f"{room_type.name} does not support smoking rooms."})
-        if smoking_type == "non_smoking" and not snapshot.get("supports_non_smoking", True):
-            raise ValidationError({"preferences": f"{room_type.name} does not support non-smoking rooms."})
+        # if not snapshot.get("allow_guest_smoking_preference", False):
+        #     raise ValidationError({"preferences": f"Smoking preference is not enabled for {room_type.name}."})
+        # if smoking_type == "smoking" and not snapshot.get("supports_smoking", False):
+        #     raise ValidationError({"preferences": f"{room_type.name} does not support smoking rooms."})
+        # if smoking_type == "non_smoking" and not snapshot.get("supports_non_smoking", True):
+        #     raise ValidationError({"preferences": f"{room_type.name} does not support non-smoking rooms."})
         selected["smoking"] = {"value": smoking_type, "is_guaranteed": True}
         constraints["smoking"] = smoking_type
 
