@@ -1039,11 +1039,14 @@ class OTARoomSelectionView(APIView):
         }
 
     @staticmethod
-    def _payload(hotel, timeline_status="all"):
+    def _payload(hotel, timeline_status="all", physical_room_id=None):
         today = timezone.localdate()
-        rooms = list(PhysicalRoom.objects.filter(
-            hotel=hotel, is_active=True,
-        ).select_related("room_type").order_by("room_type__name", "building", "floor", "room_number", "id"))
+        rooms_query = PhysicalRoom.objects.filter(hotel=hotel, is_active=True)
+        if physical_room_id is not None:
+            rooms_query = rooms_query.filter(id=physical_room_id)
+        rooms = list(rooms_query.select_related("room_type").order_by(
+            "room_type__name", "building", "floor", "room_number", "id",
+        ))
         room_ids = [room.id for room in rooms]
         assignments = list(RoomAssignment.objects.filter(
             physical_room_id__in=room_ids,
@@ -1169,6 +1172,7 @@ class OTARoomSelectionView(APIView):
                 "applied_timeline_status": timeline_status,
                 "ota_records": ota_records,
                 "history_url": f"/api/v1/admin/physical-rooms/{room.core_physical_room_id or room.id}/history/",
+                "ota_history_url": f"/api/v1/admin/ota-rooms/{room.id}/history/",
                 "sale_status_url": f"/api/v1/admin/ota-rooms/{room.id}/sale-status/",
             })
         return {
@@ -1273,6 +1277,48 @@ class OTARoomSelectionView(APIView):
         for room_type in affected_room_types.values():
             ensure_daily_inventory_for_room_type(room_type)
         return success(self._payload(hotel))
+
+
+class OTARoomHistoryView(APIView):
+    permission_classes = [HasBookingAdminKey]
+    business_scoped = True
+
+    def get(self, request, physical_room_id):
+        hotel = OTARoomSelectionView._hotel(request)
+        query = OTARoomTimelineQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        timeline_status = query.validated_data["timeline_status"]
+        payload = OTARoomSelectionView._payload(
+            hotel,
+            timeline_status=timeline_status,
+            physical_room_id=physical_room_id,
+        )
+        room_payload = next((
+            room
+            for room_type in payload["room_types"]
+            for room in room_type["rooms"]
+        ), None)
+        if not room_payload:
+            raise NotFound("Physical room is not available for this business.")
+
+        return success({
+            "physical_room": {
+                key: value
+                for key, value in room_payload.items()
+                if key not in {
+                    "ota_records",
+                    "ota_record_count",
+                    "ota_record_total",
+                    "ota_record_summary",
+                    "applied_timeline_status",
+                }
+            },
+            "applied_timeline_status": timeline_status,
+            "ota_record_count": room_payload["ota_record_count"],
+            "ota_record_total": room_payload["ota_record_total"],
+            "ota_record_summary": room_payload["ota_record_summary"],
+            "ota_records": room_payload["ota_records"],
+        })
 
 
 class OTARoomSaleStatusView(APIView):

@@ -1089,6 +1089,10 @@ class BookingSerializer(serializers.ModelSerializer):
 
 
 class RequestedRoomPreferenceSerializer(serializers.Serializer):
+    preference_standard = serializers.ChoiceField(
+        choices=["twin_bed", "large_bed"],
+        required=False,
+    )
     core_bed_type_id = serializers.IntegerField(min_value=1, required=False)
     core_room_view_id = serializers.IntegerField(min_value=1, required=False)
     core_bath_type_id = serializers.IntegerField(min_value=1, required=False)

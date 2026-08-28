@@ -168,6 +168,92 @@ class BookingServiceTests(TestCase):
         self.assertEqual(len(assignments), 1)
         self.assertEqual(assignments[0].physical_room_id, expected.id)
 
+    def test_ota_auto_assignment_prefers_bed_standard_then_lowest_room_number(self):
+        lower_non_matching = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="101",
+            ota_enabled=True,
+            ota_sale_open=True,
+            core_snapshot={"beds": [{"bed_type": {"id": 1, "preference_standard": "twin_bed"}}]},
+        )
+        matching_higher = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="202",
+            ota_enabled=True,
+            ota_sale_open=True,
+            core_snapshot={"beds": [{"bed_type": {"id": 2, "preference_standard": "large_bed"}}]},
+        )
+        matching_lower = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="201",
+            ota_enabled=True,
+            ota_sale_open=True,
+            core_snapshot={"beds": [{"bed_type": {"id": 3, "preference_standard": "large_bed"}}]},
+        )
+        booking = Booking.objects.create(
+            reference="OTA-LARGE-BED",
+            hotel=self.hotel,
+            status=Booking.Status.CONFIRMED,
+            source=Booking.Source.OTA,
+            check_in=date.today() + timedelta(days=1),
+            check_out=date.today() + timedelta(days=2),
+            contact_name="OTA Guest",
+            contact_phone="091111111",
+        )
+        BookingRoom.objects.create(
+            booking=booking,
+            room_type=self.room_type,
+            rate_plan=self.rate_plan,
+            preference_snapshot={"requested": {"preference_standard": "large_bed"}},
+        )
+
+        assignments = auto_assign_physical_rooms_for_booking(booking)
+
+        self.assertEqual(assignments[0].physical_room_id, matching_lower.id)
+        self.assertNotEqual(assignments[0].physical_room_id, lower_non_matching.id)
+        self.assertNotEqual(assignments[0].physical_room_id, matching_higher.id)
+
+    def test_ota_bed_standard_falls_back_to_existing_lowest_room_number_order(self):
+        expected = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="101",
+            ota_enabled=True,
+            ota_sale_open=True,
+            core_snapshot={"beds": [{"bed_type": {"id": 1, "preference_standard": "twin_bed"}}]},
+        )
+        PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="102",
+            ota_enabled=True,
+            ota_sale_open=True,
+            core_snapshot={"beds": [{"bed_type": {"id": 2, "preference_standard": "twin_bed"}}]},
+        )
+        booking = Booking.objects.create(
+            reference="OTA-LARGE-BED-FALLBACK",
+            hotel=self.hotel,
+            status=Booking.Status.CONFIRMED,
+            source=Booking.Source.OTA,
+            check_in=date.today() + timedelta(days=1),
+            check_out=date.today() + timedelta(days=2),
+            contact_name="OTA Guest",
+            contact_phone="091111111",
+        )
+        BookingRoom.objects.create(
+            booking=booking,
+            room_type=self.room_type,
+            rate_plan=self.rate_plan,
+            preference_snapshot={"requested": {"preference_standard": "large_bed"}},
+        )
+
+        assignments = auto_assign_physical_rooms_for_booking(booking)
+
+        self.assertEqual(assignments[0].physical_room_id, expected.id)
+
     def test_pms_walk_in_can_use_ota_disabled_room_in_ota_pms_hotel(self):
         self.hotel.package = Hotel.Package.OTA_PMS
         self.hotel.save(update_fields=["package"])
@@ -2233,6 +2319,29 @@ class BookingApiTests(BookingServiceTests):
             "upcoming": 2,
             "past": 2,
         })
+        self.assertEqual(
+            room_payload["ota_history_url"],
+            f"/api/v1/admin/ota-rooms/{room.id}/history/",
+        )
+
+        history = self.client.get(
+            f"/api/v1/admin/ota-rooms/{room.id}/history/",
+            **headers,
+        )
+        self.assertEqual(history.status_code, 200, history.data)
+        history_data = history.data["data"]
+        self.assertEqual(history_data["physical_room"]["physical_room_id"], room.id)
+        self.assertEqual(history_data["applied_timeline_status"], "all")
+        self.assertEqual(history_data["ota_record_summary"], {
+            "all": 5,
+            "active_today": 1,
+            "upcoming": 2,
+            "past": 2,
+        })
+        self.assertEqual(
+            [item["booking_reference"] for item in history_data["ota_records"]],
+            ["OTA-CURRENT", "OTA-UPCOMING-NEAR", "OTA-UPCOMING-FAR", "OTA-PAST-NEAR", "OTA-PAST-FAR"],
+        )
 
         for timeline_status, expected_references in [
             ("active_today", ["OTA-CURRENT"]),
@@ -2254,6 +2363,18 @@ class BookingApiTests(BookingServiceTests):
             )
             self.assertEqual(filtered_room["ota_record_count"], len(expected_references))
             self.assertEqual(filtered_room["ota_record_total"], 5)
+
+            filtered_history = self.client.get(
+                f"/api/v1/admin/ota-rooms/{room.id}/history/",
+                {"timeline_status": timeline_status},
+                **headers,
+            )
+            self.assertEqual(filtered_history.status_code, 200, filtered_history.data)
+            self.assertEqual(
+                [item["booking_reference"] for item in filtered_history.data["data"]["ota_records"]],
+                expected_references,
+            )
+            self.assertEqual(filtered_history.data["data"]["ota_record_total"], 5)
 
         close_conflict = self.client.post(
             f"/api/v1/admin/ota-rooms/{room.id}/sale-status/",

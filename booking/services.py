@@ -562,6 +562,22 @@ def _physical_room_bed_ids(room):
     }
 
 
+def _physical_room_bed_preference_standards(room):
+    """Return the Core-configured soft preference groups for a physical room."""
+    standards = set()
+    physical_room_beds = (room.core_snapshot or {}).get("beds", []) or []
+    # Older synced physical-room snapshots may not have their own bed list.
+    # Only then fall back to the room-type beds; do not merge them because a
+    # particular physical room can have a different bed layout from its type.
+    beds = physical_room_beds or (room.room_type.core_snapshot or {}).get("beds", []) or []
+    for item in beds:
+        bed_type = (item or {}).get("bed_type") or {}
+        standard = bed_type.get("preference_standard")
+        if standard:
+            standards.add(standard)
+    return standards
+
+
 def _physical_room_custom_option_ids(room):
     options = (room.core_snapshot or {}).get("custom_option_values", []) or []
     return {
@@ -701,6 +717,14 @@ def _preference_match_score(booking_room, physical_room):
     return score
 
 
+def _ota_preference_standard_priority(booking_room, physical_room):
+    requested = (booking_room.preference_snapshot or {}).get("requested") or {}
+    preference_standard = requested.get("preference_standard")
+    if not preference_standard:
+        return 0
+    return 0 if preference_standard in _physical_room_bed_preference_standards(physical_room) else 1
+
+
 def _available_physical_rooms_for_booking_room(booking_room):
     booking = booking_room.booking
     overlapping_statuses = [Booking.Status.PENDING_PAYMENT, Booking.Status.CONFIRMED, Booking.Status.CHECKED_IN]
@@ -761,7 +785,11 @@ def auto_assign_physical_rooms_for_booking(booking):
             # Deterministic first-fit packing prevents scattered future stays
             # from fragmenting the OTA room pool. Reuse the lowest room number
             # whenever its full requested date range is free, then try the next.
-            candidates.sort(key=lambda room: (_natural_sort_key(room.room_number), room.id))
+            candidates.sort(key=lambda room: (
+                _ota_preference_standard_priority(booking_room, room),
+                _natural_sort_key(room.room_number),
+                room.id,
+            ))
         else:
             candidates.sort(key=lambda room: (
                 -_preference_match_score(booking_room, room),
