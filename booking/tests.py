@@ -1458,6 +1458,38 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(invoice.total, Decimal("300000"))
         self.assertEqual(invoice.lines.count(), 2)
 
+    def test_check_in_form_keeps_booked_nightly_price_after_core_rate_change(self):
+        booking = create_admin_reservation({
+            **self.payload(),
+            "source": Booking.Source.PHONE,
+        })
+        booked_total = booking.grand_total
+        booked_unit_prices = list(
+            booking.rooms.get().nights.order_by("stay_date").values_list("unit_price", flat=True)
+        )
+        booking.amount_paid = booked_total
+        booking.save(update_fields=["amount_paid"])
+
+        # Simulate a later room-price sync from Core.
+        self.rate_plan.base_price = Decimal("500")
+        self.rate_plan.save(update_fields=["base_price"])
+
+        response = self.client.patch(
+            f"/api/v1/admin/bookings/{booking.id}/check-in-form/",
+            {"contact_name": "Same Reservation Guest"},
+            format="json",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        booking.refresh_from_db()
+        self.assertEqual(booking.grand_total, booked_total)
+        self.assertEqual(
+            list(booking.rooms.get().nights.order_by("stay_date").values_list("unit_price", flat=True)),
+            booked_unit_prices,
+        )
+
     def test_check_in_form_accepts_multi_room_payment_and_photo_multipart_fields(self):
         first_room = PhysicalRoom.objects.create(
             hotel=self.hotel, room_type=self.room_type, room_number="CHECKIN-MULTI-1",

@@ -1962,7 +1962,7 @@ def create_admin_reservation(data, idempotency_key=None, core_business_id=None):
 
 @transaction.atomic
 def update_reservation_for_check_in(booking, data):
-    """Reprice and update every reservation-form field before check-in."""
+    """Update reservation-form fields while preserving already-booked room rates."""
     booking = Booking.objects.select_for_update().select_related("hotel").get(pk=booking.pk)
     if booking.status not in [Booking.Status.PENDING_PAYMENT, Booking.Status.CONFIRMED]:
         raise ValidationError("Only pending or confirmed reservations can be updated before check-in.")
@@ -2030,6 +2030,49 @@ def update_reservation_for_check_in(booking, data):
         "add_ons": data.get("add_ons", existing_add_ons),
         "guests": [{"name": data.get("contact_name", booking.contact_name), "is_primary": True}],
     })
+
+    # A confirmed reservation is a price-locked sale.  Core may change the
+    # room type/rate-plan price between reservation and check-in, but merely
+    # opening or saving the check-in form must not reprice the booked nights.
+    # Keep the old unit price for dates that were already present when the
+    # room type and rate plan are unchanged.  Newly-added dates (an extension)
+    # and deliberately changed room/rate selections retain current pricing.
+    replacement_rooms = list(replacement.rooms.select_related("room_type", "rate_plan").order_by("id"))
+    for old_room, new_room in zip(existing_rooms, replacement_rooms):
+        if (
+            old_room.room_type_id != new_room.room_type_id
+            or old_room.rate_plan_id != new_room.rate_plan_id
+        ):
+            continue
+
+        old_nights = {night.stay_date: night for night in old_room.nights.all()}
+        changed_nights = []
+        for new_night in new_room.nights.all():
+            old_night = old_nights.get(new_night.stay_date)
+            if old_night is None:
+                continue
+            new_night.unit_price = old_night.unit_price
+            new_night.total = (
+                (old_night.unit_price * new_night.quantity)
+                + new_night.extra_bed_total
+                + new_night.option_total
+                + new_night.meal_plan_total
+                + new_night.breakfast_total
+            )
+            changed_nights.append(new_night)
+        if changed_nights:
+            BookingRoomNight.objects.bulk_update(changed_nights, ["unit_price", "total"])
+            new_room.total = sum(
+                (night.total for night in new_room.nights.all()),
+                Decimal("0"),
+            )
+            new_room.rate_plan_snapshot = old_room.rate_plan_snapshot
+            new_room.save(update_fields=["total", "rate_plan_snapshot"])
+
+    replacement.room_total = sum(
+        (room.total for room in replacement_rooms),
+        Decimal("0"),
+    )
     replacement.tax_total = booking.tax_total
     replacement.discount_total = booking.discount_total
     replacement.grand_total = (
@@ -2046,7 +2089,6 @@ def update_reservation_for_check_in(booking, data):
             )
         })
 
-    replacement_rooms = list(replacement.rooms.order_by("id"))
     for index, physical_ids in enumerate(assignment_ids_by_index):
         if len(physical_ids) > replacement_rooms[index].quantity:
             raise ValidationError({"rooms": "Assigned physical rooms cannot exceed room quantity."})
