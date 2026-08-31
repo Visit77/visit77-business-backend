@@ -534,6 +534,35 @@ class BookingServiceTests(TestCase):
         self.assertEqual(booking_room.meal_plan_snapshot["name"], "Breakfast")
         self.assertEqual(list(booking_room.nights.values_list("meal_plan_total", flat=True)), [Decimal("40000"), Decimal("40000")])
 
+    def test_direct_meal_plan_is_priced_without_room_type_link(self):
+        meal_plan = MealPlan.objects.create(
+            hotel=self.hotel,
+            core_meal_plan_id=402,
+            name="Half Board Package",
+            plan_type=MealPlan.PlanType.PACKAGE,
+            included_meals=["breakfast", "dinner"],
+            local_base_price=Decimal("50000"),
+            foreign_base_price=Decimal("70000"),
+        )
+        payload = self.payload()
+        payload["rooms"][0]["meal_plan_id"] = meal_plan.id
+
+        booking, _ = create_booking(payload)
+
+        booking_room = booking.rooms.get()
+        invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
+        meal_plan_line = invoice.lines.get(metadata__line_type="meal_plan")
+        self.assertEqual(booking.grand_total, Decimal("520000"))
+        self.assertIsNone(booking_room.meal_plan_link_id)
+        self.assertEqual(booking_room.meal_plan_total, Decimal("200000"))
+        self.assertEqual(booking_room.meal_plan_snapshot["meal_plan_id"], meal_plan.id)
+        self.assertEqual(booking_room.meal_plan_snapshot["plan_type"], MealPlan.PlanType.PACKAGE)
+        self.assertEqual(meal_plan_line.total, Decimal("200000"))
+        self.assertEqual(
+            meal_plan_line.description,
+            "Half Board Package for Double Room x 2 x 2 Nights",
+        )
+
     def test_selected_custom_breakfast_uses_local_price_and_is_snapshotted(self):
         MealPlan.objects.create(
             hotel=self.hotel,
