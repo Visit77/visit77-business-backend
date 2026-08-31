@@ -366,7 +366,7 @@ class RoomTypeSerializer(serializers.ModelSerializer):
     core_business_id = serializers.IntegerField(source="hotel.core_business_id", read_only=True)
     meal_plans = serializers.SerializerMethodField()
     breakfast = serializers.SerializerMethodField()
-    room_list = serializers.SerializerMethodField()
+    rooms = serializers.SerializerMethodField()
     total_room_count = serializers.SerializerMethodField()
     ota_enabled_room_count = serializers.SerializerMethodField()
 
@@ -415,7 +415,7 @@ class RoomTypeSerializer(serializers.ModelSerializer):
             "building", "floor", "room_number", "id",
         ))
 
-    def get_room_list(self, obj):
+    def get_rooms(self, obj):
         room_type_snapshot = obj.core_snapshot or {}
         room_list = []
         for room in self._rooms(obj):
