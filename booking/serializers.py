@@ -1049,6 +1049,56 @@ class InvoiceSerializer(serializers.ModelSerializer):
     receipts = PaymentSerializer(many=True, read_only=True)
     paid_amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     balance = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    invoice_details = serializers.SerializerMethodField()
+
+    def get_invoice_details(self, obj):
+        booking = obj.booking
+        primary_guest = booking.guests.filter(is_primary=True).first()
+
+        def money(value):
+            return f"{Decimal(value):.2f}"
+
+        line_totals = {}
+        for line in obj.lines.all():
+            line_type = (line.metadata or {}).get("line_type", "other")
+            line_totals[line_type] = line_totals.get(line_type, Decimal("0")) + line.total
+        room_charge_total = line_totals.get("room", Decimal("0")) + line_totals.get("extra_bed", Decimal("0"))
+        additional_charge_total = sum(
+            (amount for line_type, amount in line_totals.items() if line_type not in {"room", "extra_bed", "service_fee"}),
+            Decimal("0"),
+        )
+        deposit_amount = sum(
+            (
+                payment.amount - payment.refunded_amount
+                for payment in obj.receipts.all()
+                if payment.payment_type == Payment.Type.DEPOSIT
+                and payment.status in {Payment.Status.PAID, Payment.Status.PARTIALLY_REFUNDED}
+            ),
+            Decimal("0"),
+        )
+        return {
+            "hotel": {
+                "name": booking.hotel.name,
+                "address": booking.hotel.address,
+                "phone": booking.hotel.phone,
+            },
+            "guest_name": primary_guest.name if primary_guest else booking.contact_name,
+            "contact_number": (primary_guest.phone if primary_guest and primary_guest.phone else booking.contact_phone),
+            "check_in": booking.check_in,
+            "check_out": booking.check_out,
+            "check_in_time": booking.hotel.check_in_time,
+            "check_out_time": booking.hotel.check_out_time,
+            "room_charge_total": money(room_charge_total),
+            "additional_charge_total": money(additional_charge_total),
+            "service_fee_total": money(line_totals.get("service_fee", Decimal("0"))),
+            "subtotal": money(obj.subtotal),
+            "tax_total": money(obj.tax_total),
+            "discount_total": money(obj.discount_total),
+            "grand_total": money(obj.total),
+            "deposit_amount": money(deposit_amount),
+            "amount_due": money(obj.balance),
+            "refund_policy": booking.cancellation_policy_snapshot,
+        }
 
     class Meta:
         model = Invoice

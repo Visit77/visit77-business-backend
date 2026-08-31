@@ -599,7 +599,50 @@ class BookingServiceTests(TestCase):
         self.assertEqual(lines["extra_bed"].total, Decimal("60000"))
         self.assertEqual(lines["meal_plan"].total, Decimal("80000"))
         self.assertEqual(lines["breakfast"].total, Decimal("48000"))
+        self.assertEqual(lines["room"].description, "Double Room x 2 x 2 Nights")
+        self.assertEqual(
+            lines["extra_bed"].description,
+            "Extra Bed for Double Room x 1 x 2 Nights",
+        )
+        self.assertEqual(
+            lines["meal_plan"].description,
+            "Dinner Plan for Double Room x 2 x 2 Nights",
+        )
+        self.assertEqual(
+            lines["breakfast"].description,
+            "Breakfast for Double Room x 2 x 2 Nights",
+        )
         self.assertEqual(invoice.total, booking.grand_total)
+
+    def test_initial_invoice_groups_separate_booking_rooms_with_the_same_room_type(self):
+        payload = self.payload()
+        payload["rooms"] = [
+            {
+                "core_room_type_id": self.room_type.core_room_type_id,
+                "rate_plan_id": self.rate_plan.id,
+                "quantity": 1,
+                "adults": 2,
+                "children": 0,
+                "extra_beds": 0,
+            },
+            {
+                "core_room_type_id": self.room_type.core_room_type_id,
+                "rate_plan_id": self.rate_plan.id,
+                "quantity": 1,
+                "adults": 2,
+                "children": 0,
+                "extra_beds": 0,
+            },
+        ]
+
+        booking, _ = create_booking(payload)
+
+        invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
+        room_lines = invoice.lines.filter(metadata__line_type="room")
+        self.assertEqual(room_lines.count(), 1)
+        room_line = room_lines.get()
+        self.assertEqual(room_line.description, "Double Room x 2 x 2 Nights")
+        self.assertEqual(len(room_line.metadata["booking_room_ids"]), 2)
 
     def test_default_included_meal_plan_is_attached_without_charge(self):
         meal_plan = MealPlan.objects.create(
@@ -1741,6 +1784,20 @@ class BookingApiTests(BookingServiceTests):
         public_bill = self.client.get(f"/api/v1/public/bookings/{booking.public_token}/stay-bill/")
         self.assertEqual(public_bill.status_code, 200, public_bill.data)
         self.assertEqual(len(public_bill.data["data"]["invoices"]), 2)
+        room_invoice = next(
+            item
+            for item in public_bill.data["data"]["invoices"]
+            if item["invoice_type"] == Invoice.Type.ROOM_BOOKING
+        )
+        details = room_invoice["invoice_details"]
+        self.assertEqual(details["hotel"]["name"], self.hotel.name)
+        self.assertEqual(details["guest_name"], "Myo Myo")
+        self.assertEqual(details["contact_number"], "09112233445")
+        self.assertEqual(details["check_in"], self.check_in.isoformat())
+        self.assertEqual(details["check_out"], self.check_out.isoformat())
+        self.assertEqual(details["room_charge_total"], "320000.00")
+        self.assertEqual(details["grand_total"], "320000.00")
+        self.assertEqual(details["amount_due"], "320000.00")
 
     def test_check_in_form_accepts_unchanged_current_room_even_if_marked_occupied(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-S")
