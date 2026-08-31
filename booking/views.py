@@ -1041,7 +1041,7 @@ class OTARoomSelectionView(APIView):
     @staticmethod
     def _payload(hotel, timeline_status="all", physical_room_id=None):
         today = timezone.localdate()
-        rooms_query = PhysicalRoom.objects.filter(hotel=hotel, is_active=True)
+        rooms_query = PhysicalRoom.objects.filter(hotel=hotel,ota_enabled=True, is_active=True)
         if physical_room_id is not None:
             rooms_query = rooms_query.filter(id=physical_room_id)
         rooms = list(rooms_query.select_related("room_type").order_by(
