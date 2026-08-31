@@ -1545,20 +1545,94 @@ def create_invoice(booking, invoice_type, lines, tax_total=Decimal("0"), discoun
 
 
 def _booking_charge_lines(booking):
-    lines = [
-        {
-            "description": f"{room.quantity} x {room.room_type.name} ({booking.nights} night(s))",
-            "quantity": 1,
-            "unit_price": room.total,
-            "metadata": {"booking_room_id": room.id, "core_room_type_id": room.room_type.core_room_type_id},
+    lines = []
+    for room in booking.rooms.select_related("room_type", "meal_plan_link__meal_plan").prefetch_related("nights"):
+        nights = list(room.nights.all())
+        room_price_total = sum(
+            (night.unit_price * night.quantity for night in nights),
+            Decimal("0"),
+        )
+        extra_bed_total = sum((night.extra_bed_total for night in nights), Decimal("0"))
+        option_total = sum((night.option_total for night in nights), Decimal("0"))
+        meal_plan_total = sum((night.meal_plan_total for night in nights), Decimal("0"))
+        breakfast_total = sum((night.breakfast_total for night in nights), Decimal("0"))
+        common_metadata = {
+            "booking_room_id": room.id,
+            "core_room_type_id": room.room_type.core_room_type_id,
         }
-        for room in booking.rooms.select_related("room_type").all()
-    ]
+
+        # Legacy bookings may not have nightly component rows. Keep their original
+        # single-line total so invoice synchronization never drops a charge.
+        if not nights:
+            lines.append({
+                "description": f"{room.quantity} x {room.room_type.name} ({booking.nights} night(s))",
+                "quantity": 1,
+                "unit_price": room.total,
+                "metadata": {**common_metadata, "line_type": "room"},
+            })
+            continue
+
+        lines.append({
+            "description": f"Room: {room.quantity} x {room.room_type.name} ({len(nights)} night(s))",
+            "quantity": 1,
+            "unit_price": room_price_total,
+            "metadata": {**common_metadata, "line_type": "room"},
+        })
+        if extra_bed_total:
+            lines.append({
+                "description": f"Extra Bed: {room.extra_beds} bed(s) x {len(nights)} night(s)",
+                "quantity": 1,
+                "unit_price": extra_bed_total,
+                "metadata": {**common_metadata, "line_type": "extra_bed"},
+            })
+        if option_total:
+            lines.append({
+                "description": f"Room preference option(s): {room.room_type.name}",
+                "quantity": 1,
+                "unit_price": option_total,
+                "metadata": {**common_metadata, "line_type": "room_option"},
+            })
+        if room.meal_plan_link_id:
+            meal_plan_name = room.meal_plan_snapshot.get("name") or room.meal_plan_link.meal_plan.name
+            included = bool(room.meal_plan_snapshot.get("is_included"))
+            lines.append({
+                "description": (
+                    f"Meal Plan: {meal_plan_name}"
+                    + (" (Included in room price)" if included else f" ({len(nights)} night(s))")
+                ),
+                "quantity": 1,
+                "unit_price": meal_plan_total,
+                "metadata": {
+                    **common_metadata,
+                    "line_type": "meal_plan",
+                    "meal_plan_link_id": room.meal_plan_link_id,
+                    "meal_plan_id": room.meal_plan_link.meal_plan_id,
+                    "included_in_room_price": included,
+                },
+            })
+        if room.breakfast_snapshot.get("selected"):
+            breakfast_name = room.breakfast_snapshot.get("name") or "Breakfast"
+            included = bool(room.breakfast_snapshot.get("included"))
+            lines.append({
+                "description": (
+                    f"Breakfast: {breakfast_name}"
+                    + (" (Included in room price)" if included else f" ({len(nights)} night(s))")
+                ),
+                "quantity": 1,
+                "unit_price": breakfast_total,
+                "metadata": {
+                    **common_metadata,
+                    "line_type": "breakfast",
+                    "meal_plan_id": room.breakfast_snapshot.get("meal_plan_id"),
+                    "core_meal_plan_id": room.breakfast_snapshot.get("core_meal_plan_id"),
+                    "included_in_room_price": included,
+                },
+            })
     lines.extend({
         "description": item.add_on.name,
         "quantity": 1,
         "unit_price": item.total,
-        "metadata": {"booking_add_on_id": item.id, "add_on_id": item.add_on_id},
+        "metadata": {"booking_add_on_id": item.id, "add_on_id": item.add_on_id, "line_type": "add_on"},
     } for item in booking.add_ons.select_related("add_on").all())
     return lines
 

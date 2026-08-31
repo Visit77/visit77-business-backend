@@ -561,6 +561,46 @@ class BookingServiceTests(TestCase):
             [Decimal("24000"), Decimal("24000")],
         )
 
+    def test_initial_invoice_splits_room_extra_bed_meal_plan_and_breakfast_lines(self):
+        self.rate_plan.extra_bed_base_price = Decimal("30000")
+        self.rate_plan.save(update_fields=["extra_bed_base_price"])
+        meal_plan = MealPlan.objects.create(
+            hotel=self.hotel,
+            core_meal_plan_id=451,
+            name="Dinner Plan",
+            included_meals=["dinner"],
+            local_base_price=Decimal("20000"),
+            foreign_base_price=Decimal("30000"),
+        )
+        link = RoomTypeMealPlan.objects.create(
+            room_type=self.room_type,
+            meal_plan=meal_plan,
+            is_included=False,
+            is_guest_selectable=True,
+        )
+        self.room_type.breakfast_plan_type = RoomType.BreakfastPlanType.CUSTOM_PRICE
+        self.room_type.breakfast_custom_local_base_price = Decimal("12000")
+        self.room_type.save(update_fields=[
+            "breakfast_plan_type",
+            "breakfast_custom_local_base_price",
+        ])
+        payload = self.payload()
+        payload["rooms"][0].update({
+            "meal_plan_link_id": link.id,
+            "breakfast_selected": True,
+        })
+
+        booking, _ = create_booking(payload)
+
+        invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
+        lines = {line.metadata["line_type"]: line for line in invoice.lines.all()}
+        self.assertEqual(set(lines), {"room", "extra_bed", "meal_plan", "breakfast"})
+        self.assertEqual(lines["room"].total, Decimal("320000"))
+        self.assertEqual(lines["extra_bed"].total, Decimal("60000"))
+        self.assertEqual(lines["meal_plan"].total, Decimal("80000"))
+        self.assertEqual(lines["breakfast"].total, Decimal("48000"))
+        self.assertEqual(invoice.total, booking.grand_total)
+
     def test_default_included_meal_plan_is_attached_without_charge(self):
         meal_plan = MealPlan.objects.create(
             hotel=self.hotel,
@@ -586,6 +626,10 @@ class BookingServiceTests(TestCase):
         self.assertEqual(booking_room.meal_plan_total, Decimal("0"))
         self.assertTrue(booking_room.meal_plan_snapshot["is_included"])
         self.assertIn("pricing_mode", booking_room.meal_plan_snapshot)
+        invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
+        meal_plan_line = invoice.lines.get(metadata__line_type="meal_plan")
+        self.assertEqual(meal_plan_line.total, Decimal("0"))
+        self.assertTrue(meal_plan_line.metadata["included_in_room_price"])
 
     def test_deposit_confirms_and_refund_updates_paid_balance(self):
         self.rate_plan.cancellation_policy = {"type": "free_full_refund"}
