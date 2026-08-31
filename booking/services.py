@@ -2472,13 +2472,28 @@ def cancel_booking(booking):
         raise ValidationError("This booking cannot be canceled.")
     source = "held_rooms" if booking.status == Booking.Status.PENDING_PAYMENT else "reserved_rooms"
     _move_inventory(booking, source)
-    RoomAssignment.objects.filter(
+    active_assignments = RoomAssignment.objects.filter(
         booking_room__booking=booking,
         released_at__isnull=True,
-    ).update(released_at=timezone.now())
+    )
+    assigned_room_ids = list(active_assignments.values_list("physical_room_id", flat=True))
+    active_assignments.update(released_at=timezone.now())
     booking.status = Booking.Status.CANCELED
     booking.hold_expires_at = None
     booking.save(update_fields=["status", "hold_expires_at", "updated_at"])
+
+    # A confirmed reservation must never make a physical room operationally
+    # occupied. Repair legacy/stale states while releasing its assignment, but
+    # never vacate a room that is genuinely occupied by another checked-in stay.
+    checked_in_room_ids = RoomAssignment.objects.filter(
+        physical_room_id__in=assigned_room_ids,
+        released_at__isnull=True,
+        booking_room__booking__status=Booking.Status.CHECKED_IN,
+    ).values_list("physical_room_id", flat=True)
+    PhysicalRoom.objects.filter(
+        id__in=assigned_room_ids,
+        status=PhysicalRoom.Status.OCCUPIED,
+    ).exclude(id__in=checked_in_room_ids).update(status=PhysicalRoom.Status.VACANT)
     return booking
 
 

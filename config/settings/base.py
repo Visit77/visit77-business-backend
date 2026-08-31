@@ -178,7 +178,10 @@ CELERY_BEAT_SCHEDULE = {
     },
     "auto-cancel-no-show-reservations": {
         "task": "booking.tasks.auto_cancel_no_show_reservations_task",
-        "schedule": crontab(hour=0, minute=5),
+        # Keep this idempotent cleanup frequent. A once-daily schedule can be
+        # missed when beat is restarted around midnight, leaving yesterday's
+        # no-shows confirmed and their rooms unavailable for another day.
+        "schedule": crontab(minute="*/15"),
     },
 }
 

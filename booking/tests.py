@@ -466,6 +466,8 @@ class BookingServiceTests(TestCase):
             booking_room=booking.rooms.first(),
             physical_room=room,
         )
+        room.status = PhysicalRoom.Status.OCCUPIED
+        room.save(update_fields=["status"])
         history_count_before_cancel = PhysicalRoomActionHistory.objects.filter(
             physical_room=room,
         ).count()
@@ -474,9 +476,11 @@ class BookingServiceTests(TestCase):
 
         booking.refresh_from_db()
         assignment.refresh_from_db()
+        room.refresh_from_db()
         self.assertEqual(canceled_count, 1)
         self.assertEqual(booking.status, Booking.Status.CANCELED)
         self.assertIsNotNone(assignment.released_at)
+        self.assertEqual(room.status, PhysicalRoom.Status.VACANT)
         self.assertEqual(
             PhysicalRoomActionHistory.objects.filter(physical_room=room).count(),
             history_count_before_cancel,
