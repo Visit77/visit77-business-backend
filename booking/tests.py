@@ -1744,6 +1744,42 @@ class BookingApiTests(BookingServiceTests):
             booked_unit_prices,
         )
 
+    def test_check_in_form_ignores_payment_when_balance_is_zero(self):
+        booking = create_admin_reservation({
+            **self.payload(),
+            "source": Booking.Source.PHONE,
+        })
+        record_payment(booking, {
+            "provider": "cash",
+            "amount": booking.grand_total,
+            "status": Payment.Status.PAID,
+        }, auto_assign=False)
+        payment_count = booking.payments.count()
+
+        # A later Core price change must not turn a repeated payment payload into
+        # an error when this reservation's snapshotted invoice is already paid.
+        self.rate_plan.base_price = Decimal("111500")
+        self.rate_plan.save(update_fields=["base_price"])
+        response = self.client.patch(
+            f"/api/v1/admin/bookings/{booking.id}/check-in-form/",
+            {
+                "contact_name": "Paid Reservation Guest",
+                "payment": {
+                    "payment_type": "full_payment",
+                    "provider": "cash",
+                    "status": "paid",
+                },
+            },
+            format="json",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        booking.refresh_from_db()
+        self.assertEqual(booking.payments.count(), payment_count)
+        self.assertEqual(response.data["data"]["payment_summary"]["amount_due"], Decimal("0"))
+
     def test_check_in_form_accepts_multi_room_payment_and_photo_multipart_fields(self):
         first_room = PhysicalRoom.objects.create(
             hotel=self.hotel, room_type=self.room_type, room_number="CHECKIN-MULTI-1",

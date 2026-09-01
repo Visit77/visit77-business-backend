@@ -3259,11 +3259,15 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
                     )
             if payment_data:
                 payment_data = dict(payment_data)
-                if "amount" not in payment_data:
-                    payment_data["amount"] = max(booking.grand_total - booking.amount_paid, Decimal("0"))
-                if payment_data["amount"] <= 0:
-                    raise ValidationError({"payment": "This booking has no outstanding balance."})
-                record_payment(booking, payment_data, auto_assign=False)
+                outstanding_balance = max(
+                    booking.grand_total - booking.amount_paid, Decimal("0"),
+                )
+                # Mobile clients may resend the payment section when saving an
+                # already-paid check-in form. Treat it as an idempotent no-op.
+                if outstanding_balance > 0:
+                    if "amount" not in payment_data:
+                        payment_data["amount"] = outstanding_balance
+                    record_payment(booking, payment_data, auto_assign=False)
         booking = self.get_queryset().prefetch_related("guests__identity_documents").get(pk=booking.pk)
         return success({
             "booking": BookingSerializer(booking, context={"request": request}).data,
