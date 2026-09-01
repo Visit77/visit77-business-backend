@@ -21,6 +21,8 @@ from booking.authentication import CoreJWTAuthentication
 from booking.integrations.core import CoreClient, sync_business_from_core
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
+from booking.tasks import send_booking_confirmation_email_task, send_booking_confirmation_sms_task
+
 from booking.serializers import (
     AddOnSerializer,
     AddOnTemplateApprovalSerializer,
@@ -574,38 +576,86 @@ class PublicStayBillView(APIView):
 class PublicDemoPaymentView(APIView):
     permission_classes = [AllowAny]
 
+    @transaction.atomic
     def post(self, request, public_token):
         if not settings.DEMO_PAYMENT_ENABLED:
             raise NotFound("Demo payment is not available.")
-        booking = Booking.objects.filter(public_token=public_token).select_related("hotel").first()
+
+        booking = (
+            Booking.objects
+            .select_for_update()
+            .filter(public_token=public_token)
+            .select_related("hotel")
+            .first()
+        )
+
         if not booking:
             raise NotFound("Booking not found.")
 
-        existing = booking.payments.filter(provider=Payment.Provider.DEMO, status=Payment.Status.PAID).order_by("-created_at").first()
+        existing = (
+            booking.payments
+            .filter(
+                provider=Payment.Provider.DEMO,
+                status=Payment.Status.PAID,
+            )
+            .order_by("-created_at")
+            .first()
+        )
+
         if existing and booking.status == Booking.Status.CONFIRMED:
             return success(
-                {"booking": BookingSerializer(booking).data, "payment": PaymentSerializer(existing).data},
+                {
+                    "booking": BookingSerializer(booking).data,
+                    "payment": PaymentSerializer(existing).data,
+                },
                 extra_dict={"duplicate": True},
             )
+
         if booking.status != Booking.Status.PENDING_PAYMENT:
-            raise ValidationError(f"A booking in status '{booking.status}' cannot be demo-paid.")
+            raise ValidationError(
+                f"A booking in status '{booking.status}' cannot be demo-paid."
+            )
 
         amount_due = booking.grand_total - booking.amount_paid
-        payment = record_payment(booking, {
-            "provider": Payment.Provider.DEMO,
-            "provider_reference": f"DEMO-{booking.reference}",
-            "status": Payment.Status.PAID,
-            "amount": amount_due,
-            "metadata": {"demo": True},
-        })
+
+        payment = record_payment(
+            booking,
+            {
+                "provider": Payment.Provider.DEMO,
+                "provider_reference": f"DEMO-{booking.reference}",
+                "status": Payment.Status.PAID,
+                "amount": amount_due,
+                "metadata": {
+                    "demo": True,
+                },
+            },
+        )
+
         booking.refresh_from_db()
+
+        # Send confirmation email only after successful DB commit
+        if booking.status == Booking.Status.CONFIRMED:
+            booking_id = str(booking.id)
+        def send_booking_notifications():
+            send_booking_confirmation_email_task(booking_id)
+            send_booking_confirmation_sms_task(booking_id)
+
+        transaction.on_commit(send_booking_notifications)
+            # transaction.on_commit(
+            #     lambda: send_booking_confirmation_email_task(
+            #         booking_id
+            #     )
+            # )
+
         return success(
-            {"booking": BookingSerializer(booking).data, "payment": PaymentSerializer(payment).data},
+            {
+                "booking": BookingSerializer(booking).data,
+                "payment": PaymentSerializer(payment).data,
+            },
             extra_dict={"duplicate": False},
             status_code=status.HTTP_201_CREATED,
             status=status.HTTP_201_CREATED,
         )
-
 
 class PublicAYAPaymentView(APIView):
     permission_classes = [AllowAny]
@@ -643,58 +693,113 @@ class PublicAYAPaymentView(APIView):
 class CorePaymentSuccessView(APIView):
     permission_classes = [HasBookingAdminKey]
 
+    @transaction.atomic
     def post(self, request):
         serializer = CorePaymentSuccessSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
         query = Q()
+
         if data.get("booking_id"):
             query |= Q(id=data["booking_id"])
+
         if data.get("booking_public_token"):
             query |= Q(public_token=data["booking_public_token"])
 
-        booking = Booking.objects.filter(query).select_related("hotel").first()
+        booking = (
+            Booking.objects
+            .select_for_update()
+            .filter(query)
+            .select_related("hotel")
+            .first()
+        )
+
         if not booking:
             raise NotFound("Booking not found.")
-        if booking.hotel.core_business_id != data["business_id"]:
-            raise ValidationError("Booking does not belong to the supplied business.")
 
-        existing = booking.payments.filter(
-            provider=Payment.Provider.AYA,
-            provider_reference=data["payment_reference"],
-            status=Payment.Status.PAID,
-        ).order_by("-created_at").first()
+        if booking.hotel.core_business_id != data["business_id"]:
+            raise ValidationError(
+                "Booking does not belong to the supplied business."
+            )
+
+        existing = (
+            booking.payments
+            .filter(
+                provider=Payment.Provider.AYA,
+                provider_reference=data["payment_reference"],
+                status=Payment.Status.PAID,
+            )
+            .order_by("-created_at")
+            .first()
+        )
+
+        # Duplicate Core webhook:
+        # payment was already processed, so do NOT send email again.
         if existing:
             booking.refresh_from_db()
+
             return success(
-                {"booking": BookingSerializer(booking).data, "payment": PaymentSerializer(existing).data},
-                extra_dict={"duplicate": True},
+                {
+                    "booking": BookingSerializer(booking).data,
+                    "payment": PaymentSerializer(existing).data,
+                },
+                extra_dict={
+                    "duplicate": True,
+                },
             )
 
         if booking.status != Booking.Status.PENDING_PAYMENT:
-            raise ValidationError(f"A booking in status '{booking.status}' cannot be marked paid by Core.")
+            raise ValidationError(
+                f"A booking in status '{booking.status}' "
+                "cannot be marked paid by Core."
+            )
 
         payment_payload = data["payment"] or {}
-        payment = record_payment(booking, {
-            "provider": Payment.Provider.AYA,
-            "provider_reference": data["payment_reference"],
-            "status": Payment.Status.PAID,
-            "amount": data["amount"],
-            "metadata": {
-                "source": "visit77_core_aya_webhook",
-                "core_payment": payment_payload,
-                "aya": data.get("aya") or {},
+
+        payment = record_payment(
+            booking,
+            {
+                "provider": Payment.Provider.AYA,
+                "provider_reference": data["payment_reference"],
+                "status": Payment.Status.PAID,
+                "amount": data["amount"],
+                "metadata": {
+                    "source": "visit77_core_aya_webhook",
+                    "core_payment": payment_payload,
+                    "aya": data.get("aya") or {},
+                },
             },
-        })
+        )
+
         booking.refresh_from_db()
+
+        #
+        # Send only after DB transaction is successfully committed.
+        #
+        # Also send booking CONFIRMATION only if payment logic has
+        # actually moved the booking to CONFIRMED.
+        #
+        if booking.status == Booking.Status.CONFIRMED:
+            booking_id = str(booking.id)
+
+            transaction.on_commit(
+                lambda: send_booking_confirmation_email_task.delay(
+                    booking_id
+                )
+            )
+
         return success(
-            {"booking": BookingSerializer(booking).data, "payment": PaymentSerializer(payment).data},
-            extra_dict={"duplicate": False},
+            {
+                "booking": BookingSerializer(booking).data,
+                "payment": PaymentSerializer(payment).data,
+            },
+            extra_dict={
+                "duplicate": False,
+            },
             status_code=status.HTTP_201_CREATED,
             status=status.HTTP_201_CREATED,
         )
-
 
 class PublicHotelAddOnsView(APIView):
     permission_classes = [AllowAny]

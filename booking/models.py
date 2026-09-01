@@ -2,7 +2,7 @@ import uuid
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 
 from booking.storage import get_private_document_storage
 
@@ -511,6 +511,28 @@ class AddOn(models.Model):
         constraints = [models.UniqueConstraint(fields=["hotel", "code"], name="uniq_add_on_code")]
 
 
+BOOKING_CODE_PREFIX = "V77H-"
+BOOKING_CODES_PER_SERIES = 9_999_999
+
+
+def format_booking_code(sequence_value):
+    """Format a one-based sequence, rolling to the next letter every 10 million."""
+    if sequence_value < 1:
+        raise ValueError("Booking code sequence must be positive.")
+    series_index, number = divmod(sequence_value - 1, BOOKING_CODES_PER_SERIES)
+    if series_index >= 26:
+        raise ValueError("Booking code series A-Z has been exhausted.")
+    series = chr(ord("A") + series_index)
+    return f"{BOOKING_CODE_PREFIX}{series}{number + 1:08d}"
+
+
+class BookingCodeSequence(models.Model):
+    """Singleton counter used to allocate globally unique booking codes safely."""
+
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    last_value = models.PositiveBigIntegerField(default=0)
+
+
 class Booking(models.Model):
     class Source(models.TextChoices):
         OTA = "ota", "OTA"
@@ -529,6 +551,7 @@ class Booking(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     reference = models.CharField(max_length=24, unique=True)
+    booking_code = models.CharField(max_length=15, unique=True, editable=False)
     public_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     hotel = models.ForeignKey(Hotel, on_delete=models.PROTECT, related_name="bookings")
     core_customer_user_id = models.PositiveBigIntegerField(null=True, blank=True)
@@ -566,6 +589,17 @@ class Booking(models.Model):
     @property
     def nights(self):
         return (self.check_out - self.check_in).days
+
+    def save(self, *args, **kwargs):
+        if self.booking_code:
+            return super().save(*args, **kwargs)
+
+        with transaction.atomic():
+            sequence, _ = BookingCodeSequence.objects.select_for_update().get_or_create(pk=1)
+            sequence.last_value += 1
+            self.booking_code = format_booking_code(sequence.last_value)
+            sequence.save(update_fields=["last_value"])
+            return super().save(*args, **kwargs)
 
 
 class BookingRoom(models.Model):
