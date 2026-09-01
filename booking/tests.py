@@ -14,7 +14,7 @@ from rest_framework_simplejwt.backends import TokenBackend
 
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, GuestIdentityDocument, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import CoreIntegrationError, sync_business_from_core
-from booking.services import auto_assign_physical_rooms_for_booking, auto_cancel_no_show_reservations, availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, record_payment, refund_payment, refund_quote
+from booking.services import auto_assign_physical_rooms_for_booking, auto_cancel_no_show_reservations, availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, estimate_booking, record_payment, refund_payment, refund_quote
 
 
 class BookingServiceTests(TestCase):
@@ -562,6 +562,54 @@ class BookingServiceTests(TestCase):
             meal_plan_line.description,
             "Half Board Package for Double Room x 2 x 2 Nights",
         )
+
+    def test_multiple_meal_plans_create_separate_invoice_lines(self):
+        breakfast = MealPlan.objects.create(
+            hotel=self.hotel,
+            core_meal_plan_id=460,
+            name="Breakfast Package",
+            plan_type=MealPlan.PlanType.PACKAGE,
+            local_base_price=Decimal("20000"),
+        )
+        dinner = MealPlan.objects.create(
+            hotel=self.hotel,
+            core_meal_plan_id=461,
+            name="Dinner Package",
+            plan_type=MealPlan.PlanType.PACKAGE,
+            local_base_price=Decimal("30000"),
+        )
+        payload = self.payload()
+        payload["rooms"][0]["meal_plan_ids"] = [breakfast.id, dinner.id]
+
+        estimate = estimate_booking(payload)
+        booking, _ = create_booking(payload)
+
+        booking_room = booking.rooms.get()
+        meal_plan_lines = booking.invoices.get(
+            invoice_type=Invoice.Type.ROOM_BOOKING,
+        ).lines.filter(metadata__line_type="meal_plan").order_by("description")
+        self.assertEqual(booking.grand_total, Decimal("520000"))
+        self.assertEqual(estimate["rooms"][0]["meal_plan_total"], Decimal("200000"))
+        self.assertEqual(len(estimate["rooms"][0]["meal_plans"]), 2)
+        self.assertEqual(len(booking_room.meal_plan_snapshots), 2)
+        self.assertEqual(meal_plan_lines.count(), 2)
+        self.assertEqual(
+            list(meal_plan_lines.values_list("total", flat=True)),
+            [Decimal("80000"), Decimal("120000")],
+        )
+
+    def test_duplicate_multiple_meal_plan_ids_are_rejected(self):
+        meal_plan = MealPlan.objects.create(
+            hotel=self.hotel,
+            core_meal_plan_id=462,
+            name="Duplicate Package",
+            plan_type=MealPlan.PlanType.PACKAGE,
+        )
+        payload = self.payload()
+        payload["rooms"][0]["meal_plan_ids"] = [meal_plan.id, meal_plan.id]
+
+        with self.assertRaises(ValidationError):
+            create_booking(payload)
 
     def test_selected_custom_breakfast_uses_local_price_and_is_snapshotted(self):
         MealPlan.objects.create(

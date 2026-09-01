@@ -1159,6 +1159,9 @@ class RequestedRoomSerializer(serializers.Serializer):
     rate_plan_id = serializers.IntegerField(min_value=1)
     meal_plan_link_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     meal_plan_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    meal_plan_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1), required=False, allow_empty=True,
+    )
     breakfast_selected = serializers.BooleanField(required=False, default=False)
     quantity = serializers.IntegerField(min_value=1, max_value=20)
     adults = serializers.IntegerField(min_value=1, max_value=100, default=1)
@@ -1167,10 +1170,16 @@ class RequestedRoomSerializer(serializers.Serializer):
     preferences = RequestedRoomPreferenceSerializer(required=False, default=dict)
 
     def validate(self, attrs):
-        if attrs.get("meal_plan_id") and attrs.get("meal_plan_link_id"):
+        selected_fields = sum(bool(attrs.get(field)) for field in (
+            "meal_plan_id", "meal_plan_link_id", "meal_plan_ids",
+        ))
+        if selected_fields > 1:
             raise serializers.ValidationError({
-                "meal_plan_id": "Send either meal_plan_id or meal_plan_link_id, not both."
+                "meal_plan_ids": "Send only one of meal_plan_ids, meal_plan_id, or meal_plan_link_id."
             })
+        meal_plan_ids = attrs.get("meal_plan_ids") or []
+        if len(meal_plan_ids) != len(set(meal_plan_ids)):
+            raise serializers.ValidationError({"meal_plan_ids": "Duplicate meal plans are not allowed."})
         return attrs
 
 
@@ -1443,6 +1452,9 @@ class WalkInRoomSerializer(serializers.Serializer):
     rate_plan_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     meal_plan_link_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     meal_plan_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    meal_plan_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1), required=False, allow_empty=True,
+    )
     breakfast_selected = serializers.BooleanField(required=False, default=False)
     adults = serializers.IntegerField(min_value=1, max_value=100, default=1)
     children = serializers.IntegerField(min_value=0, max_value=100, default=0)
@@ -1450,10 +1462,15 @@ class WalkInRoomSerializer(serializers.Serializer):
     preferences = RequestedRoomPreferenceSerializer(required=False, default=dict)
 
     def validate(self, attrs):
-        if attrs.get("meal_plan_id") and attrs.get("meal_plan_link_id"):
+        if sum(bool(attrs.get(field)) for field in (
+            "meal_plan_id", "meal_plan_link_id", "meal_plan_ids",
+        )) > 1:
             raise serializers.ValidationError({
-                "meal_plan_id": "Send either meal_plan_id or meal_plan_link_id, not both."
+                "meal_plan_ids": "Send only one of meal_plan_ids, meal_plan_id, or meal_plan_link_id."
             })
+        meal_plan_ids = attrs.get("meal_plan_ids") or []
+        if len(meal_plan_ids) != len(set(meal_plan_ids)):
+            raise serializers.ValidationError({"meal_plan_ids": "Duplicate meal plans are not allowed."})
         return attrs
 
 
@@ -1467,6 +1484,9 @@ class WalkInBookingCreateSerializer(serializers.Serializer):
     rate_plan_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     meal_plan_link_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     meal_plan_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    meal_plan_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1), required=False, allow_empty=True,
+    )
     breakfast_selected = serializers.BooleanField(required=False, default=False)
     core_customer_user_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     check_in = serializers.DateField()
@@ -1499,16 +1519,18 @@ class WalkInBookingCreateSerializer(serializers.Serializer):
         if has_rooms and any(
             field in self.initial_data
             for field in [
-                "rate_plan_id", "meal_plan_link_id", "meal_plan_id", "breakfast_selected",
+                "rate_plan_id", "meal_plan_link_id", "meal_plan_id", "meal_plan_ids", "breakfast_selected",
                 "adults", "children", "extra_beds", "preferences",
             ]
         ):
             raise serializers.ValidationError({
                 "rooms": "When rooms is provided, send room-specific fields inside each room."
             })
-        if has_legacy_room and attrs.get("meal_plan_id") and attrs.get("meal_plan_link_id"):
+        if has_legacy_room and sum(bool(attrs.get(field)) for field in (
+            "meal_plan_id", "meal_plan_link_id", "meal_plan_ids",
+        )) > 1:
             raise serializers.ValidationError({
-                "meal_plan_id": "Send either meal_plan_id or meal_plan_link_id, not both."
+                "meal_plan_ids": "Send only one of meal_plan_ids, meal_plan_id, or meal_plan_link_id."
             })
         room_ids = [item["physical_room_id"] for item in attrs.get("rooms", [])]
         if len(room_ids) != len(set(room_ids)):

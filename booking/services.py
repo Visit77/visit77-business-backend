@@ -311,6 +311,30 @@ def _resolve_booking_meal_plan(room_type, requested):
     return (link, link.meal_plan) if link else (None, None)
 
 
+def _resolve_booking_meal_plans(room_type, requested):
+    """Resolve multiple standalone plans while retaining legacy single-plan inputs."""
+    meal_plan_ids = requested.get("meal_plan_ids") or []
+    if meal_plan_ids:
+        if requested.get("meal_plan_id") or requested.get("meal_plan_link_id"):
+            raise ValidationError({
+                "rooms": "Send only one of meal_plan_ids, meal_plan_id, or meal_plan_link_id."
+            })
+        if len(meal_plan_ids) != len(set(meal_plan_ids)):
+            raise ValidationError({"rooms": "Duplicate meal plans are not allowed."})
+        plans = {
+            plan.id: plan
+            for plan in MealPlan.objects.filter(
+                id__in=meal_plan_ids, hotel=room_type.hotel, core_active=True,
+            )
+        }
+        if len(plans) != len(meal_plan_ids):
+            raise ValidationError({"rooms": f"A selected meal plan is unavailable for {room_type.name}."})
+        return [(None, plans[plan_id]) for plan_id in meal_plan_ids]
+
+    link, plan = _resolve_booking_meal_plan(room_type, requested)
+    return [(link, plan)] if plan else []
+
+
 def _meal_plan_booking_snapshot(link, meal_plan, guest_market, room_type, display_currency=None):
     if not meal_plan:
         return {}
@@ -1136,10 +1160,12 @@ def estimate_booking(data):
             len(dates),
             quantity,
         )
-        meal_plan_link, meal_plan = _resolve_booking_meal_plan(room_type, requested)
-        meal_plan_snapshot = _meal_plan_booking_snapshot(
-            meal_plan_link, meal_plan, guest_market, room_type,
-        )
+        resolved_meal_plans = _resolve_booking_meal_plans(room_type, requested)
+        meal_plan_snapshots = [
+            _meal_plan_booking_snapshot(link, plan, guest_market, room_type)
+            for link, plan in resolved_meal_plans
+        ]
+        meal_plan_snapshot = meal_plan_snapshots[0] if meal_plan_snapshots else {}
         breakfast_snapshot, breakfast_unit_price = _resolve_booking_breakfast(room_type, requested, guest_market)
         ensure_preference_capacity(
             room_type,
@@ -1159,9 +1185,10 @@ def estimate_booking(data):
             rule = daily_rate_rows.get(day) or periods.get(day)
             unit_price, usd_display_price = _rate_amounts(rule, rate_plan)
             extra_bed_total = rate_plan.extra_bed_base_price * extra_beds
-            meal_plan_night_total = _meal_plan_nightly_total(
-                meal_plan_link, meal_plan, guest_market, quantity,
-            )
+            meal_plan_night_total = sum((
+                _meal_plan_nightly_total(link, plan, guest_market, quantity)
+                for link, plan in resolved_meal_plans
+            ), Decimal("0"))
             breakfast_night_total = breakfast_unit_price * quantity
             night_total = unit_price * quantity + extra_bed_total + nightly_option_total + meal_plan_night_total + breakfast_night_total
             nights.append({
@@ -1217,7 +1244,14 @@ def estimate_booking(data):
                 "amount": option_total,
                 "formatted_amount": format_money(option_total, hotel.base_currency),
             })
-        if meal_plan_stay_total:
+        for (meal_plan_link, meal_plan), snapshot in zip(resolved_meal_plans, meal_plan_snapshots):
+            plan_stay_total = _meal_plan_nightly_total(
+                meal_plan_link, meal_plan, guest_market, quantity,
+            ) * len(dates)
+            snapshot["nightly_total"] = str(
+                _meal_plan_nightly_total(meal_plan_link, meal_plan, guest_market, quantity)
+            )
+            snapshot["stay_total"] = str(plan_stay_total)
             summary_items.append({
                 "type": "meal_plan",
                 "label": f"{meal_plan.name} x {quantity} Room{'s' if quantity != 1 else ''} x {len(dates)} Night{'s' if len(dates) != 1 else ''}",
@@ -1227,8 +1261,8 @@ def estimate_booking(data):
                 "meal_plan_link_id": meal_plan_link.id if meal_plan_link else None,
                 "meal_plan_id": meal_plan.id,
                 "quantity": quantity,
-                "amount": meal_plan_stay_total,
-                "formatted_amount": format_money(meal_plan_stay_total, hotel.base_currency),
+                "amount": plan_stay_total,
+                "formatted_amount": format_money(plan_stay_total, hotel.base_currency),
             })
         if breakfast_stay_total:
             summary_items.append({
@@ -1251,6 +1285,7 @@ def estimate_booking(data):
             "preference_snapshot": preference_snapshot,
             "option_total": option_total,
             "meal_plan": meal_plan_snapshot,
+            "meal_plans": meal_plan_snapshots,
             "meal_plan_total": meal_plan_stay_total,
             "breakfast": breakfast_snapshot,
             "breakfast_total": breakfast_stay_total,
@@ -1348,10 +1383,13 @@ def create_booking(data, idempotency_key=None):
             len(dates),
             quantity,
         )
-        meal_plan_link, meal_plan = _resolve_booking_meal_plan(room_type, requested)
-        meal_plan_snapshot = _meal_plan_booking_snapshot(
-            meal_plan_link, meal_plan, guest_market, room_type,
-        )
+        resolved_meal_plans = _resolve_booking_meal_plans(room_type, requested)
+        meal_plan_snapshots = [
+            _meal_plan_booking_snapshot(link, plan, guest_market, room_type)
+            for link, plan in resolved_meal_plans
+        ]
+        meal_plan_link, meal_plan = resolved_meal_plans[0] if resolved_meal_plans else (None, None)
+        meal_plan_snapshot = meal_plan_snapshots[0] if meal_plan_snapshots else {}
         breakfast_snapshot, breakfast_unit_price = _resolve_booking_breakfast(room_type, requested, guest_market)
         ensure_preference_capacity(
             room_type,
@@ -1387,6 +1425,7 @@ def create_booking(data, idempotency_key=None):
                 "cancellation_policy": rate_plan.cancellation_policy,
             },
             meal_plan_snapshot=meal_plan_snapshot,
+            meal_plan_snapshots=meal_plan_snapshots,
             breakfast_snapshot=breakfast_snapshot,
             preference_snapshot=preference_snapshot,
             option_total=option_total,
@@ -1411,9 +1450,10 @@ def create_booking(data, idempotency_key=None):
             rule = daily_rate_rows.get(day) or periods.get(day)
             unit_price, _usd_display_price = _rate_amounts(rule, rate_plan)
             extra_bed_total = rate_plan.extra_bed_base_price * requested.get("extra_beds", 0)
-            meal_plan_night_total = _meal_plan_nightly_total(
-                meal_plan_link, meal_plan, guest_market, quantity,
-            )
+            meal_plan_night_total = sum((
+                _meal_plan_nightly_total(link, plan, guest_market, quantity)
+                for link, plan in resolved_meal_plans
+            ), Decimal("0"))
             breakfast_night_total = breakfast_unit_price * quantity
             night_total = unit_price * quantity + extra_bed_total + nightly_option_total + meal_plan_night_total + breakfast_night_total
             BookingRoomNight.objects.create(
@@ -1430,10 +1470,19 @@ def create_booking(data, idempotency_key=None):
             item_total += night_total
             meal_plan_stay_total += meal_plan_night_total
             breakfast_stay_total += breakfast_night_total
+        for (link, plan), snapshot in zip(resolved_meal_plans, meal_plan_snapshots):
+            plan_nightly_total = _meal_plan_nightly_total(link, plan, guest_market, quantity)
+            snapshot["nightly_total"] = str(plan_nightly_total)
+            snapshot["stay_total"] = str(plan_nightly_total * len(dates))
         booking_room.total = item_total
         booking_room.meal_plan_total = meal_plan_stay_total
         booking_room.breakfast_total = breakfast_stay_total
-        booking_room.save(update_fields=["meal_plan_total", "breakfast_total", "total"])
+        booking_room.meal_plan_snapshots = meal_plan_snapshots
+        booking_room.meal_plan_snapshot = meal_plan_snapshots[0] if meal_plan_snapshots else {}
+        booking_room.save(update_fields=[
+            "meal_plan_snapshot", "meal_plan_snapshots", "meal_plan_total",
+            "breakfast_total", "total",
+        ])
         room_total += item_total
         policy_snapshot[str(rate_plan.id)] = rate_plan.cancellation_policy
 
@@ -1613,11 +1662,15 @@ def _booking_charge_lines(booking):
         group["extra_bed_count"] += room.extra_beds
         group["extra_bed_total"] += extra_bed_total
         group["option_total"] += option_total
-        meal_plan_snapshot = room.meal_plan_snapshot or {}
-        meal_plan_id = meal_plan_snapshot.get("meal_plan_id")
-        if not meal_plan_id and room.meal_plan_link_id:
-            meal_plan_id = room.meal_plan_link.meal_plan_id
-        if meal_plan_id:
+        meal_plan_snapshots = room.meal_plan_snapshots or (
+            [room.meal_plan_snapshot] if room.meal_plan_snapshot else []
+        )
+        for meal_plan_snapshot in meal_plan_snapshots:
+            meal_plan_id = meal_plan_snapshot.get("meal_plan_id")
+            if not meal_plan_id and room.meal_plan_link_id:
+                meal_plan_id = room.meal_plan_link.meal_plan_id
+            if not meal_plan_id:
+                continue
             linked_meal_plan_name = (
                 room.meal_plan_link.meal_plan.name if room.meal_plan_link_id else "Meal Plan"
             )
@@ -1628,12 +1681,15 @@ def _booking_charge_lines(booking):
                 "name": meal_plan_name,
                 "quantity": 0,
                 "total": Decimal("0"),
-                "meal_plan_link_id": room.meal_plan_link_id,
+                "meal_plan_link_id": meal_plan_snapshot.get("meal_plan_link_id"),
                 "meal_plan_id": meal_plan_id,
                 "included": included,
             })
             plan["quantity"] += room.quantity
-            plan["total"] += meal_plan_total
+            snapshot_total = meal_plan_snapshot.get("stay_total")
+            if snapshot_total is None and len(meal_plan_snapshots) == 1:
+                snapshot_total = meal_plan_total
+            plan["total"] += Decimal(str(snapshot_total or "0"))
         if room.breakfast_snapshot.get("selected"):
             breakfast_name = room.breakfast_snapshot.get("name") or "Breakfast"
             included = bool(room.breakfast_snapshot.get("included"))
@@ -1893,6 +1949,7 @@ def create_walk_in_booking(data, idempotency_key=None, core_business_id=None, ch
         "physical_room_id": data["physical_room_id"],
         "rate_plan_id": data.get("rate_plan_id"),
         "meal_plan_id": data.get("meal_plan_id"),
+        "meal_plan_ids": data.get("meal_plan_ids") or [],
         "meal_plan_link_id": data.get("meal_plan_link_id"),
         "breakfast_selected": data.get("breakfast_selected", False),
         "adults": data.get("adults", 1),
@@ -1984,6 +2041,7 @@ def create_walk_in_booking(data, idempotency_key=None, core_business_id=None, ch
                     "core_room_type_id": physical_room.room_type.core_room_type_id,
                     "rate_plan_id": rate_plan.id,
                     "meal_plan_id": requested.get("meal_plan_id"),
+                    "meal_plan_ids": requested.get("meal_plan_ids") or [],
                     "meal_plan_link_id": requested.get("meal_plan_link_id"),
                     "breakfast_selected": requested.get("breakfast_selected", False),
                     "quantity": 1,
@@ -2182,9 +2240,15 @@ def update_reservation_for_check_in(booking, data):
                 "core_room_type_id": room.room_type.core_room_type_id,
                 "rate_plan_id": room.rate_plan_id,
                 "meal_plan_id": (
-                    None if room.meal_plan_link_id
-                    else (room.meal_plan_snapshot or {}).get("meal_plan_id")
+                    (room.meal_plan_snapshot or {}).get("meal_plan_id")
+                    if not room.meal_plan_link_id and not room.meal_plan_snapshots
+                    else None
                 ),
+                "meal_plan_ids": [
+                    snapshot.get("meal_plan_id")
+                    for snapshot in (room.meal_plan_snapshots or [])
+                    if snapshot.get("meal_plan_id")
+                ],
                 "meal_plan_link_id": room.meal_plan_link_id,
                 "breakfast_selected": bool(room.breakfast_snapshot.get("selected")),
                 "quantity": room.quantity,

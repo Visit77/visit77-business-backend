@@ -76,6 +76,10 @@ class RoomType(models.Model):
 
 
 class MealPlan(models.Model):
+    class PlanType(models.TextChoices):
+        SINGLE = "single", "Single Meal"
+        PACKAGE = "package", "Meal Package"
+
     class Availability(models.TextChoices):
         GUEST_ONLY = "guest_only", "Guest Only"
         PUBLIC = "public", "Public / Walk-in"
@@ -614,6 +618,7 @@ class BookingRoom(models.Model):
     room_type_snapshot = models.JSONField(default=dict)
     rate_plan_snapshot = models.JSONField(default=dict)
     meal_plan_snapshot = models.JSONField(default=dict, blank=True)
+    meal_plan_snapshots = models.JSONField(default=list, blank=True)
     breakfast_snapshot = models.JSONField(default=dict, blank=True)
     preference_snapshot = models.JSONField(default=dict, blank=True)
     option_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
