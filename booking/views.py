@@ -474,11 +474,13 @@ class PublicBookingCreateView(APIView):
             if room_match:
                 index = int(room_match.group(1))
                 field = room_match.group(2)
-                if field == "preferences" and isinstance(value, str):
+                if field in {"preferences", "meal_plan_ids"} and isinstance(value, str):
                     try:
                         value = json.loads(value)
                     except (TypeError, ValueError):
                         raise ValidationError({key: "Must be valid JSON."})
+                    if field == "meal_plan_ids" and not isinstance(value, list):
+                        raise ValidationError({key: "Must be a JSON list."})
                 nested_rooms.setdefault(index, {})[field] = value
 
         if nested_guests:
@@ -3144,7 +3146,16 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
                     continue
                 room_match = room_field_pattern.match(key)
                 if room_match:
-                    nested_rooms.setdefault(int(room_match.group(1)), {})[room_match.group(2)] = value
+                    index = int(room_match.group(1))
+                    field = room_match.group(2)
+                    if field == "meal_plan_ids" and isinstance(value, str):
+                        try:
+                            value = json.loads(value)
+                        except (TypeError, ValueError):
+                            raise ValidationError({key: "Must be valid JSON."})
+                        if not isinstance(value, list):
+                            raise ValidationError({key: "Must be a JSON list."})
+                    nested_rooms.setdefault(index, {})[field] = value
                     continue
                 add_on_match = add_on_field_pattern.match(key)
                 if add_on_match:
@@ -3714,11 +3725,13 @@ class WalkInBookingV2View(APIView):
             if room_match:
                 index = int(room_match.group(1))
                 field = room_match.group(2)
-                if field == "preferences" and isinstance(value, str):
+                if field in {"preferences", "meal_plan_ids"} and isinstance(value, str):
                     try:
                         value = json.loads(value)
                     except (TypeError, ValueError):
                         raise ValidationError({key: "Must be valid JSON."})
+                    if field == "meal_plan_ids" and not isinstance(value, list):
+                        raise ValidationError({key: "Must be a JSON list."})
                 nested_rooms.setdefault(index, {})[field] = value
 
         if nested_guests:

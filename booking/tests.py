@@ -3540,6 +3540,70 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(detail.data["data"]["contact_name"], "Myo Myo")
         self.assertEqual(detail.data["data"]["booking_code"], response.data["data"]["booking_code"])
 
+    def test_public_booking_form_data_parses_meal_plan_ids_json_string(self):
+        breakfast = MealPlan.objects.create(
+            hotel=self.hotel,
+            core_meal_plan_id=8801,
+            name="Multipart Breakfast",
+            plan_type=MealPlan.PlanType.PACKAGE,
+            local_base_price=Decimal("10000"),
+        )
+        dinner = MealPlan.objects.create(
+            hotel=self.hotel,
+            core_meal_plan_id=8802,
+            name="Multipart Dinner",
+            plan_type=MealPlan.PlanType.PACKAGE,
+            local_base_price=Decimal("20000"),
+        )
+        payload = self.payload()
+        response = self.client.post(
+            "/api/v1/public/bookings/",
+            {
+                "core_business_id": str(payload["core_business_id"]),
+                "check_in": str(payload["check_in"]),
+                "check_out": str(payload["check_out"]),
+                "contact_name": payload["contact_name"],
+                "contact_phone": payload["contact_phone"],
+                "guest_market": payload["guest_market"],
+                "rooms[0][core_room_type_id]": str(payload["rooms"][0]["core_room_type_id"]),
+                "rooms[0][rate_plan_id]": str(payload["rooms"][0]["rate_plan_id"]),
+                "rooms[0][quantity]": str(payload["rooms"][0]["quantity"]),
+                "rooms[0][adults]": str(payload["rooms"][0]["adults"]),
+                "rooms[0][children]": str(payload["rooms"][0]["children"]),
+                "rooms[0][meal_plan_ids]": f"[{breakfast.id},{dinner.id}]",
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        booking = Booking.objects.get(id=response.data["data"]["id"])
+        self.assertEqual(
+            [item["meal_plan_id"] for item in booking.rooms.get().meal_plan_snapshots],
+            [breakfast.id, dinner.id],
+        )
+
+    def test_public_booking_form_data_rejects_non_list_meal_plan_ids(self):
+        payload = self.payload()
+        response = self.client.post(
+            "/api/v1/public/bookings/",
+            {
+                "core_business_id": str(payload["core_business_id"]),
+                "check_in": str(payload["check_in"]),
+                "check_out": str(payload["check_out"]),
+                "contact_name": payload["contact_name"],
+                "contact_phone": payload["contact_phone"],
+                "guest_market": payload["guest_market"],
+                "rooms[0][core_room_type_id]": str(payload["rooms"][0]["core_room_type_id"]),
+                "rooms[0][rate_plan_id]": str(payload["rooms"][0]["rate_plan_id"]),
+                "rooms[0][quantity]": "1",
+                "rooms[0][meal_plan_ids]": "66",
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("Must be a JSON list", str(response.data["error"]))
+
     def test_public_booking_accepts_optional_guest_identity_photo_form_data(self):
         payload = self.payload()
         response = self.client.post(
