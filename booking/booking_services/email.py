@@ -30,7 +30,7 @@ def send_booking_confirmation_email(booking):
     message = f"""
 Booking Confirmation with Visit77
 
-Booking ID: {booking.reference}
+Booking ID: {booking.booking_code}
 
 Hotel: {booking.hotel.name}
 
@@ -50,3 +50,4 @@ View booking: {booking_url}
         recipient_list=[recipient_email],
         fail_silently=False,
     )
+    return True

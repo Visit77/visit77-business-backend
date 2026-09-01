@@ -54,7 +54,7 @@ def send_booking_confirmation_email_task(self, booking_id):
     if not sent:
         logger.info(
             "Booking confirmation email skipped because booking %s has no email.",
-            booking.reference,
+            booking.booking_code,
         )
 
     return sent
@@ -104,7 +104,7 @@ def send_booking_confirmation_sms_task(booking_id):
 
     message = (
         f"Your Visit77 booking is confirmed.\n "
-        f"Booking ID: {booking.reference}\n "
+        f"Booking ID: {booking.booking_code}\n "
         f"Hotel: {booking.hotel.name}\n"
         f"Check-in: {booking.check_in:%d %b %Y}\n"
         f"Check-out: {booking.check_out:%d %b %Y}\n"

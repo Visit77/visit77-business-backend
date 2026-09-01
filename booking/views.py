@@ -566,6 +566,7 @@ class PublicStayBillView(APIView):
             raise NotFound("Booking not found.")
         return success({
             "booking_id": str(booking.id),
+            "booking_code": booking.booking_code,
             "booking_reference": booking.reference,
             "stay_status": booking.status,
             "currency": booking.currency,
@@ -3059,7 +3060,7 @@ class SuperAdminAddOnTemplateRequestViewSet(FormattedResponseMixin, mixins.ListM
 class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
     permission_classes = [HasBookingAdminKey]
     serializer_class = BookingSerializer
-    filterset_fields = ["hotel", "status", "check_in", "check_out", "reference"]
+    filterset_fields = ["hotel", "status", "check_in", "check_out", "reference", "booking_code"]
     business_scoped = True
     business_lookup = "hotel__core_business_id"
 
@@ -3076,6 +3077,7 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
         booking = self.get_object()
         return success({
             "booking_id": str(booking.id),
+            "booking_code": booking.booking_code,
             "booking_reference": booking.reference,
             "stay_status": booking.status,
             "currency": booking.currency,

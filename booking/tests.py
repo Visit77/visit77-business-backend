@@ -1893,13 +1893,16 @@ class BookingApiTests(BookingServiceTests):
 
         admin_bill = self.client.get(f"/api/v1/admin/bookings/{booking.id}/stay-bill/", **headers)
         self.assertEqual(admin_bill.status_code, 200, admin_bill.data)
+        self.assertEqual(admin_bill.data["data"]["booking_code"], booking.booking_code)
         self.assertEqual(len(admin_bill.data["data"]["invoices"]), 2)
         extra = next(item for item in admin_bill.data["data"]["invoices"] if item["id"] == extra_invoice_id)
+        self.assertEqual(extra["booking_code"], booking.booking_code)
         self.assertEqual(extra["status"], Invoice.Status.PAID)
         self.assertEqual(len(extra["receipts"]), 1)
 
         public_bill = self.client.get(f"/api/v1/public/bookings/{booking.public_token}/stay-bill/")
         self.assertEqual(public_bill.status_code, 200, public_bill.data)
+        self.assertEqual(public_bill.data["data"]["booking_code"], booking.booking_code)
         self.assertEqual(len(public_bill.data["data"]["invoices"]), 2)
         room_invoice = next(
             item
@@ -3530,10 +3533,12 @@ class BookingApiTests(BookingServiceTests):
         payload["check_out"] = str(payload["check_out"])
         response = self.client.post("/api/v1/public/bookings/", payload, format="json", HTTP_IDEMPOTENCY_KEY="api-key")
         self.assertEqual(response.status_code, 201, response.data)
+        self.assertTrue(response.data["data"]["booking_code"].startswith("V77H-"))
         token = response.data["data"]["public_token"]
         detail = self.client.get(f"/api/v1/public/bookings/{token}/")
         self.assertEqual(detail.status_code, 200)
         self.assertEqual(detail.data["data"]["contact_name"], "Myo Myo")
+        self.assertEqual(detail.data["data"]["booking_code"], response.data["data"]["booking_code"])
 
     def test_public_booking_accepts_optional_guest_identity_photo_form_data(self):
         payload = self.payload()

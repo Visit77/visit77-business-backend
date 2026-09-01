@@ -1045,6 +1045,7 @@ class InvoiceLineSerializer(serializers.ModelSerializer):
 
 
 class InvoiceSerializer(serializers.ModelSerializer):
+    booking_code = serializers.CharField(source="booking.booking_code", read_only=True)
     lines = InvoiceLineSerializer(many=True, read_only=True)
     receipts = PaymentSerializer(many=True, read_only=True)
     paid_amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
@@ -1077,6 +1078,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             Decimal("0"),
         )
         return {
+            "booking_code": booking.booking_code,
             "hotel": {
                 "name": booking.hotel.name,
                 "address": booking.hotel.address,
@@ -1121,6 +1123,7 @@ class InvoiceCreateSerializer(serializers.Serializer):
 
 
 class BookingSerializer(serializers.ModelSerializer):
+    booking_code = serializers.CharField(read_only=True)
     rooms = BookingRoomSerializer(many=True, read_only=True)
     guests = GuestSerializer(many=True, read_only=True)
     add_ons = BookingAddOnSerializer(many=True, read_only=True)
