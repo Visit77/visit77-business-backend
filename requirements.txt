@@ -12,3 +12,7 @@ celery==5.5.3
 redis==6.1.0
 django-storages[s3]==1.14.6
 debugpy==1.8.14
+requests==2.32.3
+boto3==1.28.49
+botocore==1.31.49
+python-multipart==0.0.6
