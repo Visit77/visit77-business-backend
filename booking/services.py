@@ -320,7 +320,7 @@ def _resolve_booking_meal_plan(room_type, requested):
         raise ValidationError({"rooms": "Send either meal_plan_id or meal_plan_link_id, not both."})
     if meal_plan_id:
         meal_plan = MealPlan.objects.filter(
-            id=meal_plan_id,
+            core_meal_plan_id=meal_plan_id,
             hotel=room_type.hotel,
             core_active=True,
         ).first()
