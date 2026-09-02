@@ -12,9 +12,9 @@ from rest_framework.test import APIClient
 from rest_framework.exceptions import ValidationError
 from rest_framework_simplejwt.backends import TokenBackend
 
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, GuestIdentityDocument, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import CoreIntegrationError, sync_business_from_core
-from booking.services import auto_assign_physical_rooms_for_booking, auto_cancel_no_show_reservations, availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, estimate_booking, record_payment, refund_payment, refund_quote
+from booking.services import auto_assign_physical_rooms_for_booking, auto_cancel_no_show_reservations, availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, estimate_booking, record_payment, refund_payment, refund_quote, sync_guest_profile
 
 
 class BookingServiceTests(TestCase):
@@ -76,6 +76,53 @@ class BookingServiceTests(TestCase):
         self.assertFalse(created)
         self.assertEqual(first.id, second.id)
         self.assertEqual(list(DailyInventory.objects.values_list("held_rooms", flat=True)), [2, 2])
+
+    def test_guest_profile_reuses_phone_enriches_email_and_splits_conflicts(self):
+        first_payload = self.payload()
+        first_payload["rooms"][0]["quantity"] = 1
+        first_payload["rooms"][0]["adults"] = 1
+        first_payload["guests"] = [{
+            "name": "Phone Guest", "phone": "09 111-222-333", "is_primary": True,
+        }]
+        first, _ = create_booking(first_payload)
+        first_profile = first.guests.get().profile
+
+        second_payload = self.payload()
+        second_payload["check_in"] = self.check_out + timedelta(days=1)
+        second_payload["check_out"] = second_payload["check_in"] + timedelta(days=2)
+        second_payload["rooms"][0]["quantity"] = 1
+        second_payload["rooms"][0]["adults"] = 1
+        second_payload["guests"] = [{
+            "name": "Phone Guest",
+            "phone": "09111222333",
+            "email": "guest@example.com",
+            "is_primary": True,
+        }]
+        second, _ = create_booking(second_payload)
+        second_profile = second.guests.get().profile
+        first_profile.refresh_from_db()
+
+        self.assertEqual(second_profile.id, first_profile.id)
+        self.assertEqual(first_profile.normalized_email, "guest@example.com")
+
+        third_payload = self.payload()
+        third_payload["check_in"] = second_payload["check_out"] + timedelta(days=1)
+        third_payload["check_out"] = third_payload["check_in"] + timedelta(days=2)
+        third_payload["rooms"][0]["quantity"] = 1
+        third_payload["rooms"][0]["adults"] = 1
+        third_payload["guests"] = [{
+            "name": "Different Guest",
+            "phone": "09111222333",
+            "email": "different@example.com",
+            "is_primary": True,
+        }]
+        third, _ = create_booking(third_payload)
+        third_profile = third.guests.get().profile
+        first_profile.refresh_from_db()
+
+        self.assertNotEqual(third_profile.id, first_profile.id)
+        self.assertTrue(first_profile.possible_duplicate)
+        self.assertTrue(third_profile.possible_duplicate)
 
     def test_ota_auto_assignment_uses_lowest_available_room_number_first_fit(self):
         rooms = [
@@ -3702,6 +3749,114 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(detail.data["data"]["contact_name"], "Myo Myo")
         self.assertEqual(detail.data["data"]["booking_code"], response.data["data"]["booking_code"])
         self.assertEqual(detail.data["data"]["source"], Booking.Source.OTA)
+
+    def test_logged_in_user_can_list_bookings_they_created(self):
+        payload = self.payload()
+        payload["check_in"] = str(payload["check_in"])
+        payload["check_out"] = str(payload["check_out"])
+        payload["rooms"][0]["quantity"] = 1
+        payload["rooms"][0]["adults"] = 1
+        created = self.client.post(
+            "/api/v1/public/bookings/",
+            payload,
+            format="json",
+            HTTP_AUTHORIZATION=f"Bearer {self.core_access_token(user_id=501)}",
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        booking = Booking.objects.get(id=created.data["data"]["id"])
+        self.assertEqual(booking.booked_by_core_user_id, 501)
+
+        history = self.client.get(
+            "/api/v1/public/my-bookings/",
+            HTTP_AUTHORIZATION=f"Bearer {self.core_access_token(user_id=501)}",
+        )
+        self.assertEqual(history.status_code, 200, history.data)
+        self.assertEqual(history.data["data"]["count"], 1)
+        self.assertEqual(history.data["data"]["bookings"][0]["id"], str(booking.id))
+
+        other_user = self.client.get(
+            "/api/v1/public/my-bookings/",
+            HTTP_AUTHORIZATION=f"Bearer {self.core_access_token(user_id=502)}",
+        )
+        self.assertEqual(other_user.status_code, 200, other_user.data)
+        self.assertEqual(other_user.data["data"]["count"], 0)
+
+    def test_hotel_guest_list_and_stay_history_filter_ota_and_pms(self):
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            core_physical_room_id=99201,
+            room_number="GUEST-301",
+        )
+
+        def create_stay(reference, source, status, check_in):
+            booking = Booking.objects.create(
+                reference=reference,
+                hotel=self.hotel,
+                status=status,
+                source=source,
+                check_in=check_in,
+                check_out=check_in + timedelta(days=2),
+                contact_name="History Guest",
+                contact_phone="09123456789",
+            )
+            guest = Guest.objects.create(
+                booking=booking,
+                name="History Guest",
+                phone="09123456789",
+                is_primary=True,
+            )
+            profile = sync_guest_profile(guest)
+            booking_room = BookingRoom.objects.create(
+                booking=booking,
+                room_type=self.room_type,
+                rate_plan=self.rate_plan,
+            )
+            assignment = RoomAssignment.objects.create(
+                booking_room=booking_room,
+                physical_room=room,
+            )
+            if status == Booking.Status.CHECKED_OUT:
+                RoomAssignment.objects.filter(id=assignment.id).update(released_at=timezone.now())
+            return booking, profile
+
+        ota_booking, profile = create_stay(
+            "GUEST-OTA-HISTORY", Booking.Source.OTA, Booking.Status.CHECKED_OUT,
+            self.check_in - timedelta(days=5),
+        )
+        pms_booking, pms_profile = create_stay(
+            "GUEST-PMS-UPCOMING", Booking.Source.PMS, Booking.Status.CONFIRMED,
+            self.check_in + timedelta(days=5),
+        )
+        self.assertEqual(profile.id, pms_profile.id)
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        ota_list = self.client.get("/api/v1/admin/guests/", {"source": "ota"}, **headers)
+        self.assertEqual(ota_list.status_code, 200, ota_list.data)
+        self.assertEqual(ota_list.data["data"]["count"], 1)
+        self.assertEqual(ota_list.data["data"]["guests"][0]["sources"], ["ota"])
+        self.assertEqual(ota_list.data["data"]["guests"][0]["stay_history_count"], 1)
+
+        pms_history = self.client.get(
+            f"/api/v1/admin/guests/{profile.id}/stay-history/",
+            {"source": "pms"},
+            **headers,
+        )
+        self.assertEqual(pms_history.status_code, 200, pms_history.data)
+        self.assertEqual(len(pms_history.data["data"]["upcoming_stays"]), 1)
+        self.assertEqual(pms_history.data["data"]["upcoming_stays"][0]["booking_id"], str(pms_booking.id))
+        self.assertEqual(pms_history.data["data"]["stay_history"], [])
+
+        ota_history = self.client.get(
+            f"/api/v1/admin/guests/{profile.id}/stay-history/",
+            {"source": "ota"},
+            **headers,
+        )
+        self.assertEqual(len(ota_history.data["data"]["stay_history"]), 1)
+        self.assertEqual(ota_history.data["data"]["stay_history"][0]["booking_id"], str(ota_booking.id))
 
     def test_admin_booking_list_filters_by_booking_source(self):
         ota_booking = Booking.objects.create(

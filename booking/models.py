@@ -558,6 +558,7 @@ class Booking(models.Model):
     booking_code = models.CharField(max_length=15, unique=True, editable=False)
     public_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     hotel = models.ForeignKey(Hotel, on_delete=models.PROTECT, related_name="bookings")
+    booked_by_core_user_id = models.PositiveBigIntegerField(null=True, blank=True, db_index=True)
     core_customer_user_id = models.PositiveBigIntegerField(null=True, blank=True)
     idempotency_key = models.CharField(max_length=128, null=True, blank=True)
     status = models.CharField(max_length=32, choices=Status.choices, default=Status.PENDING_PAYMENT)
@@ -642,8 +643,37 @@ class BookingRoomNight(models.Model):
         constraints = [models.UniqueConstraint(fields=["booking_room", "stay_date"], name="uniq_booking_room_night")]
 
 
+class GuestProfile(models.Model):
+    """Hotel-scoped identity used to connect immutable booking guest snapshots."""
+
+    hotel = models.ForeignKey(Hotel, on_delete=models.CASCADE, related_name="guest_profiles")
+    core_user_id = models.PositiveBigIntegerField(null=True, blank=True, db_index=True)
+    name = models.CharField(max_length=255)
+    phone = models.CharField(max_length=64, blank=True)
+    normalized_phone = models.CharField(max_length=64, blank=True, db_index=True)
+    email = models.EmailField(blank=True)
+    normalized_email = models.EmailField(blank=True, db_index=True)
+    possible_duplicate = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name", "id"]
+        indexes = [
+            models.Index(fields=["hotel", "normalized_phone"]),
+            models.Index(fields=["hotel", "normalized_email"]),
+        ]
+
+
 class Guest(models.Model):
     booking = models.ForeignKey(Booking, on_delete=models.CASCADE, related_name="guests")
+    profile = models.ForeignKey(
+        GuestProfile,
+        on_delete=models.SET_NULL,
+        related_name="stay_guests",
+        null=True,
+        blank=True,
+    )
     name = models.CharField(max_length=255)
     phone = models.CharField(max_length=64, blank=True)
     email = models.EmailField(blank=True)

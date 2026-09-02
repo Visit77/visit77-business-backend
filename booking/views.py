@@ -14,12 +14,12 @@ from django.utils.text import slugify
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 
 from booking.authentication import CoreJWTAuthentication
 from booking.integrations.core import CoreClient, sync_business_from_core
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, GuestProfile, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
 from booking.tasks import send_booking_confirmation_email_task, send_booking_confirmation_sms_task
 
@@ -72,7 +72,7 @@ from booking.serializers import (
     RoomTypeSerializer,
     WalkInBookingCreateSerializer,
 )
-from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, deprovision_hotel, ensure_daily_inventory_for_room_type, estimate_booking, format_money, record_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, update_reservation_for_check_in, validate_assignment_preferences
+from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, deprovision_hotel, ensure_daily_inventory_for_room_type, estimate_booking, format_money, record_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, sync_guest_profile, update_reservation_for_check_in, validate_assignment_preferences
 from config.response_formatter import success
 
 
@@ -454,6 +454,7 @@ class PublicGlobalAvailabilityView(APIView):
 
 class PublicBookingCreateView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = [CoreJWTAuthentication]
 
     @transaction.atomic
     def post(self, request):
@@ -529,6 +530,9 @@ class PublicBookingCreateView(APIView):
                 **serializer.validated_data,
                 "source": Booking.Source.OTA,
                 "source_name": "OTA",
+                "booked_by_core_user_id": (
+                    request.user.id if request.user and request.user.is_authenticated else None
+                ),
             }
             booking, created = create_booking(booking_data, request.headers.get("Idempotency-Key"))
         except Hotel.DoesNotExist:
@@ -580,6 +584,206 @@ class PublicBookingDetailView(APIView):
         if not booking:
             raise NotFound("Booking not found.")
         return success(BookingSerializer(booking).data)
+
+
+class MyBookingHistoryView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        queryset = Booking.objects.filter(
+            booked_by_core_user_id=request.user.id,
+        ).select_related("hotel").prefetch_related(
+            "rooms__nights", "rooms__assignments__physical_room", "guests",
+            "add_ons", "payments", "invoices__lines", "invoices__receipts",
+        )
+        source = request.query_params.get("source")
+        if source:
+            if source not in Booking.Source.values:
+                raise ValidationError({"source": f"Use one of: {', '.join(Booking.Source.values)}."})
+            queryset = queryset.filter(source=source)
+        booking_status = request.query_params.get("status")
+        if booking_status:
+            if booking_status not in Booking.Status.values:
+                raise ValidationError({"status": f"Use one of: {', '.join(Booking.Status.values)}."})
+            queryset = queryset.filter(status=booking_status)
+        bookings = list(queryset.order_by("-created_at", "-id"))
+        return success({
+            "count": len(bookings),
+            "bookings": BookingSerializer(bookings, many=True).data,
+        })
+
+
+def _guest_source_values(source):
+    if source == "ota":
+        return [Booking.Source.OTA, Booking.Source.DIRECT]
+    if source == "pms":
+        return [Booking.Source.PMS, Booking.Source.PHONE, Booking.Source.WALK_IN]
+    if source in [None, "", "all"]:
+        return None
+    raise ValidationError({"source": "Use all, ota, or pms."})
+
+
+def _guest_source_label(booking):
+    return "ota" if booking.source in [Booking.Source.OTA, Booking.Source.DIRECT] else "pms"
+
+
+def _guest_stay_payload(guest):
+    booking = guest.booking
+    rooms = []
+    for booking_room in booking.rooms.all():
+        active_assignments = [
+            assignment for assignment in booking_room.assignments.all()
+            if assignment.released_at is None
+        ]
+        all_assignments = list(booking_room.assignments.all())
+        displayed_assignments = active_assignments or all_assignments
+        rooms.append({
+            "booking_room_id": booking_room.id,
+            "room_type_id": booking_room.room_type_id,
+            "room_type_name": booking_room.room_type.name,
+            "quantity": booking_room.quantity,
+            "physical_rooms": [{
+                "id": assignment.physical_room_id,
+                "core_physical_room_id": assignment.physical_room.core_physical_room_id,
+                "room_number": assignment.physical_room.room_number,
+                "building": assignment.physical_room.building,
+                "floor": assignment.physical_room.floor,
+            } for assignment in displayed_assignments],
+        })
+    return {
+        "guest_id": guest.id,
+        "booking_id": str(booking.id),
+        "booking_code": booking.booking_code,
+        "status": booking.status,
+        "source": _guest_source_label(booking),
+        "booking_source": booking.source,
+        "check_in": booking.check_in,
+        "check_out": booking.check_out,
+        "nights": booking.nights,
+        "guest": {
+            "name": guest.name,
+            "phone": guest.phone,
+            "email": guest.email,
+            "nationality": guest.nationality,
+            "is_primary": guest.is_primary,
+        },
+        "rooms": rooms,
+        "currency": booking.currency,
+        "grand_total": booking.grand_total,
+        "created_at": booking.created_at,
+    }
+
+
+def _hotel_guest_profile_queryset(hotel):
+    return GuestProfile.objects.filter(hotel=hotel).prefetch_related(
+        Prefetch(
+            "stay_guests",
+            queryset=Guest.objects.select_related("booking").prefetch_related(
+                "booking__rooms__room_type",
+                "booking__rooms__assignments__physical_room",
+            ).order_by("-booking__created_at", "-id"),
+        )
+    )
+
+
+class HotelGuestListView(APIView):
+    permission_classes = [HasBookingAdminKey]
+    business_scoped = True
+
+    def get(self, request):
+        core_business_id = getattr(request, "booking_core_business_id", None)
+        if not core_business_id:
+            raise ValidationError({"core_business_id": "X-Booking-Business-ID is required."})
+        hotel = Hotel.objects.filter(core_business_id=core_business_id, is_active=True).first()
+        if not hotel:
+            raise NotFound("Hotel is not synced in the booking engine.")
+        source = request.query_params.get("source", "all").strip().lower()
+        source_values = _guest_source_values(source)
+        queryset = _hotel_guest_profile_queryset(hotel)
+        if source_values:
+            queryset = queryset.filter(stay_guests__booking__source__in=source_values).distinct()
+        search = request.query_params.get("search", "").strip()
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search)
+                | Q(phone__icontains=search)
+                | Q(email__icontains=search)
+                | Q(stay_guests__booking__rooms__assignments__physical_room__room_number__icontains=search)
+            ).distinct()
+
+        profiles = []
+        today = timezone.localdate()
+        for profile in queryset.order_by("name", "id"):
+            stays = [
+                guest for guest in profile.stay_guests.all()
+                if not source_values or guest.booking.source in source_values
+            ]
+            current = next((
+                guest for guest in stays
+                if guest.booking.status == Booking.Status.CHECKED_IN
+                or (
+                    guest.booking.status == Booking.Status.CONFIRMED
+                    and guest.booking.check_in <= today < guest.booking.check_out
+                )
+            ), None)
+            profiles.append({
+                "id": profile.id,
+                "name": profile.name,
+                "phone": profile.phone,
+                "email": profile.email,
+                "possible_duplicate": profile.possible_duplicate,
+                "sources": sorted({_guest_source_label(guest.booking) for guest in stays}),
+                "current_stay": _guest_stay_payload(current) if current else None,
+                "stay_history_count": sum(
+                    guest.booking.status == Booking.Status.CHECKED_OUT for guest in stays
+                ),
+                "booking_count": len(stays),
+            })
+        return success({
+            "source": source,
+            "count": len(profiles),
+            "guests": profiles,
+        })
+
+
+class HotelGuestStayHistoryView(APIView):
+    permission_classes = [HasBookingAdminKey]
+    business_scoped = True
+
+    def get(self, request, profile_id):
+        core_business_id = getattr(request, "booking_core_business_id", None)
+        if not core_business_id:
+            raise ValidationError({"core_business_id": "X-Booking-Business-ID is required."})
+        source = request.query_params.get("source", "all").strip().lower()
+        source_values = _guest_source_values(source)
+        hotel = Hotel.objects.filter(core_business_id=core_business_id, is_active=True).first()
+        if not hotel:
+            raise NotFound("Hotel is not synced in the booking engine.")
+        profile = _hotel_guest_profile_queryset(hotel).filter(id=profile_id).first()
+        if not profile:
+            raise NotFound("Guest profile was not found for this hotel.")
+        stays = [
+            guest for guest in profile.stay_guests.all()
+            if not source_values or guest.booking.source in source_values
+        ]
+        payloads = [_guest_stay_payload(guest) for guest in stays]
+        return success({
+            "guest": {
+                "id": profile.id,
+                "name": profile.name,
+                "phone": profile.phone,
+                "email": profile.email,
+                "possible_duplicate": profile.possible_duplicate,
+            },
+            "source": source,
+            "current_stays": [item for item in payloads if item["status"] == Booking.Status.CHECKED_IN],
+            "upcoming_stays": [item for item in payloads if item["status"] == Booking.Status.CONFIRMED],
+            "stay_history": [item for item in payloads if item["status"] == Booking.Status.CHECKED_OUT],
+            "other_bookings": [item for item in payloads if item["status"] not in [
+                Booking.Status.CHECKED_IN, Booking.Status.CONFIRMED, Booking.Status.CHECKED_OUT,
+            ]],
+        })
 
 
 class PublicStayBillView(APIView):
@@ -1550,7 +1754,7 @@ class OTARecordListView(APIView):
         return success({
             "ordering": "-created_at",
             "count": len(records),
-            "records": records,
+            "rooms": records,
         })
 
 
@@ -3413,8 +3617,10 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
                     for field, value in guest_data.items():
                         setattr(guest, field, value)
                     guest.save()
+                    sync_guest_profile(guest)
                 else:
-                    Guest.objects.create(booking=booking, **guest_data)
+                    guest = Guest.objects.create(booking=booking, **guest_data)
+                    sync_guest_profile(guest)
             if identity_photos:
                 current_guests = list(booking.guests.order_by("id"))
                 for guest_index, file in identity_photos.items():

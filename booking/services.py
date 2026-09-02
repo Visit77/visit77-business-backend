@@ -19,6 +19,7 @@ from booking.models import (
     DailyInventory,
     DailyRate,
     Guest,
+    GuestProfile,
     Hotel,
     Invoice,
     InvoiceLine,
@@ -48,6 +49,81 @@ def format_money(amount, currency):
     else:
         formatted_amount = f"{amount:,.2f}"
     return f"{currency} {formatted_amount}"
+
+
+def normalize_guest_phone(value):
+    return "".join(character for character in str(value or "") if character.isdigit())
+
+
+def normalize_guest_email(value):
+    return str(value or "").strip().lower()
+
+
+def resolve_guest_profile(hotel, guest_data):
+    """Safely reuse a hotel guest identity without overwriting conflicting data."""
+    phone = str(guest_data.get("phone") or "").strip()
+    email = str(guest_data.get("email") or "").strip()
+    normalized_phone = normalize_guest_phone(phone)
+    normalized_email = normalize_guest_email(email)
+    candidates = GuestProfile.objects.filter(hotel=hotel)
+    possible_duplicates = GuestProfile.objects.none()
+    profile = None
+
+    if normalized_phone:
+        possible_duplicates = candidates.filter(normalized_phone=normalized_phone)
+        if normalized_email:
+            exact_email = possible_duplicates.filter(normalized_email=normalized_email)
+            blank_email = possible_duplicates.filter(normalized_email="")
+            if exact_email.count() == 1:
+                profile = exact_email.first()
+            elif exact_email.count() == 0 and blank_email.count() == 1 and possible_duplicates.count() == 1:
+                profile = blank_email.first()
+        elif possible_duplicates.count() == 1:
+            profile = possible_duplicates.first()
+    elif normalized_email:
+        email_candidates = candidates.filter(normalized_email=normalized_email)
+        possible_duplicates = email_candidates
+        if email_candidates.count() == 1:
+            profile = email_candidates.first()
+
+    if profile:
+        update_fields = []
+        if normalized_email and not profile.normalized_email:
+            profile.email = email
+            profile.normalized_email = normalized_email
+            update_fields.extend(["email", "normalized_email"])
+        if normalized_phone and not profile.normalized_phone:
+            profile.phone = phone
+            profile.normalized_phone = normalized_phone
+            update_fields.extend(["phone", "normalized_phone"])
+        if update_fields:
+            profile.save(update_fields=[*update_fields, "updated_at"])
+        return profile
+
+    has_possible_duplicate = possible_duplicates.exists()
+    if has_possible_duplicate:
+        possible_duplicates.update(possible_duplicate=True)
+    return GuestProfile.objects.create(
+        hotel=hotel,
+        name=guest_data.get("name") or "Guest",
+        phone=phone,
+        normalized_phone=normalized_phone,
+        email=email,
+        normalized_email=normalized_email,
+        possible_duplicate=has_possible_duplicate,
+    )
+
+
+def sync_guest_profile(guest):
+    profile = resolve_guest_profile(guest.booking.hotel, {
+        "name": guest.name,
+        "phone": guest.phone,
+        "email": guest.email,
+    })
+    if guest.profile_id != profile.id:
+        guest.profile = profile
+        guest.save(update_fields=["profile"])
+    return profile
 
 
 def inventory_window_dates(start_date=None, days=None):
@@ -1377,6 +1453,7 @@ def create_booking(data, idempotency_key=None):
     booking = Booking.objects.create(
         reference=_reference("BK"),
         hotel=hotel,
+        booked_by_core_user_id=data.get("booked_by_core_user_id"),
         core_customer_user_id=data.get("core_customer_user_id"),
         idempotency_key=idempotency_key,
         source=data.get("source", Booking.Source.DIRECT),
@@ -1561,7 +1638,14 @@ def create_booking(data, idempotency_key=None):
         add_on_total += total
 
     guests = data.get("guests") or [{"name": data["contact_name"], "phone": data["contact_phone"], "email": data.get("contact_email", ""), "is_primary": True}]
-    Guest.objects.bulk_create([Guest(booking=booking, **guest) for guest in guests])
+    Guest.objects.bulk_create([
+        Guest(
+            booking=booking,
+            profile=resolve_guest_profile(hotel, guest),
+            **guest,
+        )
+        for guest in guests
+    ])
     booking.currency = hotel.base_currency
     booking.room_total = room_total
     booking.add_on_total = add_on_total
