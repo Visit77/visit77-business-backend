@@ -31,6 +31,7 @@ from booking.serializers import (
     AddOnTemplateSerializer,
     AvailabilitySearchQuerySerializer,
     AdminReservationCreateSerializer,
+    AdminMealPlanSerializer,
     BookingCreateSerializer,
     BookingEstimateSerializer,
     BookingSerializer,
@@ -2817,7 +2818,7 @@ class RoomTypeViewSet(AdminModelViewSet):
 
 class MealPlanViewSet(AdminModelViewSet):
     queryset = MealPlan.objects.select_related("hotel")
-    serializer_class = MealPlanSerializer
+    serializer_class = AdminMealPlanSerializer
     filterset_fields = [
         "hotel", "core_meal_plan_id", "availability", "core_active",
         "is_default_for_room_type_breakfast", "plan_type",
@@ -2827,6 +2828,9 @@ class MealPlanViewSet(AdminModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
+        guest_market = self.request.query_params.get("guest_market", RatePlan.GuestMarket.LOCAL)
+        if guest_market not in [RatePlan.GuestMarket.LOCAL, RatePlan.GuestMarket.FOREIGN]:
+            raise ValidationError({"guest_market": "Use local or foreign."})
         business_id = self.request.query_params.get("business_id")
         if business_id is not None:
             try:

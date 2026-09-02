@@ -396,7 +396,7 @@ def _resolve_booking_meal_plan(room_type, requested):
         raise ValidationError({"rooms": "Send either meal_plan_id or meal_plan_link_id, not both."})
     if meal_plan_id:
         meal_plan = MealPlan.objects.filter(
-            core_meal_plan_id=meal_plan_id,
+            id=meal_plan_id,
             hotel=room_type.hotel,
             core_active=True,
         ).first()
@@ -1744,6 +1744,8 @@ def create_invoice(booking, invoice_type, lines, tax_total=Decimal("0"), discoun
 def _booking_charge_lines(booking):
     lines = []
     room_groups = {}
+    meal_plan_groups = {}
+    breakfast_groups = {}
     for room in booking.rooms.select_related("room_type", "meal_plan_link__meal_plan").prefetch_related("nights"):
         nights = list(room.nights.all())
         room_price_total = sum(
@@ -1764,8 +1766,6 @@ def _booking_charge_lines(booking):
             "extra_bed_count": 0,
             "extra_bed_total": Decimal("0"),
             "option_total": Decimal("0"),
-            "meal_plans": {},
-            "breakfasts": {},
             "legacy_total": Decimal("0"),
         })
         group["booking_room_ids"].append(room.id)
@@ -1796,15 +1796,19 @@ def _booking_charge_lines(booking):
             meal_plan_name = meal_plan_snapshot.get("name") or linked_meal_plan_name
             included = bool(meal_plan_snapshot.get("is_included"))
             plan_key = (meal_plan_id, included)
-            plan = group["meal_plans"].setdefault(plan_key, {
+            plan = meal_plan_groups.setdefault(plan_key, {
                 "name": meal_plan_name,
                 "quantity": 0,
                 "total": Decimal("0"),
+                "booking_room_ids": [],
+                "room_type_ids": [],
                 "meal_plan_link_id": meal_plan_snapshot.get("meal_plan_link_id"),
                 "meal_plan_id": meal_plan_id,
                 "included": included,
             })
             plan["quantity"] += room.quantity
+            plan["booking_room_ids"].append(room.id)
+            plan["room_type_ids"].append(room.room_type_id)
             snapshot_total = meal_plan_snapshot.get("stay_total")
             if snapshot_total is None and len(meal_plan_snapshots) == 1:
                 snapshot_total = meal_plan_total
@@ -1817,16 +1821,20 @@ def _booking_charge_lines(booking):
                 breakfast_name,
                 included,
             )
-            breakfast = group["breakfasts"].setdefault(breakfast_key, {
+            breakfast = breakfast_groups.setdefault(breakfast_key, {
                 "name": breakfast_name,
                 "quantity": 0,
                 "total": Decimal("0"),
+                "booking_room_ids": [],
+                "room_type_ids": [],
                 "meal_plan_id": room.breakfast_snapshot.get("meal_plan_id"),
                 "core_meal_plan_id": room.breakfast_snapshot.get("core_meal_plan_id"),
                 "included": included,
             })
             breakfast["quantity"] += room.quantity
             breakfast["total"] += breakfast_total
+            breakfast["booking_room_ids"].append(room.id)
+            breakfast["room_type_ids"].append(room.room_type_id)
 
     for group in room_groups.values():
         room_type = group["room_type"]
@@ -1862,38 +1870,41 @@ def _booking_charge_lines(booking):
                 "unit_price": group["option_total"],
                 "metadata": {**common_metadata, "line_type": "room_option"},
             })
-        for plan in group["meal_plans"].values():
-            lines.append({
-                "description": (
-                    f"{plan['name']} for {room_name} x {plan['quantity']}"
-                    + (" (Included in Room Price)" if plan["included"] else f" x {nights} Night{'s' if nights != 1 else ''}")
-                ),
-                "quantity": 1,
-                "unit_price": plan["total"],
-                "metadata": {
-                    **common_metadata,
-                    "line_type": "meal_plan",
-                    "meal_plan_link_id": plan["meal_plan_link_id"],
-                    "meal_plan_id": plan["meal_plan_id"],
-                    "included_in_room_price": plan["included"],
-                },
-            })
-        for breakfast in group["breakfasts"].values():
-            lines.append({
-                "description": (
-                    f"{breakfast['name']} for {room_name} x {breakfast['quantity']}"
-                    + (" (Included in Room Price)" if breakfast["included"] else f" x {nights} Night{'s' if nights != 1 else ''}")
-                ),
-                "quantity": 1,
-                "unit_price": breakfast["total"],
-                "metadata": {
-                    **common_metadata,
-                    "line_type": "breakfast",
-                    "meal_plan_id": breakfast["meal_plan_id"],
-                    "core_meal_plan_id": breakfast["core_meal_plan_id"],
-                    "included_in_room_price": breakfast["included"],
-                },
-            })
+    nights = booking.nights
+    for plan in meal_plan_groups.values():
+        lines.append({
+            "description": (
+                f"{plan['name']} x {plan['quantity']}"
+                + (" (Included in Room Price)" if plan["included"] else f" x {nights} Night{'s' if nights != 1 else ''}")
+            ),
+            "quantity": plan["quantity"],
+            "unit_price": plan["total"] / plan["quantity"],
+            "metadata": {
+                "booking_room_ids": plan["booking_room_ids"],
+                "room_type_ids": sorted(set(plan["room_type_ids"])),
+                "line_type": "meal_plan",
+                "meal_plan_link_id": plan["meal_plan_link_id"],
+                "meal_plan_id": plan["meal_plan_id"],
+                "included_in_room_price": plan["included"],
+            },
+        })
+    for breakfast in breakfast_groups.values():
+        lines.append({
+            "description": (
+                f"{breakfast['name']} x {breakfast['quantity']}"
+                + (" (Included in Room Price)" if breakfast["included"] else f" x {nights} Night{'s' if nights != 1 else ''}")
+            ),
+            "quantity": breakfast["quantity"],
+            "unit_price": breakfast["total"] / breakfast["quantity"],
+            "metadata": {
+                "booking_room_ids": breakfast["booking_room_ids"],
+                "room_type_ids": sorted(set(breakfast["room_type_ids"])),
+                "line_type": "breakfast",
+                "meal_plan_id": breakfast["meal_plan_id"],
+                "core_meal_plan_id": breakfast["core_meal_plan_id"],
+                "included_in_room_price": breakfast["included"],
+            },
+        })
     lines.extend({
         "description": item.add_on.name,
         "quantity": 1,

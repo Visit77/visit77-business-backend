@@ -493,6 +493,41 @@ class MealPlanSerializer(serializers.ModelSerializer):
         ]
 
 
+class AdminMealPlanSerializer(MealPlanSerializer):
+    effective_price = serializers.SerializerMethodField()
+    currency = serializers.CharField(source="hotel.base_currency", read_only=True)
+    usd_display = serializers.SerializerMethodField()
+
+    def _guest_market(self):
+        request = self.context.get("request")
+        return request.query_params.get("guest_market", RatePlan.GuestMarket.LOCAL) if request else RatePlan.GuestMarket.LOCAL
+
+    def get_effective_price(self, obj):
+        value = (
+            obj.foreign_base_price
+            if self._guest_market() == RatePlan.GuestMarket.FOREIGN
+            else obj.local_base_price
+        )
+        return f"{value:.2f}"
+
+    def get_usd_display(self, obj):
+        value = (
+            obj.foreign_usd_display_price
+            if self._guest_market() == RatePlan.GuestMarket.FOREIGN
+            else obj.local_usd_display_price
+        )
+        return f"{value:.2f}" if value is not None else None
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        for field in (
+            "local_base_price", "local_usd_display_price",
+            "foreign_base_price", "foreign_usd_display_price",
+        ):
+            data.pop(field, None)
+        return data
+
+
 class RoomTypeMealPlanSerializer(serializers.ModelSerializer):
     meal_plan = MealPlanSerializer(read_only=True)
     effective_local_base_price = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
@@ -1086,6 +1121,32 @@ class InvoiceSerializer(serializers.ModelSerializer):
     paid_amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     balance = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     invoice_details = serializers.SerializerMethodField()
+    charge_groups = serializers.SerializerMethodField()
+
+    def get_charge_groups(self, obj):
+        room_lines = []
+        additional_lines = []
+        room_total = Decimal("0")
+        additional_total = Decimal("0")
+        for line in obj.lines.all():
+            line_type = (line.metadata or {}).get("line_type", "other")
+            if line_type in {"room", "extra_bed"}:
+                room_lines.append(line)
+                room_total += line.total
+            elif line_type != "service_fee":
+                additional_lines.append(line)
+                additional_total += line.total
+        return {
+            "room_charges": {
+                "lines": InvoiceLineSerializer(room_lines, many=True).data,
+                "total": f"{room_total:.2f}",
+            },
+            "additional_charges": {
+                "lines": InvoiceLineSerializer(additional_lines, many=True).data,
+                "total": f"{additional_total:.2f}",
+            },
+            "charges_total": f"{room_total + additional_total:.2f}",
+        }
 
     def get_invoice_details(self, obj):
         booking = obj.booking
@@ -1127,6 +1188,8 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "check_out_time": booking.hotel.check_out_time,
             "room_charge_total": money(room_charge_total),
             "additional_charge_total": money(additional_charge_total),
+            "charge_groups": self.get_charge_groups(obj),
+            "charges_total": money(room_charge_total + additional_charge_total),
             "service_fee_total": money(line_totals.get("service_fee", Decimal("0"))),
             "subtotal": money(obj.subtotal),
             "tax_total": money(obj.tax_total),

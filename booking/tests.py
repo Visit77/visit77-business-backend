@@ -14,6 +14,7 @@ from rest_framework_simplejwt.backends import TokenBackend
 
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import CoreIntegrationError, sync_business_from_core
+from booking.serializers import InvoiceSerializer
 from booking.services import auto_assign_physical_rooms_for_booking, auto_cancel_no_show_reservations, availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, estimate_booking, record_payment, refund_payment, refund_quote, sync_guest_profile
 
 
@@ -607,8 +608,46 @@ class BookingServiceTests(TestCase):
         self.assertEqual(meal_plan_line.total, Decimal("200000"))
         self.assertEqual(
             meal_plan_line.description,
-            "Half Board Package for Double Room x 2 x 2 Nights",
+            "Half Board Package x 2 x 2 Nights",
         )
+        self.assertEqual(meal_plan_line.quantity, Decimal("2"))
+
+    def test_foreign_meal_plan_effective_price_matches_estimate_and_create(self):
+        foreign_rate = RatePlan.objects.create(
+            room_type=self.room_type,
+            code="foreign-standard",
+            name="Foreign Standard",
+            guest_market=RatePlan.GuestMarket.FOREIGN,
+            currency="MMK",
+            default_price=Decimal("80000"),
+        )
+        meal_plan = MealPlan.objects.create(
+            hotel=self.hotel,
+            core_meal_plan_id=459,
+            name="Foreign Dinner",
+            plan_type=MealPlan.PlanType.SINGLE,
+            local_base_price=Decimal("20000"),
+            foreign_base_price=Decimal("25000"),
+            local_usd_display_price=Decimal("8"),
+            foreign_usd_display_price=Decimal("10"),
+        )
+        payload = self.payload()
+        payload["guest_market"] = RatePlan.GuestMarket.FOREIGN
+        payload["rooms"][0]["rate_plan_id"] = foreign_rate.id
+        payload["rooms"][0]["meal_plan_ids"] = [meal_plan.id]
+
+        estimate = estimate_booking(payload)
+        booking, _ = create_booking(payload)
+        booking_room = booking.rooms.get()
+        meal_line = booking.invoices.get(
+            invoice_type=Invoice.Type.ROOM_BOOKING,
+        ).lines.get(metadata__line_type="meal_plan")
+
+        self.assertEqual(estimate["rooms"][0]["meal_plan_total"], Decimal("100000"))
+        self.assertEqual(booking_room.meal_plan_total, Decimal("100000"))
+        self.assertEqual(booking_room.meal_plan_snapshot["base_price"], "25000.00")
+        self.assertEqual(booking_room.meal_plan_snapshot["usd_display_price"], "10.00")
+        self.assertEqual(meal_line.total, Decimal("100000"))
 
     def test_multiple_meal_plans_create_separate_invoice_lines(self):
         breakfast = MealPlan.objects.create(
@@ -644,6 +683,14 @@ class BookingServiceTests(TestCase):
             list(meal_plan_lines.values_list("total", flat=True)),
             [Decimal("80000"), Decimal("120000")],
         )
+        groups = InvoiceSerializer(
+            booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
+        ).data["charge_groups"]
+        self.assertEqual(len(groups["room_charges"]["lines"]), 1)
+        self.assertEqual(groups["room_charges"]["total"], "320000.00")
+        self.assertEqual(len(groups["additional_charges"]["lines"]), 2)
+        self.assertEqual(groups["additional_charges"]["total"], "200000.00")
+        self.assertEqual(groups["charges_total"], "520000.00")
 
     def test_duplicate_multiple_meal_plan_ids_are_rejected(self):
         meal_plan = MealPlan.objects.create(
@@ -688,6 +735,25 @@ class BookingServiceTests(TestCase):
             list(booking_room.nights.values_list("breakfast_total", flat=True)),
             [Decimal("24000"), Decimal("24000")],
         )
+
+    def test_breakfast_invoice_quantity_follows_selected_room_quantity(self):
+        self.room_type.breakfast_plan_type = RoomType.BreakfastPlanType.CUSTOM_PRICE
+        self.room_type.breakfast_custom_local_base_price = Decimal("12000")
+        self.room_type.save(update_fields=[
+            "breakfast_plan_type", "breakfast_custom_local_base_price",
+        ])
+        payload = self.payload()
+        payload["rooms"][0].update({"quantity": 3, "breakfast_selected": True})
+
+        booking, _ = create_booking(payload)
+        breakfast_line = booking.invoices.get(
+            invoice_type=Invoice.Type.ROOM_BOOKING,
+        ).lines.get(metadata__line_type="breakfast")
+
+        self.assertEqual(breakfast_line.description, "Breakfast x 3 x 2 Nights")
+        self.assertEqual(breakfast_line.quantity, Decimal("3"))
+        self.assertEqual(breakfast_line.unit_price, Decimal("24000"))
+        self.assertEqual(breakfast_line.total, Decimal("72000"))
 
     def test_initial_invoice_splits_room_extra_bed_meal_plan_and_breakfast_lines(self):
         self.rate_plan.extra_bed_base_price = Decimal("30000")
@@ -734,12 +800,14 @@ class BookingServiceTests(TestCase):
         )
         self.assertEqual(
             lines["meal_plan"].description,
-            "Dinner Plan for Double Room x 2 x 2 Nights",
+            "Dinner Plan x 2 x 2 Nights",
         )
         self.assertEqual(
             lines["breakfast"].description,
-            "Breakfast for Double Room x 2 x 2 Nights",
+            "Breakfast x 2 x 2 Nights",
         )
+        self.assertEqual(lines["meal_plan"].quantity, Decimal("2"))
+        self.assertEqual(lines["breakfast"].quantity, Decimal("2"))
         self.assertEqual(invoice.total, booking.grand_total)
 
     def test_initial_invoice_groups_separate_booking_rooms_with_the_same_room_type(self):
@@ -1249,6 +1317,10 @@ class BookingApiTests(BookingServiceTests):
             plan_type=MealPlan.PlanType.SINGLE,
             included_meals=["breakfast"],
             is_default_for_room_type_breakfast=True,
+            local_base_price=Decimal("20000"),
+            local_usd_display_price=Decimal("8"),
+            foreign_base_price=Decimal("25000"),
+            foreign_usd_display_price=Decimal("10"),
         )
         MealPlan.objects.create(
             hotel=self.hotel,
@@ -1272,12 +1344,19 @@ class BookingApiTests(BookingServiceTests):
                 "business_id": self.hotel.core_business_id,
                 "is_default_for_room_type_breakfast": "true",
                 "package_type": "single",
+                "guest_market": "foreign",
             },
             HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
         )
 
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual([item["id"] for item in response.data["data"]], [matching.id])
+        item = response.data["data"][0]
+        self.assertEqual(item["effective_price"], "25000.00")
+        self.assertEqual(item["currency"], "MMK")
+        self.assertEqual(item["usd_display"], "10.00")
+        self.assertNotIn("local_base_price", item)
+        self.assertNotIn("foreign_base_price", item)
 
     def test_admin_meal_plan_list_rejects_invalid_business_and_package_type_filters(self):
         invalid_business = self.client.get(
@@ -1295,10 +1374,16 @@ class BookingApiTests(BookingServiceTests):
             {"is_default_for_room_type_breakfast": "invalid"},
             HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
         )
+        invalid_guest_market = self.client.get(
+            "/api/v1/admin/meal-plans/",
+            {"guest_market": "invalid"},
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+        )
 
         self.assertEqual(invalid_business.status_code, 400, invalid_business.data)
         self.assertEqual(invalid_package_type.status_code, 400, invalid_package_type.data)
         self.assertEqual(invalid_default.status_code, 400, invalid_default.data)
+        self.assertEqual(invalid_guest_market.status_code, 400, invalid_guest_market.data)
 
     def test_physical_room_history_records_status_block_and_checkout_actions(self):
         room = PhysicalRoom.objects.create(
