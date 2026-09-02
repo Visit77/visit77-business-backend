@@ -517,6 +517,7 @@ class AddOn(models.Model):
 
 BOOKING_CODE_PREFIX = "V77H-"
 BOOKING_CODES_PER_SERIES = 9_999_999
+DOCUMENT_CODES_PER_SERIES = 9_999_999
 
 
 def format_booking_code(sequence_value):
@@ -530,8 +531,41 @@ def format_booking_code(sequence_value):
     return f"{BOOKING_CODE_PREFIX}{series}{number + 1:08d}"
 
 
+def _format_document_code(sequence_value, prefix):
+    """Format a one-based invoice/receipt sequence using A-Z series."""
+    if sequence_value < 1:
+        raise ValueError("Document code sequence must be positive.")
+    series_index, number = divmod(sequence_value - 1, DOCUMENT_CODES_PER_SERIES)
+    if series_index >= 26:
+        raise ValueError("Document code series A-Z has been exhausted.")
+    series = chr(ord("A") + series_index)
+    return f"{prefix}{series}{number + 1:07d}"
+
+
+def format_invoice_number(sequence_value):
+    return _format_document_code(sequence_value, "V77-INV-")
+
+
+def format_receipt_number(sequence_value):
+    return _format_document_code(sequence_value, "V77-REC-")
+
+
 class BookingCodeSequence(models.Model):
     """Singleton counter used to allocate globally unique booking codes safely."""
+
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    last_value = models.PositiveBigIntegerField(default=0)
+
+
+class InvoiceNumberSequence(models.Model):
+    """Singleton counter used to allocate globally unique invoice numbers."""
+
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    last_value = models.PositiveBigIntegerField(default=0)
+
+
+class ReceiptNumberSequence(models.Model):
+    """Singleton counter used to allocate globally unique receipt numbers."""
 
     id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
     last_value = models.PositiveBigIntegerField(default=0)
@@ -741,7 +775,7 @@ class Invoice(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     booking = models.ForeignKey(Booking, on_delete=models.PROTECT, related_name="invoices")
-    invoice_number = models.CharField(max_length=32, unique=True)
+    invoice_number = models.CharField(max_length=32, unique=True, blank=True, editable=False)
     invoice_type = models.CharField(max_length=24, choices=Type.choices, default=Type.OTHER)
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.OPEN)
     currency = models.CharField(max_length=3)
@@ -757,6 +791,19 @@ class Invoice(models.Model):
 
     class Meta:
         ordering = ["issued_at", "id"]
+
+    def save(self, *args, **kwargs):
+        if self.invoice_number:
+            return super().save(*args, **kwargs)
+
+        with transaction.atomic():
+            sequence, _ = InvoiceNumberSequence.objects.select_for_update().get_or_create(pk=1)
+            sequence.last_value += 1
+            self.invoice_number = format_invoice_number(sequence.last_value)
+            sequence.save(update_fields=["last_value"])
+            if kwargs.get("update_fields") is not None:
+                kwargs["update_fields"] = set(kwargs["update_fields"]) | {"invoice_number"}
+            return super().save(*args, **kwargs)
 
     @property
     def paid_amount(self):
@@ -824,6 +871,24 @@ class Payment(models.Model):
     metadata = models.JSONField(default=dict, blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        receipt_statuses = {
+            self.Status.PAID,
+            self.Status.REFUNDED,
+            self.Status.PARTIALLY_REFUNDED,
+        }
+        if self.receipt_number or self.status not in receipt_statuses:
+            return super().save(*args, **kwargs)
+
+        with transaction.atomic():
+            sequence, _ = ReceiptNumberSequence.objects.select_for_update().get_or_create(pk=1)
+            sequence.last_value += 1
+            self.receipt_number = format_receipt_number(sequence.last_value)
+            sequence.save(update_fields=["last_value"])
+            if kwargs.get("update_fields") is not None:
+                kwargs["update_fields"] = set(kwargs["update_fields"]) | {"receipt_number"}
+            return super().save(*args, **kwargs)
 
 
 class CoreIntegrationEvent(models.Model):

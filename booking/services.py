@@ -1712,7 +1712,6 @@ def create_invoice(booking, invoice_type, lines, tax_total=Decimal("0"), discoun
         raise ValidationError({"total": "Invoice totals cannot be negative."})
     invoice = Invoice.objects.create(
         booking=booking,
-        invoice_number=_reference("IV"),
         invoice_type=invoice_type,
         currency=booking.currency,
         subtotal=subtotal,
@@ -1988,7 +1987,6 @@ def record_payment(booking, data, auto_assign=True):
         amount=data["amount"],
         currency=booking.currency,
         invoice_number=invoice.invoice_number,
-        receipt_number=_reference("RC") if data.get("status", Payment.Status.PAID) == Payment.Status.PAID else None,
         metadata=data.get("metadata", {}),
         paid_at=timezone.now() if data.get("status", Payment.Status.PAID) == Payment.Status.PAID else None,
     )

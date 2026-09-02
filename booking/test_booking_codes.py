@@ -5,15 +5,21 @@ from django.test import TestCase, override_settings
 
 from booking.models import (
     BOOKING_CODES_PER_SERIES,
+    DOCUMENT_CODES_PER_SERIES,
     Booking,
     BookingRoom,
     BookingCodeSequence,
     Guest,
     Hotel,
     Invoice,
+    InvoiceNumberSequence,
+    Payment,
+    ReceiptNumberSequence,
     RatePlan,
     RoomType,
     format_booking_code,
+    format_invoice_number,
+    format_receipt_number,
 )
 from booking.booking_services.email import send_booking_confirmation_email
 from booking.serializers import BookingSerializer, InvoiceSerializer
@@ -91,6 +97,80 @@ class BookingCodeTests(TestCase):
 
         self.assertEqual(first.booking_code, "V77H-A00000001")
         self.assertEqual(second.booking_code, "V77H-A00000002")
+
+    def test_invoice_and_receipt_numbers_increment_independently(self):
+        booking = self.create_booking("TEST-DOCUMENT-CODES")
+        first_invoice = Invoice.objects.create(booking=booking, currency="MMK")
+        second_invoice = Invoice.objects.create(booking=booking, currency="MMK")
+
+        first_receipt = Payment.objects.create(
+            booking=booking,
+            invoice=first_invoice,
+            provider=Payment.Provider.CASH,
+            status=Payment.Status.PAID,
+            amount=100,
+            currency="MMK",
+            invoice_number=first_invoice.invoice_number,
+        )
+        second_receipt = Payment.objects.create(
+            booking=booking,
+            invoice=first_invoice,
+            provider=Payment.Provider.CASH,
+            status=Payment.Status.PAID,
+            amount=100,
+            currency="MMK",
+            invoice_number=first_invoice.invoice_number,
+        )
+
+        self.assertEqual(first_invoice.invoice_number, "V77-INV-A0000001")
+        self.assertEqual(second_invoice.invoice_number, "V77-INV-A0000002")
+        self.assertEqual(first_receipt.receipt_number, "V77-REC-A0000001")
+        self.assertEqual(second_receipt.receipt_number, "V77-REC-A0000002")
+
+    def test_document_number_series_rolls_over(self):
+        self.assertEqual(format_invoice_number(DOCUMENT_CODES_PER_SERIES), "V77-INV-A9999999")
+        self.assertEqual(format_invoice_number(DOCUMENT_CODES_PER_SERIES + 1), "V77-INV-B0000001")
+        self.assertEqual(format_receipt_number(DOCUMENT_CODES_PER_SERIES + 1), "V77-REC-B0000001")
+
+        booking = self.create_booking("TEST-DOCUMENT-ROLLOVER")
+        InvoiceNumberSequence.objects.update_or_create(
+            pk=1, defaults={"last_value": DOCUMENT_CODES_PER_SERIES}
+        )
+        invoice = Invoice.objects.create(booking=booking, currency="MMK")
+        self.assertEqual(invoice.invoice_number, "V77-INV-B0000001")
+
+        ReceiptNumberSequence.objects.update_or_create(
+            pk=1, defaults={"last_value": DOCUMENT_CODES_PER_SERIES}
+        )
+        receipt = Payment.objects.create(
+            booking=booking,
+            invoice=invoice,
+            provider=Payment.Provider.CASH,
+            status=Payment.Status.PAID,
+            amount=100,
+            currency="MMK",
+            invoice_number=invoice.invoice_number,
+        )
+        self.assertEqual(receipt.receipt_number, "V77-REC-B0000001")
+
+    def test_pending_payment_does_not_get_a_receipt_number(self):
+        booking = self.create_booking("TEST-PENDING-RECEIPT")
+        invoice = Invoice.objects.create(booking=booking, currency="MMK")
+        payment = Payment.objects.create(
+            booking=booking,
+            invoice=invoice,
+            provider=Payment.Provider.CASH,
+            status=Payment.Status.PENDING,
+            amount=100,
+            currency="MMK",
+            invoice_number=invoice.invoice_number,
+        )
+        self.assertIsNone(payment.receipt_number)
+
+        payment.status = Payment.Status.PAID
+        payment.save(update_fields=["status"])
+        payment.refresh_from_db()
+        self.assertEqual(payment.receipt_number, "V77-REC-A0000001")
 
     def test_series_rolls_over_at_ten_million(self):
         self.assertEqual(format_booking_code(BOOKING_CODES_PER_SERIES), "V77H-A09999999")
