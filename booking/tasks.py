@@ -45,7 +45,7 @@ def send_booking_confirmation_email_task(self, booking_id):
     booking = (
         Booking.objects
         .select_related("hotel")
-        .prefetch_related("guests")
+        .prefetch_related("guests", "rooms__room_type")
         .get(id=booking_id)
     )
 
@@ -68,12 +68,13 @@ def send_booking_confirmation_email_task(self, booking_id):
 )
 def send_booking_confirmation_sms_task(booking_id):
     from booking.models import Booking
+    from booking.booking_services.email import booking_room_summary
     from booking.booking_services.sms import send_custom_sms
 
     booking = (
         Booking.objects
         .select_related("hotel")
-        .prefetch_related("guests")
+        .prefetch_related("guests", "rooms__room_type")
         .get(id=booking_id)
     )
 
@@ -101,6 +102,8 @@ def send_booking_confirmation_sms_task(booking_id):
         f"{settings.BOOKING_FRONTEND_URL.rstrip('/')}"
         f"/bookings/{booking.public_token}"
     )
+    room_summary = booking_room_summary(booking)
+    room_section = f"{room_summary}\n" if room_summary else ""
 
     message = (
         f"Your VISIT 77 booking is confirmed.\n"
@@ -109,6 +112,7 @@ def send_booking_confirmation_sms_task(booking_id):
         f"Check-in: {booking.check_in:%d %b %Y}\n"
         f"Check-out: {booking.check_out:%d %b %Y}\n"
         f"Guest: {guest_name}\n"
+        f"{room_section}"
         f"View booking: {booking_url}"
     )
 

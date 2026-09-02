@@ -6,10 +6,13 @@ from django.test import TestCase, override_settings
 from booking.models import (
     BOOKING_CODES_PER_SERIES,
     Booking,
+    BookingRoom,
     BookingCodeSequence,
     Guest,
     Hotel,
     Invoice,
+    RatePlan,
+    RoomType,
     format_booking_code,
 )
 from booking.booking_services.email import send_booking_confirmation_email
@@ -29,6 +32,42 @@ class BookingCodeTests(TestCase):
             check_out=date(2026, 9, 2),
             contact_name="Test Guest",
             contact_phone="09123456789",
+        )
+
+    def add_confirmation_rooms(self, booking):
+        twin = RoomType.objects.create(
+            hotel=self.hotel,
+            core_room_type_id=81001,
+            name="Standard Twin Room",
+        )
+        deluxe = RoomType.objects.create(
+            hotel=self.hotel,
+            core_room_type_id=81002,
+            name="Deluxe Room",
+        )
+        twin_rate = RatePlan.objects.create(
+            room_type=twin,
+            code="twin-rate",
+            name="Twin Rate",
+            default_price=100,
+        )
+        deluxe_rate = RatePlan.objects.create(
+            room_type=deluxe,
+            code="deluxe-rate",
+            name="Deluxe Rate",
+            default_price=100,
+        )
+        BookingRoom.objects.create(
+            booking=booking,
+            room_type=twin,
+            rate_plan=twin_rate,
+            quantity=2,
+        )
+        BookingRoom.objects.create(
+            booking=booking,
+            room_type=deluxe,
+            rate_plan=deluxe_rate,
+            quantity=1,
         )
 
     def test_code_is_allocated_and_serialized(self):
@@ -67,6 +106,7 @@ class BookingCodeTests(TestCase):
     @patch("booking.booking_services.email.send_mail")
     def test_confirmation_email_uses_booking_code(self, send_mail_mock):
         booking = self.create_booking("INTERNAL-EMAIL-REFERENCE")
+        self.add_confirmation_rooms(booking)
         Guest.objects.create(
             booking=booking,
             name="Email Guest",
@@ -78,12 +118,15 @@ class BookingCodeTests(TestCase):
         send_mail_mock.assert_called_once()
         message = send_mail_mock.call_args.kwargs["message"]
         self.assertIn(f"Booking ID: {booking.booking_code}", message)
+        self.assertIn("Room: Standard Twin Room x 2", message)
+        self.assertIn("Room: Deluxe Room x 1", message)
         self.assertNotIn(booking.reference, message)
 
     @override_settings(BOOKING_FRONTEND_URL="https://booking.example.com")
     @patch("booking.booking_services.sms.send_custom_sms")
     def test_confirmation_sms_uses_booking_code(self, send_sms_mock):
         booking = self.create_booking("INTERNAL-SMS-REFERENCE")
+        self.add_confirmation_rooms(booking)
         Guest.objects.create(
             booking=booking,
             name="SMS Guest",
@@ -94,4 +137,6 @@ class BookingCodeTests(TestCase):
         self.assertTrue(send_booking_confirmation_sms_task(str(booking.id)))
         message = send_sms_mock.call_args.kwargs["message"]
         self.assertIn(f"Booking ID: {booking.booking_code}", message)
+        self.assertIn("Room: Standard Twin Room x 2", message)
+        self.assertIn("Room: Deluxe Room x 1", message)
         self.assertNotIn(booking.reference, message)

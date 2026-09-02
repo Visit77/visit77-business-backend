@@ -2561,6 +2561,70 @@ class BookingApiTests(BookingServiceTests):
         self.assertTrue(history.data["data"][0]["metadata"]["ota_selection_changed"])
         self.assertFalse(history.data["data"][0]["metadata"]["ota_enabled"])
 
+    def test_ota_record_list_is_flat_created_first_and_keeps_same_room_bookings(self):
+        ota_room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            core_physical_room_id=797,
+            room_number="301",
+            ota_enabled=True,
+        )
+        disabled_room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            core_physical_room_id=798,
+            room_number="302",
+            ota_enabled=False,
+        )
+
+        def assign(reference, room, source, check_in):
+            booking = Booking.objects.create(
+                reference=reference,
+                hotel=self.hotel,
+                status=Booking.Status.CONFIRMED,
+                source=source,
+                check_in=check_in,
+                check_out=check_in + timedelta(days=2),
+                contact_name=f"{reference} Guest",
+                contact_phone="091111111",
+                grand_total=Decimal("80000"),
+            )
+            booking_room = BookingRoom.objects.create(
+                booking=booking,
+                room_type=self.room_type,
+                rate_plan=self.rate_plan,
+                adults=2,
+                children=1,
+                total=Decimal("80000"),
+            )
+            RoomAssignment.objects.create(booking_room=booking_room, physical_room=room)
+            return booking
+
+        older = assign("OTA-301-OLDER", ota_room, Booking.Source.OTA, self.check_in)
+        newer = assign(
+            "OTA-301-NEWER", ota_room, Booking.Source.DIRECT, self.check_in + timedelta(days=4),
+        )
+        assign("OTA-DISABLED", disabled_room, Booking.Source.OTA, self.check_in)
+        Booking.objects.filter(id=older.id).update(created_at=timezone.now() - timedelta(hours=1))
+        Booking.objects.filter(id=newer.id).update(created_at=timezone.now())
+
+        response = self.client.get(
+            "/api/v1/admin/ota-records/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.data["data"]
+        self.assertEqual(data["ordering"], "-created_at")
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(
+            [record["booking_reference"] for record in data["records"]],
+            ["OTA-301-NEWER", "OTA-301-OLDER"],
+        )
+        self.assertEqual([record["room_number"] for record in data["records"]], ["301", "301"])
+        self.assertEqual(data["records"][0]["booking_code"], newer.booking_code)
+
     def test_ota_room_records_are_sorted_and_close_open_controls_sale(self):
         room = PhysicalRoom.objects.create(
             hotel=self.hotel,

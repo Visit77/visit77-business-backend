@@ -1460,6 +1460,98 @@ class OTARoomHistoryView(APIView):
         })
 
 
+class OTARecordListView(APIView):
+    """Flat booking-assignment feed for rooms currently enabled for OTA sales."""
+
+    permission_classes = [HasBookingAdminKey]
+    business_scoped = True
+
+    def get(self, request):
+        hotel = OTARoomSelectionView._hotel(request)
+        assignments = RoomAssignment.objects.filter(
+            physical_room__hotel=hotel,
+            physical_room__is_active=True,
+            physical_room__ota_enabled=True,
+            booking_room__booking__source__in=[Booking.Source.OTA, Booking.Source.DIRECT],
+        ).select_related(
+            "physical_room",
+            "physical_room__room_type",
+            "booking_room",
+            "booking_room__booking",
+        ).prefetch_related(
+            "booking_room__booking__guests",
+            "booking_room__booking__invoices",
+        ).order_by(
+            "-booking_room__booking__created_at",
+            "-id",
+        )
+
+        records = []
+        for assignment in assignments:
+            room = assignment.physical_room
+            booking_room = assignment.booking_room
+            booking = booking_room.booking
+            primary_guest = next(
+                (guest for guest in booking.guests.all() if guest.is_primary),
+                None,
+            )
+            invoices = [
+                {
+                    "id": str(invoice.id),
+                    "invoice_number": invoice.invoice_number,
+                    "status": invoice.status,
+                    "total": invoice.total,
+                    "currency": invoice.currency,
+                }
+                for invoice in booking.invoices.all()
+            ]
+            divisor = booking.nights * booking_room.quantity
+            records.append({
+                "assignment_id": assignment.id,
+                "assigned_at": assignment.assigned_at,
+                "released_at": assignment.released_at,
+                "created_at": booking.created_at,
+                "physical_room_id": room.id,
+                "core_physical_room_id": room.core_physical_room_id,
+                "room_number": room.room_number,
+                "building_id": room.core_building_id,
+                "building": room.building,
+                "floor_id": room.core_floor_id,
+                "floor": room.floor,
+                **OTARoomSelectionView._room_card_details(room),
+                "booking_id": str(booking.id),
+                "booking_code": booking.booking_code,
+                "booking_reference": booking.reference,
+                "booking_status": booking.status,
+                "source": booking.source,
+                "check_in": booking.check_in,
+                "check_out": booking.check_out,
+                "nights": booking.nights,
+                "quantity": booking_room.quantity,
+                "adults": booking_room.adults,
+                "children": booking_room.children,
+                "contact_name": booking.contact_name,
+                "contact_phone": booking.contact_phone,
+                "guest": {
+                    "id": primary_guest.id if primary_guest else None,
+                    "name": primary_guest.name if primary_guest else booking.contact_name,
+                    "phone": primary_guest.phone if primary_guest else booking.contact_phone,
+                },
+                "amount": booking_room.total,
+                "price_per_night": booking_room.total / divisor if divisor > 0 else booking_room.total,
+                "currency": booking.currency,
+                "invoice_count": len(invoices),
+                "invoices": invoices,
+                "stay_bill_url": f"/api/v1/admin/bookings/{booking.id}/stay-bill/",
+            })
+
+        return success({
+            "ordering": "-created_at",
+            "count": len(records),
+            "records": records,
+        })
+
+
 class OTARoomSaleStatusView(APIView):
     permission_classes = [HasBookingAdminKey]
     business_scoped = True
