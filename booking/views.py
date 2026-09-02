@@ -248,6 +248,22 @@ class PublicAvailabilityView(APIView):
         return success({"hotel": PublicHotelSerializer(hotel).data, "room_types": results})
 
 
+class PublicHotelMealPlanView(APIView):
+    """List guest-selectable hotel meal plans independently of room types."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, core_business_id):
+        hotel = Hotel.objects.filter(core_business_id=core_business_id, is_active=True).first()
+        if not hotel:
+            raise NotFound("Hotel is not available in the booking engine.")
+        plans = hotel.meal_plans.filter(core_active=True).order_by("name", "id")
+        return success({
+            "hotel": PublicHotelSerializer(hotel).data,
+            "meal_plans": MealPlanSerializer(plans, many=True).data,
+        })
+
+
 class PublicOTARoomTypeCatalogView(APIView):
     """List OTA-selected room types without calculating date availability."""
 
@@ -305,9 +321,11 @@ class PublicOTARoomTypeCatalogView(APIView):
             "request": request,
             "guest_market": query.validated_data.get("guest_market"),
             "display_currency": query.validated_data.get("display_currency"),
+            "hotel_meal_plans": list(hotel.meal_plans.filter(core_active=True).order_by("name", "id")),
         }
         return success({
             "hotel": PublicHotelSerializer(hotel).data,
+            "meal_plans": MealPlanSerializer(context["hotel_meal_plans"], many=True).data,
             "room_types": PublicOTARoomTypeCatalogSerializer(
                 room_types,
                 many=True,
@@ -371,9 +389,11 @@ class PublicHotelRoomTypeCatalogView(APIView):
             "request": request,
             "guest_market": query.validated_data.get("guest_market"),
             "display_currency": query.validated_data.get("display_currency"),
+            "hotel_meal_plans": list(hotel.meal_plans.filter(core_active=True).order_by("name", "id")),
         }
         return success({
             "hotel": PublicHotelSerializer(hotel).data,
+            "meal_plans": MealPlanSerializer(context["hotel_meal_plans"], many=True).data,
             "room_types": PublicOTARoomTypeCatalogSerializer(room_types, many=True, context=context).data,
             "availability_calculated": False,
             "availability_url": f"/api/v1/public/hotels/{core_business_id}/availability/",

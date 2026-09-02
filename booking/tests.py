@@ -725,7 +725,7 @@ class BookingServiceTests(TestCase):
         self.assertEqual(room_line.description, "Double Room x 2 x 2 Nights")
         self.assertEqual(len(room_line.metadata["booking_room_ids"]), 2)
 
-    def test_default_included_meal_plan_is_attached_without_charge(self):
+    def test_room_type_default_meal_plan_is_not_auto_attached(self):
         meal_plan = MealPlan.objects.create(
             hotel=self.hotel,
             core_meal_plan_id=402,
@@ -734,7 +734,7 @@ class BookingServiceTests(TestCase):
             local_base_price=Decimal("20000"),
             foreign_base_price=Decimal("30000"),
         )
-        link = RoomTypeMealPlan.objects.create(
+        RoomTypeMealPlan.objects.create(
             room_type=self.room_type,
             meal_plan=meal_plan,
             is_included=True,
@@ -746,14 +746,12 @@ class BookingServiceTests(TestCase):
 
         booking_room = booking.rooms.get()
         self.assertEqual(booking.grand_total, Decimal("320000"))
-        self.assertEqual(booking_room.meal_plan_link_id, link.id)
+        self.assertIsNone(booking_room.meal_plan_link_id)
         self.assertEqual(booking_room.meal_plan_total, Decimal("0"))
-        self.assertTrue(booking_room.meal_plan_snapshot["is_included"])
-        self.assertIn("pricing_mode", booking_room.meal_plan_snapshot)
+        self.assertEqual(booking_room.meal_plan_snapshot, {})
+        self.assertEqual(booking_room.meal_plan_snapshots, [])
         invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
-        meal_plan_line = invoice.lines.get(metadata__line_type="meal_plan")
-        self.assertEqual(meal_plan_line.total, Decimal("0"))
-        self.assertTrue(meal_plan_line.metadata["included_in_room_price"])
+        self.assertFalse(invoice.lines.filter(metadata__line_type="meal_plan").exists())
 
     def test_deposit_confirms_and_refund_updates_paid_balance(self):
         self.rate_plan.cancellation_policy = {"type": "free_full_refund"}
@@ -2391,6 +2389,45 @@ class BookingApiTests(BookingServiceTests):
         )
         self.assertEqual(query_response.status_code, 200, query_response.data)
         self.assertEqual(len(query_response.data["data"]["room_types"]), 2)
+
+    def test_public_meal_plans_are_hotel_level_and_do_not_require_room_links(self):
+        standalone_plan = MealPlan.objects.create(
+            hotel=self.hotel,
+            core_meal_plan_id=99001,
+            name="Guest Choice Package",
+            plan_type=MealPlan.PlanType.PACKAGE,
+            local_base_price=Decimal("25000"),
+            foreign_base_price=Decimal("35000"),
+        )
+        self.assertFalse(RoomTypeMealPlan.objects.filter(meal_plan=standalone_plan).exists())
+
+        plans_response = self.client.get(
+            f"/api/v1/public/hotels/{self.hotel.core_business_id}/meal-plans/",
+        )
+        catalog_response = self.client.get(
+            f"/api/v1/public/hotels/{self.hotel.core_business_id}/room-types/",
+            {"guest_market": "local"},
+        )
+
+        self.assertEqual(plans_response.status_code, 200, plans_response.data)
+        self.assertEqual(catalog_response.status_code, 200, catalog_response.data)
+        self.assertIn(
+            standalone_plan.id,
+            [item["id"] for item in plans_response.data["data"]["meal_plans"]],
+        )
+        self.assertIn(
+            standalone_plan.id,
+            [item["id"] for item in catalog_response.data["data"]["meal_plans"]],
+        )
+        for room_type in catalog_response.data["data"]["room_types"]:
+            self.assertIn(standalone_plan.id, [item["id"] for item in room_type["meal_plans"]])
+
+        payload = self.payload()
+        payload["rooms"][0]["meal_plan_ids"] = [standalone_plan.id]
+        create_response = self.client.post("/api/v1/public/bookings/", payload, format="json")
+        self.assertEqual(create_response.status_code, 201, create_response.data)
+        booking_room = Booking.objects.get(id=create_response.data["data"]["id"]).rooms.get()
+        self.assertEqual(booking_room.meal_plan_snapshots[0]["meal_plan_id"], standalone_plan.id)
 
     def test_ota_room_selection_controls_public_availability(self):
         self.room_type.core_snapshot = {

@@ -275,6 +275,34 @@ def _meal_plan_link_payload(link, guest_market="local", display_currency=None):
     }
 
 
+def _standalone_meal_plan_payload(meal_plan, guest_market="local", display_currency=None):
+    if guest_market == RatePlan.GuestMarket.FOREIGN:
+        base_price = meal_plan.foreign_base_price
+        usd_display_price = meal_plan.foreign_usd_display_price
+    else:
+        base_price = meal_plan.local_base_price
+        usd_display_price = meal_plan.local_usd_display_price
+    selected_display_currency = display_currency or meal_plan.hotel.base_currency
+    return {
+        "id": meal_plan.id,
+        "meal_plan_id": meal_plan.id,
+        "core_meal_plan_id": meal_plan.core_meal_plan_id,
+        "name": meal_plan.name,
+        "description": meal_plan.description,
+        "plan_type": meal_plan.plan_type,
+        "package_pricing_mode": meal_plan.package_pricing_mode,
+        "components": meal_plan.components,
+        "included_meals": meal_plan.included_meals,
+        "meal_windows": meal_plan.meal_windows,
+        "availability": meal_plan.availability,
+        "base_currency": meal_plan.hotel.base_currency,
+        "display_currency": selected_display_currency,
+        "base_price": base_price,
+        "usd_display_price": usd_display_price,
+        "display_price": _display_amount(base_price, usd_display_price, selected_display_currency),
+    }
+
+
 def _meal_plan_prices(link, meal_plan, guest_market):
     if link:
         if guest_market == RatePlan.GuestMarket.FOREIGN:
@@ -297,7 +325,7 @@ def _resolve_booking_meal_plan(room_type, requested):
             core_active=True,
         ).first()
         if not meal_plan:
-            raise ValidationError({"rooms": f"Selected meal plan is unavailable for {room_type.name}."})
+            raise ValidationError({"rooms": "Selected meal plan is unavailable for this hotel."})
         return None, meal_plan
     links = room_type.meal_plan_links.select_related("meal_plan").filter(meal_plan__core_active=True)
     if meal_plan_link_id:
@@ -328,9 +356,11 @@ def _resolve_booking_meal_plans(room_type, requested):
             )
         }
         if len(plans) != len(meal_plan_ids):
-            raise ValidationError({"rooms": f"A selected meal plan is unavailable for {room_type.name}."})
+            raise ValidationError({"rooms": "A selected meal plan is unavailable for this hotel."})
         return [(None, plans[plan_id]) for plan_id in meal_plan_ids]
 
+    if not requested.get("meal_plan_id") and not requested.get("meal_plan_link_id"):
+        return []
     link, plan = _resolve_booking_meal_plan(room_type, requested)
     return [(link, plan)] if plan else []
 
@@ -881,6 +911,12 @@ def availability_for_hotels(hotels, check_in, check_out, adults=1, children=0, g
         raise ValidationError({"check_out": "Must be after check_in."})
     dates = list(stay_dates(check_in, check_out))
     hotel_ids = [hotel.id for hotel in hotels]
+    meal_plans_by_hotel = defaultdict(list)
+    for meal_plan in MealPlan.objects.filter(
+        hotel_id__in=hotel_ids,
+        core_active=True,
+    ).select_related("hotel").order_by("name", "id"):
+        meal_plans_by_hotel[meal_plan.hotel_id].append(meal_plan)
     results = {hotel_id: [] for hotel_id in hotel_ids}
     room_types = list(RoomType.objects.filter(
         hotel_id__in=hotel_ids,
@@ -1089,9 +1125,8 @@ def availability_for_hotels(hotels, check_in, check_out, adults=1, children=0, g
                 "booking_options": room_type_booking_options(room_type),
                 "breakfast": breakfast,
                 "meal_plans": [
-                    _meal_plan_link_payload(link, guest_market, display_currency)
-                    for link in room_type.meal_plan_links.all()
-                    if link.meal_plan.core_active
+                    _standalone_meal_plan_payload(plan, guest_market, display_currency)
+                    for plan in meal_plans_by_hotel[room_type.hotel_id]
                 ],
                 "rate_plans": room_plans,
                 "core_snapshot": room_type.core_snapshot,

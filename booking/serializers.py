@@ -321,8 +321,10 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
         return RoomTypeSerializer(context=self.context).get_breakfast(obj)
 
     def get_meal_plans(self, obj):
-        links = obj.meal_plan_links.select_related("meal_plan").filter(meal_plan__core_active=True)
-        return RoomTypeMealPlanSerializer(links, many=True).data
+        plans = self.context.get("hotel_meal_plans")
+        if plans is None:
+            plans = obj.hotel.meal_plans.filter(core_active=True).order_by("name", "id")
+        return MealPlanSerializer(plans, many=True).data
 
     def get_availability_calculated(self, obj):
         return False
