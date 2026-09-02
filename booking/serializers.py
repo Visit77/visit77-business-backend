@@ -659,6 +659,9 @@ class PhysicalRoomActionHistorySerializer(serializers.ModelSerializer):
     actor = serializers.SerializerMethodField()
     guest = serializers.SerializerMethodField()
     booking_reference = serializers.CharField(source="booking.reference", read_only=True, allow_null=True)
+    booking_code = serializers.CharField(source="booking.booking_code", read_only=True, allow_null=True)
+    booking_source = serializers.CharField(source="booking.source", read_only=True, allow_null=True)
+    booking_source_label = serializers.CharField(source="booking.get_source_display", read_only=True, allow_null=True)
     guest_name = serializers.CharField(source="booking.contact_name", read_only=True, allow_null=True)
     invoice_numbers = serializers.SerializerMethodField()
 
@@ -668,7 +671,8 @@ class PhysicalRoomActionHistorySerializer(serializers.ModelSerializer):
             "id", "physical_room", "action", "raw_action", "action_label",
             "created_at", "performed_at", "actor", "guest",
             "old_status", "new_status", "note", "actor_type", "actor_type_label",
-            "actor_core_user_id", "booking", "booking_reference", "guest_name",
+            "actor_core_user_id", "booking", "booking_reference", "booking_code",
+            "booking_source", "booking_source_label", "guest_name",
             "block", "invoice_numbers", "metadata",
         ]
         read_only_fields = fields
@@ -681,9 +685,21 @@ class PhysicalRoomActionHistorySerializer(serializers.ModelSerializer):
     }
 
     def get_action(self, obj):
+        if (
+            obj.action == PhysicalRoomActionHistory.Action.RESERVED
+            and obj.booking_id
+            and obj.booking.source == Booking.Source.OTA
+        ):
+            return "ota"
         return self.ACTION_PRESENTATION.get(obj.action, (obj.action, obj.get_action_display()))[0]
 
     def get_action_label(self, obj):
+        if (
+            obj.action == PhysicalRoomActionHistory.Action.RESERVED
+            and obj.booking_id
+            and obj.booking.source == Booking.Source.OTA
+        ):
+            return "OTA"
         return self.ACTION_PRESENTATION.get(obj.action, (obj.action, obj.get_action_display()))[1]
 
     def get_actor(self, obj):

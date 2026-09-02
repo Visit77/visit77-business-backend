@@ -525,7 +525,12 @@ class PublicBookingCreateView(APIView):
         serializer = BookingCreateSerializer(data=data)
         serializer.is_valid(raise_exception=True)
         try:
-            booking, created = create_booking(serializer.validated_data, request.headers.get("Idempotency-Key"))
+            booking_data = {
+                **serializer.validated_data,
+                "source": Booking.Source.OTA,
+                "source_name": "OTA",
+            }
+            booking, created = create_booking(booking_data, request.headers.get("Idempotency-Key"))
         except Hotel.DoesNotExist:
             raise NotFound("Hotel is not available in the booking engine.")
         if created and identity_photos:
@@ -3088,7 +3093,10 @@ class SuperAdminAddOnTemplateRequestViewSet(FormattedResponseMixin, mixins.ListM
 class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
     permission_classes = [HasBookingAdminKey]
     serializer_class = BookingSerializer
-    filterset_fields = ["hotel", "status", "check_in", "check_out", "reference", "booking_code"]
+    filterset_fields = [
+        "hotel", "status", "source", "source_name", "check_in", "check_out",
+        "reference", "booking_code",
+    ]
     business_scoped = True
     business_lookup = "hotel__core_business_id"
 

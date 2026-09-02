@@ -3571,11 +3571,86 @@ class BookingApiTests(BookingServiceTests):
         response = self.client.post("/api/v1/public/bookings/", payload, format="json", HTTP_IDEMPOTENCY_KEY="api-key")
         self.assertEqual(response.status_code, 201, response.data)
         self.assertTrue(response.data["data"]["booking_code"].startswith("V77H-"))
+        self.assertEqual(response.data["data"]["source"], Booking.Source.OTA)
         token = response.data["data"]["public_token"]
         detail = self.client.get(f"/api/v1/public/bookings/{token}/")
         self.assertEqual(detail.status_code, 200)
         self.assertEqual(detail.data["data"]["contact_name"], "Myo Myo")
         self.assertEqual(detail.data["data"]["booking_code"], response.data["data"]["booking_code"])
+        self.assertEqual(detail.data["data"]["source"], Booking.Source.OTA)
+
+    def test_admin_booking_list_filters_by_booking_source(self):
+        ota_booking = Booking.objects.create(
+            reference="OTA-FILTER-1",
+            hotel=self.hotel,
+            source=Booking.Source.OTA,
+            source_name="OTA",
+            check_in=self.check_in,
+            check_out=self.check_out,
+            contact_name="OTA Guest",
+            contact_phone="091111111",
+        )
+        Booking.objects.create(
+            reference="PMS-FILTER-1",
+            hotel=self.hotel,
+            source=Booking.Source.PMS,
+            source_name="PMS",
+            check_in=self.check_in,
+            check_out=self.check_out,
+            contact_name="PMS Guest",
+            contact_phone="092222222",
+        )
+
+        response = self.client.get(
+            "/api/v1/admin/bookings/",
+            {"source": Booking.Source.OTA},
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual([item["id"] for item in response.data["data"]], [str(ota_booking.id)])
+        self.assertEqual(response.data["data"][0]["source"], Booking.Source.OTA)
+
+    def test_ota_reservation_is_presented_as_ota_in_room_action_history(self):
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="OTA-HIST-01",
+            core_physical_room_id=99101,
+        )
+        booking = Booking.objects.create(
+            reference="OTA-HISTORY-1",
+            hotel=self.hotel,
+            status=Booking.Status.CONFIRMED,
+            source=Booking.Source.OTA,
+            source_name="OTA",
+            check_in=self.check_in,
+            check_out=self.check_out,
+            contact_name="OTA History Guest",
+            contact_phone="093333333",
+        )
+        PhysicalRoomActionHistory.objects.create(
+            physical_room=room,
+            booking=booking,
+            action=PhysicalRoomActionHistory.Action.RESERVED,
+            actor_type=PhysicalRoomActionHistory.ActorType.OTA,
+        )
+
+        response = self.client.get(
+            f"/api/v1/admin/physical-rooms/{room.core_physical_room_id}/history/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        event = response.data["data"][0]
+        self.assertEqual(event["action"], "ota")
+        self.assertEqual(event["raw_action"], PhysicalRoomActionHistory.Action.RESERVED)
+        self.assertEqual(event["action_label"], "OTA")
+        self.assertEqual(event["booking_source"], Booking.Source.OTA)
+        self.assertEqual(event["booking_source_label"], "OTA")
+        self.assertEqual(event["booking_code"], booking.booking_code)
 
     def test_public_booking_form_data_parses_meal_plan_ids_json_string(self):
         breakfast = MealPlan.objects.create(
