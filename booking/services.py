@@ -1813,7 +1813,9 @@ def _booking_charge_lines(booking):
                 snapshot_total = meal_plan_total
             plan["total"] += Decimal(str(snapshot_total or "0"))
         if room.breakfast_snapshot.get("selected"):
-            breakfast_name = room.breakfast_snapshot.get("name") or "Breakfast"
+            # Breakfast selected through a room type always has one consistent,
+            # customer-facing label, regardless of the synced plan's short name.
+            breakfast_name = "Breakfast"
             included = bool(room.breakfast_snapshot.get("included"))
             breakfast_key = (
                 room.breakfast_snapshot.get("meal_plan_id"),

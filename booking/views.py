@@ -2070,6 +2070,8 @@ class RoomBoardView(APIView):
                     "booking_id": booking.id,
                     "booking_reference": booking.reference,
                     "booking_status": booking.status,
+                    "source": booking.source,
+                    "source_name": booking.source_name,
                     "booking_room_id": booking_room.id,
                     "contact_name": booking.contact_name,
                     "contact_phone": booking.contact_phone,
@@ -2134,6 +2136,8 @@ class RoomBoardView(APIView):
                 unassigned.append({
                     "booking_id": booking_room.booking_id,
                     "booking_reference": booking_room.booking.reference,
+                    "source": booking_room.booking.source,
+                    "source_name": booking_room.booking.source_name,
                     "booking_room_id": booking_room.id,
                     "room_type_id": booking_room.room_type_id,
                     "room_type_name": booking_room.room_type.name,
@@ -2268,6 +2272,8 @@ class RoomBoardView(APIView):
                 "booking_id": booking.id,
                 "booking_reference": booking.reference,
                 "booking_status": booking.status,
+                "source": booking.source,
+                "source_name": booking.source_name,
                 "contact_name": booking.contact_name,
                 "contact_phone": booking.contact_phone,
                 "guest_name": primary_guest.name if primary_guest else booking.contact_name,
@@ -2351,6 +2357,8 @@ class RoomBoardView(APIView):
                 "next_reserved": {
                     "booking_id": booking.id,
                     "booking_reference": booking.reference,
+                    "source": booking.source,
+                    "source_name": booking.source_name,
                     "check_in": booking.check_in,
                     "check_out": booking.check_out,
                     "nights": reserved_nights,
@@ -2365,6 +2373,8 @@ class RoomBoardView(APIView):
                 checkout_data = {
                     "booking_id": checkout_booking.id,
                     "booking_reference": checkout_booking.reference,
+                    "source": checkout_booking.source,
+                    "source_name": checkout_booking.source_name,
                     "check_out": checkout_booking.check_out,
                     "released_at": checkout_assignment.released_at,
                 }
@@ -2391,6 +2401,8 @@ class RoomBoardView(APIView):
                     "next_reserved": {
                         "booking_id": next_booking.id,
                         "booking_reference": next_booking.reference,
+                        "source": next_booking.source,
+                        "source_name": next_booking.source_name,
                         "check_in": next_booking.check_in,
                         "check_out": next_booking.check_out,
                         "nights": reserved_nights,
@@ -2523,6 +2535,8 @@ class RoomBoardView(APIView):
             "reference": booking.reference,
             "public_token": booking.public_token,
             "status": booking.status,
+            "source": booking.source,
+            "source_name": booking.source_name,
             "payment_status": payment_status,
             "check_in": booking.check_in,
             "check_out": booking.check_out,

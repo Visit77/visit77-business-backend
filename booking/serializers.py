@@ -695,6 +695,9 @@ class PhysicalRoomActionHistorySerializer(serializers.ModelSerializer):
     guest = serializers.SerializerMethodField()
     booking_reference = serializers.CharField(source="booking.reference", read_only=True, allow_null=True)
     booking_code = serializers.CharField(source="booking.booking_code", read_only=True, allow_null=True)
+    source = serializers.CharField(source="booking.source", read_only=True, allow_null=True)
+    source_name = serializers.CharField(source="booking.source_name", read_only=True, allow_null=True)
+    source_label = serializers.CharField(source="booking.get_source_display", read_only=True, allow_null=True)
     booking_source = serializers.CharField(source="booking.source", read_only=True, allow_null=True)
     booking_source_label = serializers.CharField(source="booking.get_source_display", read_only=True, allow_null=True)
     guest_name = serializers.CharField(source="booking.contact_name", read_only=True, allow_null=True)
@@ -707,6 +710,7 @@ class PhysicalRoomActionHistorySerializer(serializers.ModelSerializer):
             "created_at", "performed_at", "actor", "guest",
             "old_status", "new_status", "note", "actor_type", "actor_type_label",
             "actor_core_user_id", "booking", "booking_reference", "booking_code",
+            "source", "source_name", "source_label",
             "booking_source", "booking_source_label", "guest_name",
             "block", "invoice_numbers", "metadata",
         ]

@@ -755,6 +755,26 @@ class BookingServiceTests(TestCase):
         self.assertEqual(breakfast_line.unit_price, Decimal("24000"))
         self.assertEqual(breakfast_line.total, Decimal("72000"))
 
+    def test_room_type_breakfast_invoice_uses_full_breakfast_label(self):
+        MealPlan.objects.create(
+            hotel=self.hotel,
+            core_meal_plan_id=9876,
+            name="BF",
+            is_default_for_room_type_breakfast=True,
+            local_base_price=Decimal("12000"),
+        )
+        self.room_type.breakfast_plan_type = RoomType.BreakfastPlanType.HOTEL_DEFAULT_PRICE
+        self.room_type.save(update_fields=["breakfast_plan_type"])
+        payload = self.payload()
+        payload["rooms"][0]["breakfast_selected"] = True
+
+        booking, _ = create_booking(payload)
+        breakfast_line = booking.invoices.get(
+            invoice_type=Invoice.Type.ROOM_BOOKING,
+        ).lines.get(metadata__line_type="breakfast")
+
+        self.assertEqual(breakfast_line.description, "Breakfast x 2 x 2 Nights")
+
     def test_initial_invoice_splits_room_extra_bed_meal_plan_and_breakfast_lines(self):
         self.rate_plan.extra_bed_base_price = Decimal("30000")
         self.rate_plan.save(update_fields=["extra_bed_base_price"])
@@ -4036,6 +4056,9 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(event["action"], "ota")
         self.assertEqual(event["raw_action"], PhysicalRoomActionHistory.Action.RESERVED)
         self.assertEqual(event["action_label"], "OTA")
+        self.assertEqual(event["source"], Booking.Source.OTA)
+        self.assertEqual(event["source_name"], "OTA")
+        self.assertEqual(event["source_label"], "OTA")
         self.assertEqual(event["booking_source"], Booking.Source.OTA)
         self.assertEqual(event["booking_source_label"], "OTA")
         self.assertEqual(event["booking_code"], booking.booking_code)
@@ -4468,6 +4491,8 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(reserved["room_type"]["price"]["base_price"], Decimal("80000"))
         self.assertEqual(reserved["room_type"]["price"]["currency"], "MMK")
         self.assertEqual(reserved["assignment"]["booking_reference"], booking.reference)
+        self.assertEqual(reserved["assignment"]["source"], booking.source)
+        self.assertEqual(reserved["current_booking"]["source"], booking.source)
         self.assertEqual(reserved["assignment"]["payment_status"], "paid")
         self.assertEqual(reserved["timeline"]["text"], "Reserved: 2 Nights")
         out_of_service = next(
@@ -4489,6 +4514,7 @@ class BookingApiTests(BookingServiceTests):
             available_with_next["next_reservations"],
         )
         next_reservation = available_with_next["next_reservations"][0]
+        self.assertEqual(next_reservation["source"], future_booking.source)
         self.assertEqual(next_reservation["check_in"], future_booking.check_in)
         self.assertEqual(next_reservation["check_out"], future_booking.check_out)
         self.assertEqual(next_reservation["nights"], 1)
@@ -4564,6 +4590,7 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(data["display_status"], "reserved")
         self.assertEqual(data["room_type"]["name"], self.room_type.name)
         self.assertEqual(data["current_booking"]["reference"], booking.reference)
+        self.assertEqual(data["current_booking"]["source"], booking.source)
         self.assertEqual(data["current_booking"]["payment_status"], "paid")
         self.assertEqual(data["current_booking"]["guest_count"], {"adults": 2, "children": 1, "total": 3})
         self.assertEqual(data["current_booking"]["amount"]["grand_total"], booking.grand_total)
