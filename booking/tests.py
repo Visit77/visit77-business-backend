@@ -2555,6 +2555,7 @@ class BookingApiTests(BookingServiceTests):
 
         history = self.client.get(
             f"/api/v1/admin/physical-rooms/{rooms[1].core_physical_room_id}/history/",
+            {"include_system_events": "true"},
             **headers,
         )
         self.assertEqual(history.status_code, 200, history.data)
