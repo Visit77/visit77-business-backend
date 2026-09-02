@@ -352,7 +352,7 @@ def _resolve_booking_meal_plans(room_type, requested):
         plans = {
             plan.id: plan
             for plan in MealPlan.objects.filter(
-                core_meal_plan_id__in=meal_plan_ids, hotel=room_type.hotel, core_active=True,
+                id__in=meal_plan_ids, hotel=room_type.hotel, core_active=True,
             )
         }
         if len(plans) != len(meal_plan_ids):
