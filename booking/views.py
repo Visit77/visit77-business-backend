@@ -2520,9 +2520,45 @@ class RoomTypeViewSet(AdminModelViewSet):
 class MealPlanViewSet(AdminModelViewSet):
     queryset = MealPlan.objects.select_related("hotel")
     serializer_class = MealPlanSerializer
-    filterset_fields = ["hotel", "core_meal_plan_id", "availability", "core_active"]
+    filterset_fields = [
+        "hotel", "core_meal_plan_id", "availability", "core_active",
+        "is_default_for_room_type_breakfast", "plan_type",
+    ]
     http_method_names = ["get", "head", "options"]
     business_lookup = "hotel__core_business_id"
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        business_id = self.request.query_params.get("business_id")
+        if business_id is not None:
+            try:
+                business_id = int(business_id)
+            except (TypeError, ValueError):
+                raise ValidationError({"business_id": "Use a positive integer."})
+            if business_id < 1:
+                raise ValidationError({"business_id": "Use a positive integer."})
+            queryset = queryset.filter(hotel__core_business_id=business_id)
+
+        default_breakfast = self.request.query_params.get("is_default_for_room_type_breakfast")
+        if default_breakfast is not None:
+            default_breakfast = str(default_breakfast).strip().lower()
+            if default_breakfast not in {"true", "false"}:
+                raise ValidationError({
+                    "is_default_for_room_type_breakfast": "Use true or false."
+                })
+            queryset = queryset.filter(
+                is_default_for_room_type_breakfast=default_breakfast == "true"
+            )
+
+        package_type = self.request.query_params.get("package_type")
+        if package_type is not None:
+            package_type = str(package_type).strip().lower()
+            if package_type not in MealPlan.PlanType.values:
+                raise ValidationError({
+                    "package_type": f"Use one of: {', '.join(MealPlan.PlanType.values)}."
+                })
+            queryset = queryset.filter(plan_type=package_type)
+        return queryset
 
 
 class RoomTypeMealPlanViewSet(AdminModelViewSet):

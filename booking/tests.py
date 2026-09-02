@@ -1194,6 +1194,65 @@ class BookingServiceTests(TestCase):
 
 @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key", CORE_JWT_SIGNING_KEY="test-core-jwt-key")
 class BookingApiTests(BookingServiceTests):
+    def test_admin_meal_plan_list_supports_business_default_and_package_type_filters(self):
+        matching = MealPlan.objects.create(
+            hotel=self.hotel,
+            core_meal_plan_id=91001,
+            name="Default Single Breakfast",
+            plan_type=MealPlan.PlanType.SINGLE,
+            included_meals=["breakfast"],
+            is_default_for_room_type_breakfast=True,
+        )
+        MealPlan.objects.create(
+            hotel=self.hotel,
+            core_meal_plan_id=91002,
+            name="Breakfast Package",
+            plan_type=MealPlan.PlanType.PACKAGE,
+        )
+        other_hotel = Hotel.objects.create(core_business_id=78, name="Other Hotel")
+        MealPlan.objects.create(
+            hotel=other_hotel,
+            core_meal_plan_id=91003,
+            name="Other Default Single Breakfast",
+            plan_type=MealPlan.PlanType.SINGLE,
+            included_meals=["breakfast"],
+            is_default_for_room_type_breakfast=True,
+        )
+
+        response = self.client.get(
+            "/api/v1/admin/meal-plans/",
+            {
+                "business_id": self.hotel.core_business_id,
+                "is_default_for_room_type_breakfast": "true",
+                "package_type": "single",
+            },
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual([item["id"] for item in response.data["data"]], [matching.id])
+
+    def test_admin_meal_plan_list_rejects_invalid_business_and_package_type_filters(self):
+        invalid_business = self.client.get(
+            "/api/v1/admin/meal-plans/",
+            {"business_id": "invalid"},
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+        )
+        invalid_package_type = self.client.get(
+            "/api/v1/admin/meal-plans/",
+            {"package_type": "invalid"},
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+        )
+        invalid_default = self.client.get(
+            "/api/v1/admin/meal-plans/",
+            {"is_default_for_room_type_breakfast": "invalid"},
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+        )
+
+        self.assertEqual(invalid_business.status_code, 400, invalid_business.data)
+        self.assertEqual(invalid_package_type.status_code, 400, invalid_package_type.data)
+        self.assertEqual(invalid_default.status_code, 400, invalid_default.data)
+
     def test_physical_room_history_records_status_block_and_checkout_actions(self):
         room = PhysicalRoom.objects.create(
             hotel=self.hotel,
