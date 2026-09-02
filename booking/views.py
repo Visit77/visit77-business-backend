@@ -3103,7 +3103,7 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
     def get_queryset(self):
         return self.scope_queryset(
             Booking.objects.select_related("hotel").prefetch_related(
-                "rooms__nights", "rooms__assignments", "guests__identity_documents", "add_ons", "payments",
+                "rooms__nights", "rooms__assignments__physical_room", "guests__identity_documents", "add_ons", "payments",
                 "invoices__lines", "invoices__receipts",
             )
         )

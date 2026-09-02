@@ -3600,6 +3600,23 @@ class BookingApiTests(BookingServiceTests):
             contact_name="PMS Guest",
             contact_phone="092222222",
         )
+        booking_room = BookingRoom.objects.create(
+            booking=ota_booking,
+            room_type=self.room_type,
+            rate_plan=self.rate_plan,
+        )
+        physical_room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            core_physical_room_id=99001,
+            room_number="OTA-ASSIGNED-01",
+            floor="9",
+            building="Main Building",
+        )
+        assignment = RoomAssignment.objects.create(
+            booking_room=booking_room,
+            physical_room=physical_room,
+        )
 
         response = self.client.get(
             "/api/v1/admin/bookings/",
@@ -3611,6 +3628,13 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual([item["id"] for item in response.data["data"]], [str(ota_booking.id)])
         self.assertEqual(response.data["data"][0]["source"], Booking.Source.OTA)
+        assigned_room = response.data["data"][0]["rooms"][0]["assigned_physical_rooms"][0]
+        self.assertEqual(assigned_room["assignment_id"], assignment.id)
+        self.assertEqual(assigned_room["id"], physical_room.id)
+        self.assertEqual(assigned_room["core_physical_room_id"], physical_room.core_physical_room_id)
+        self.assertEqual(assigned_room["room_number"], "OTA-ASSIGNED-01")
+        self.assertEqual(assigned_room["floor"], "9")
+        self.assertEqual(assigned_room["building"], "Main Building")
 
     def test_ota_reservation_is_presented_as_ota_in_room_action_history(self):
         room = PhysicalRoom.objects.create(

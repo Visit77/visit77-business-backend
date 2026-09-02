@@ -1033,6 +1033,23 @@ class BookingRoomSerializer(serializers.ModelSerializer):
     room_type_name = serializers.CharField(source="room_type.name", read_only=True)
     room_type_id = serializers.CharField(source="room_type.id", read_only=True)
     rate_plan_name = serializers.CharField(source="rate_plan.name", read_only=True)
+    assigned_physical_rooms = serializers.SerializerMethodField()
+
+    def get_assigned_physical_rooms(self, obj):
+        return [
+            {
+                "assignment_id": assignment.id,
+                "id": assignment.physical_room_id,
+                "core_physical_room_id": assignment.physical_room.core_physical_room_id,
+                "room_number": assignment.physical_room.room_number,
+                "floor": assignment.physical_room.floor,
+                "building": assignment.physical_room.building,
+                "status": assignment.physical_room.status,
+                "assigned_at": assignment.assigned_at,
+            }
+            for assignment in obj.assignments.all()
+            if assignment.released_at is None
+        ]
 
     class Meta:
         model = BookingRoom
