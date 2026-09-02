@@ -639,11 +639,11 @@ class PublicDemoPaymentView(APIView):
         # Send confirmation email only after successful DB commit
         if booking.status == Booking.Status.CONFIRMED:
             booking_id = str(booking.id)
-        def send_booking_notifications():
-            send_booking_confirmation_email_task(booking_id)
-            send_booking_confirmation_sms_task(booking_id)
+            def send_booking_notifications():
+                send_booking_confirmation_email_task(booking_id)
+                send_booking_confirmation_sms_task(booking_id)
 
-        transaction.on_commit(send_booking_notifications)
+            transaction.on_commit(send_booking_notifications)
             # transaction.on_commit(
             #     lambda: send_booking_confirmation_email_task(
             #         booking_id
@@ -786,11 +786,17 @@ class CorePaymentSuccessView(APIView):
         if booking.status == Booking.Status.CONFIRMED:
             booking_id = str(booking.id)
 
-            transaction.on_commit(
-                lambda: send_booking_confirmation_email_task.delay(
-                    booking_id
-                )
-            )
+            def send_booking_notifications():
+                send_booking_confirmation_email_task.delay(booking_id)
+                send_booking_confirmation_sms_task.delay(booking_id)
+
+            transaction.on_commit(send_booking_notifications)
+
+            # transaction.on_commit(
+            #     lambda: send_booking_confirmation_email_task.delay(
+            #         booking_id
+            #     )
+            # )
 
         return success(
             {

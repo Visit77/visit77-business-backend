@@ -103,8 +103,8 @@ def send_booking_confirmation_sms_task(booking_id):
     )
 
     message = (
-        f"Your Visit77 booking is confirmed.\n "
-        f"Booking ID: {booking.booking_code}\n "
+        f"Your VISIT 77 booking is confirmed.\n"
+        f"Booking ID: {booking.booking_code}\n"
         f"Hotel: {booking.hotel.name}\n"
         f"Check-in: {booking.check_in:%d %b %Y}\n"
         f"Check-out: {booking.check_out:%d %b %Y}\n"

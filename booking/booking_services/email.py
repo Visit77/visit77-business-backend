@@ -25,10 +25,10 @@ def send_booking_confirmation_email(booking):
         f"{booking.public_token}"
     )
 
-    subject = "Booking Confirmation with Visit77"
+    subject = "Booking Confirmation with VISIT 77"
 
     message = f"""
-Booking Confirmation with Visit77
+Booking Confirmation with VISIT 77
 
 Booking ID: {booking.booking_code}
 
