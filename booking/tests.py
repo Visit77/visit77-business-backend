@@ -355,7 +355,7 @@ class BookingServiceTests(TestCase):
         booking = create_admin_reservation(
             {
                 "core_business_id": self.hotel.core_business_id,
-                "source": Booking.Source.PHONE,
+                "source": Booking.Source.PMS,
                 "source_name": "Hotel hotline",
                 "check_in": self.check_in,
                 "check_out": self.check_out,
@@ -437,7 +437,7 @@ class BookingServiceTests(TestCase):
         booking.refresh_from_db()
         physical_room.refresh_from_db()
         self.assertEqual(booking.status, Booking.Status.CHECKED_IN)
-        self.assertEqual(booking.source, Booking.Source.WALK_IN)
+        self.assertEqual(booking.source, Booking.Source.PMS)
         self.assertEqual(booking.amount_paid, booking.grand_total)
         self.assertEqual(physical_room.status, PhysicalRoom.Status.OCCUPIED)
         self.assertTrue(
@@ -482,6 +482,7 @@ class BookingServiceTests(TestCase):
         payload = self.payload()
         payload["rooms"][0]["quantity"] = 1
         payload["rooms"][0]["adults"] = 2
+        payload["rooms"][0]["extra_beds"] = 0
         payload["rooms"][0]["preferences"] = {"core_bed_type_id": 1}
 
         booking, _ = create_booking(payload)
@@ -489,6 +490,51 @@ class BookingServiceTests(TestCase):
 
         assignment = RoomAssignment.objects.get(booking_room__booking=booking)
         self.assertEqual(assignment.physical_room_id, preferred_room.id)
+
+    def test_guaranteed_core_option_is_treated_as_soft_preference(self):
+        self.room_type.core_snapshot = {
+            "allow_guest_bed_preference": True,
+            "beds": [{
+                "bed_type": {"id": 1, "name": "King Bed"},
+                "quantity": 1,
+                "is_guest_selectable": True,
+                "is_guaranteed": True,
+                "extra_base_price": 0,
+            }],
+        }
+        self.room_type.save(update_fields=["core_snapshot"])
+        PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="101",
+            core_snapshot={"beds": [{"bed_type": {"id": 1, "name": "King Bed"}}]},
+        )
+        PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="102",
+            core_snapshot={"beds": [{"bed_type": {"id": 2, "name": "Queen Bed"}}]},
+        )
+        payload = self.payload()
+        payload["rooms"][0].update({
+            "quantity": 2,
+            "adults": 2,
+            "extra_beds": 0,
+            "preferences": {"core_bed_type_id": 1},
+        })
+
+        booking, _ = create_booking(payload)
+        booking_room = booking.rooms.get()
+        self.assertFalse(booking_room.preference_snapshot["has_guaranteed_constraints"])
+        self.assertEqual(booking_room.preference_snapshot["guaranteed_constraints"], {})
+        self.assertFalse(booking_room.preference_snapshot["selected"]["bed"]["is_guaranteed"])
+
+        record_payment(booking, {
+            "provider": "cash",
+            "amount": booking.grand_total,
+            "status": Payment.Status.PAID,
+        })
+        self.assertEqual(booking_room.assignments.count(), 2)
 
     def test_cancel_pending_booking_returns_held_inventory(self):
         booking, _ = create_booking(self.payload())
@@ -1863,7 +1909,7 @@ class BookingApiTests(BookingServiceTests):
         )
         booking = create_admin_reservation({
             **self.payload(),
-            "source": Booking.Source.PHONE,
+            "source": Booking.Source.PMS,
             "rooms": [{
                 "core_room_type_id": self.room_type.core_room_type_id,
                 "rate_plan_id": self.rate_plan.id,
@@ -1924,7 +1970,7 @@ class BookingApiTests(BookingServiceTests):
     def test_check_in_form_keeps_booked_nightly_price_after_core_rate_change(self):
         booking = create_admin_reservation({
             **self.payload(),
-            "source": Booking.Source.PHONE,
+            "source": Booking.Source.PMS,
         })
         booked_total = booking.grand_total
         booked_unit_prices = list(
@@ -1956,7 +2002,7 @@ class BookingApiTests(BookingServiceTests):
     def test_check_in_form_ignores_payment_when_balance_is_zero(self):
         booking = create_admin_reservation({
             **self.payload(),
-            "source": Booking.Source.PHONE,
+            "source": Booking.Source.PMS,
         })
         record_payment(booking, {
             "provider": "cash",
@@ -1998,7 +2044,7 @@ class BookingApiTests(BookingServiceTests):
         )
         booking = create_admin_reservation({
             **self.payload(),
-            "source": Booking.Source.PHONE,
+            "source": Booking.Source.PMS,
             "rooms": [{
                 "core_room_type_id": self.room_type.core_room_type_id,
                 "rate_plan_id": self.rate_plan.id,
@@ -2132,7 +2178,7 @@ class BookingApiTests(BookingServiceTests):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-S")
         booking = create_admin_reservation({
             **self.payload(),
-            "source": Booking.Source.PHONE,
+            "source": Booking.Source.PMS,
             "rooms": [{
                 "core_room_type_id": self.room_type.core_room_type_id,
                 "rate_plan_id": self.rate_plan.id,
@@ -2255,7 +2301,7 @@ class BookingApiTests(BookingServiceTests):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-O")
         first = create_admin_reservation({
             **self.payload(),
-            "source": Booking.Source.PHONE,
+            "source": Booking.Source.PMS,
             "rooms": [{
                 "core_room_type_id": self.room_type.core_room_type_id,
                 "rate_plan_id": self.rate_plan.id,
@@ -2268,7 +2314,7 @@ class BookingApiTests(BookingServiceTests):
         later_payload = self.payload()
         later_payload["check_in"] = self.check_out
         later_payload["check_out"] = self.check_out + timedelta(days=2)
-        later_payload["source"] = Booking.Source.PHONE
+        later_payload["source"] = Booking.Source.PMS
         later_payload["rooms"] = [{
             "core_room_type_id": self.room_type.core_room_type_id,
             "rate_plan_id": self.rate_plan.id,
@@ -2755,7 +2801,7 @@ class BookingApiTests(BookingServiceTests):
 
         older = assign("OTA-301-OLDER", ota_room, Booking.Source.OTA, self.check_in)
         newer = assign(
-            "OTA-301-NEWER", ota_room, Booking.Source.DIRECT, self.check_in + timedelta(days=4),
+            "OTA-301-NEWER", ota_room, Booking.Source.OTA, self.check_in + timedelta(days=4),
         )
         assign("OTA-DISABLED", disabled_room, Booking.Source.OTA, self.check_in)
         Booking.objects.filter(id=older.id).update(created_at=timezone.now() - timedelta(hours=1))
@@ -3222,7 +3268,7 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(response.status_code, 201, response.data)
         booking = Booking.objects.get(id=response.data["data"]["booking"]["id"])
         room.refresh_from_db()
-        self.assertEqual(booking.source, Booking.Source.PHONE)
+        self.assertEqual(booking.source, Booking.Source.PMS)
         self.assertEqual(booking.status, Booking.Status.CONFIRMED)
         self.assertEqual(booking.amount_paid, booking.grand_total)
         self.assertEqual(booking.payments.get().payment_type, Payment.Type.FULL_PAYMENT)
@@ -3256,7 +3302,7 @@ class BookingApiTests(BookingServiceTests):
 
         overlapping_payload = self.payload()
         overlapping_payload.update({
-            "source": Booking.Source.PHONE,
+            "source": Booking.Source.PMS,
             "rooms": [{
                 "core_room_type_id": self.room_type.core_room_type_id,
                 "rate_plan_id": self.rate_plan.id,
@@ -3271,7 +3317,7 @@ class BookingApiTests(BookingServiceTests):
 
         future_payload = self.payload()
         future_payload.update({
-            "source": Booking.Source.PHONE,
+            "source": Booking.Source.PMS,
             "check_in": self.check_out,
             "check_out": self.check_out + timedelta(days=2),
             "rooms": [{
@@ -4895,7 +4941,7 @@ class BookingApiTests(BookingServiceTests):
             reference="PMS-CONFLICT",
             hotel=self.hotel,
             status=Booking.Status.CONFIRMED,
-            source=Booking.Source.PHONE,
+            source=Booking.Source.PMS,
             check_in=self.check_in,
             check_out=self.check_out,
             contact_name="Conflict",

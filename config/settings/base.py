@@ -200,6 +200,13 @@ EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
 DEFAULT_FROM_EMAIL = env(
     "DEFAULT_FROM_EMAIL",default="Visit77 <booking@visit77.com>",
 )
+RECEIPT_ISSUER_NAME = env("RECEIPT_ISSUER_NAME", default="Visit77 Co.,Ltd.")
+RECEIPT_ISSUER_ADDRESS = env(
+    "RECEIPT_ISSUER_ADDRESS",
+    default="10-06, Panchan Tower, Bargayar St., Sanchaung Tsp., Yangon, Myanmar.",
+)
+RECEIPT_ISSUER_EMAIL = env("RECEIPT_ISSUER_EMAIL", default="contact.myanmar@visit77.com")
+RECEIPT_ISSUER_PHONE = env("RECEIPT_ISSUER_PHONE", default="(+95) 988 577 0011")
 
 CUSTOM_SMS_URL = env("CUSTOM_SMS_URL")
 CUSTOM_SMS_APP_ID = env("CUSTOM_SMS_APP_ID")

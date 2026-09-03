@@ -5,6 +5,7 @@ import json
 import re
 
 from django.conf import settings
+from django.http import FileResponse
 from django.shortcuts import redirect
 from django.db import transaction
 from django.db.models import Count, Max, Prefetch, Q
@@ -90,8 +91,6 @@ def _room_history_actor_type(request=None, booking=None):
         return PhysicalRoomActionHistory.ActorType.OTA
     if request is not None and _core_user_id(request):
         return PhysicalRoomActionHistory.ActorType.HOTEL_ADMIN
-    if booking and booking.source == Booking.Source.DIRECT:
-        return PhysicalRoomActionHistory.ActorType.GUEST
     return PhysicalRoomActionHistory.ActorType.SYSTEM
 
 
@@ -587,6 +586,27 @@ class PublicBookingDetailView(APIView):
         return success(BookingSerializer(booking).data)
 
 
+class PublicReceiptPDFView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, public_token, payment_id):
+        payment = Payment.objects.filter(
+            id=payment_id,
+            booking__public_token=public_token,
+            receipt_number__isnull=False,
+        ).first()
+        if not payment:
+            raise NotFound("Receipt not found.")
+        from booking.booking_services.receipt import ensure_receipt_pdf
+        payment = ensure_receipt_pdf(payment)
+        return FileResponse(
+            payment.receipt_pdf.open("rb"),
+            content_type="application/pdf",
+            as_attachment=True,
+            filename=f"{payment.receipt_number}.pdf",
+        )
+
+
 class MyBookingHistoryView(APIView):
     authentication_classes = [CoreJWTAuthentication]
     permission_classes = [IsAuthenticated]
@@ -617,16 +637,16 @@ class MyBookingHistoryView(APIView):
 
 def _guest_source_values(source):
     if source == "ota":
-        return [Booking.Source.OTA, Booking.Source.DIRECT]
+        return [Booking.Source.OTA]
     if source == "pms":
-        return [Booking.Source.PMS, Booking.Source.PHONE, Booking.Source.WALK_IN]
+        return [Booking.Source.PMS]
     if source in [None, "", "all"]:
         return None
     raise ValidationError({"source": "Use all, ota, or pms."})
 
 
 def _guest_source_label(booking):
-    return "ota" if booking.source in [Booking.Source.OTA, Booking.Source.DIRECT] else "pms"
+    return booking.source
 
 
 def _guest_stay_payload(guest):
@@ -1396,7 +1416,7 @@ class OTARoomSelectionView(APIView):
         room_ids = [room.id for room in rooms]
         assignments = list(RoomAssignment.objects.filter(
             physical_room_id__in=room_ids,
-            booking_room__booking__source__in=[Booking.Source.OTA, Booking.Source.DIRECT],
+            booking_room__booking__source=Booking.Source.OTA,
         ).select_related(
             "booking_room__booking",
         ).prefetch_related(
@@ -1465,7 +1485,7 @@ class OTARoomSelectionView(APIView):
             physical_room__hotel=hotel,
             physical_room__is_active=True,
             released_at__isnull=True,
-            booking_room__booking__source__in=[Booking.Source.OTA, Booking.Source.DIRECT],
+            booking_room__booking__source=Booking.Source.OTA,
             booking_room__booking__status__in=[Booking.Status.PENDING_PAYMENT, Booking.Status.CONFIRMED],
             booking_room__booking__check_out__gt=timezone.localdate(),
         ).values("physical_room_id").annotate(total=Count("id")).values_list("physical_room_id", "total"))
@@ -1679,7 +1699,7 @@ class OTARecordListView(APIView):
             physical_room__hotel=hotel,
             physical_room__is_active=True,
             physical_room__ota_enabled=True,
-            booking_room__booking__source__in=[Booking.Source.OTA, Booking.Source.DIRECT],
+            booking_room__booking__source=Booking.Source.OTA,
         ).select_related(
             "physical_room",
             "physical_room__room_type",
@@ -1788,7 +1808,7 @@ class OTARoomSaleStatusView(APIView):
             conflicts = RoomAssignment.objects.filter(
                 physical_room=room,
                 released_at__isnull=True,
-                booking_room__booking__source__in=[Booking.Source.OTA, Booking.Source.DIRECT],
+                booking_room__booking__source=Booking.Source.OTA,
                 booking_room__booking__status__in=[
                     Booking.Status.PENDING_PAYMENT,
                     Booking.Status.CONFIRMED,
@@ -2809,7 +2829,7 @@ class RoomTypeViewSet(AdminModelViewSet):
                 "assignments",
                 filter=Q(
                     assignments__released_at__isnull=True,
-                    assignments__booking_room__booking__source__in=[Booking.Source.OTA, Booking.Source.DIRECT],
+                    assignments__booking_room__booking__source=Booking.Source.OTA,
                     assignments__booking_room__booking__status__in=[
                         Booking.Status.PENDING_PAYMENT,
                         Booking.Status.CONFIRMED,

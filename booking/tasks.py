@@ -45,7 +45,10 @@ def send_booking_confirmation_email_task(self, booking_id):
     booking = (
         Booking.objects
         .select_related("hotel")
-        .prefetch_related("guests", "rooms__room_type")
+        .prefetch_related(
+            "guests", "rooms__room_type", "payments__invoice__lines",
+            "payments__invoice__receipts",
+        )
         .get(id=booking_id)
     )
 

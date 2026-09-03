@@ -1106,6 +1106,14 @@ class BookingAddOnSerializer(serializers.ModelSerializer):
 
 class PaymentSerializer(serializers.ModelSerializer):
     current_invoice_number = serializers.CharField(source="invoice.invoice_number", read_only=True)
+    receipt_pdf_url = serializers.SerializerMethodField()
+
+    def get_receipt_pdf_url(self, obj):
+        if not obj.receipt_number:
+            return None
+        path = f"/api/v1/public/bookings/{obj.booking.public_token}/receipts/{obj.id}/pdf/"
+        request = self.context.get("request")
+        return request.build_absolute_uri(path) if request else path
 
     class Meta:
         model = Payment
@@ -1459,8 +1467,9 @@ class BookingCreateSerializer(serializers.Serializer):
 
 class AdminReservationCreateSerializer(BookingCreateSerializer):
     source = serializers.ChoiceField(
-        choices=[Booking.Source.PHONE, Booking.Source.PMS, Booking.Source.WALK_IN],
-        default=Booking.Source.PHONE,
+        # Accept legacy client values, but persist every hotel-side booking as PMS.
+        choices=["pms", "phone", "walk_in"],
+        default=Booking.Source.PMS,
     )
     source_name = serializers.CharField(max_length=120, required=False, allow_blank=True)
     rooms = AdminReservationRoomSerializer(many=True, allow_empty=False)
@@ -1470,6 +1479,7 @@ class AdminReservationCreateSerializer(BookingCreateSerializer):
 
     def validate(self, attrs):
         attrs = super().validate(attrs)
+        attrs["source"] = Booking.Source.PMS
         if attrs.get("payment") and attrs.get("deposit"):
             raise serializers.ValidationError({"payment": "Send either payment or legacy deposit, not both."})
         legacy_deposit = attrs.pop("deposit", None)

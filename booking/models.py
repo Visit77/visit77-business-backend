@@ -574,9 +574,6 @@ class ReceiptNumberSequence(models.Model):
 class Booking(models.Model):
     class Source(models.TextChoices):
         OTA = "ota", "OTA"
-        DIRECT = "direct", "Direct Booking"
-        PHONE = "phone", "Phone / On-call"
-        WALK_IN = "walk_in", "Walk-in"
         PMS = "pms", "PMS"
 
     class Status(models.TextChoices):
@@ -596,7 +593,7 @@ class Booking(models.Model):
     core_customer_user_id = models.PositiveBigIntegerField(null=True, blank=True)
     idempotency_key = models.CharField(max_length=128, null=True, blank=True)
     status = models.CharField(max_length=32, choices=Status.choices, default=Status.PENDING_PAYMENT)
-    source = models.CharField(max_length=24, choices=Source.choices, default=Source.DIRECT)
+    source = models.CharField(max_length=24, choices=Source.choices, default=Source.OTA)
     source_name = models.CharField(max_length=120, blank=True)
     check_in = models.DateField()
     check_out = models.DateField()
@@ -868,6 +865,15 @@ class Payment(models.Model):
     currency = models.CharField(max_length=3)
     invoice_number = models.CharField(max_length=32)
     receipt_number = models.CharField(max_length=32, unique=True, null=True, blank=True)
+    receipt_snapshot = models.JSONField(default=dict, blank=True)
+    receipt_pdf = models.FileField(
+        upload_to="booking/receipts/%Y/%m/",
+        storage=get_private_document_storage,
+        null=True,
+        blank=True,
+        editable=False,
+    )
+    receipt_pdf_generated_at = models.DateTimeField(null=True, blank=True, editable=False)
     metadata = models.JSONField(default=dict, blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

@@ -533,6 +533,13 @@ def _rate_amounts(rule, rate_plan):
 
 def room_type_booking_options(room_type):
     snapshot = room_type.core_snapshot or {}
+
+    def soft_options(key):
+        return [
+            {**option, "is_guaranteed": False}
+            for option in snapshot.get(key, []) or []
+        ]
+
     return {
         "allow_guest_bed_preference": snapshot.get("allow_guest_bed_preference", False),
         "allow_guest_view_preference": snapshot.get("allow_guest_view_preference", False),
@@ -540,10 +547,10 @@ def room_type_booking_options(room_type):
         "allow_guest_smoking_preference": snapshot.get("allow_guest_smoking_preference", False),
         "supports_smoking": snapshot.get("supports_smoking", False),
         "supports_non_smoking": snapshot.get("supports_non_smoking", True),
-        "beds": snapshot.get("beds", []) or [],
-        "view_options": snapshot.get("view_options", []) or [],
-        "bath_options": snapshot.get("bath_options", []) or [],
-        "custom_options": snapshot.get("custom_options", []) or [],
+        "beds": soft_options("beds"),
+        "view_options": soft_options("view_options"),
+        "bath_options": soft_options("bath_options"),
+        "custom_options": soft_options("custom_options"),
     }
 
 
@@ -597,7 +604,7 @@ def _option_total_payload(option, nights, quantity):
         "extra_base_price": str(extra_base_price),
         "extra_usd_display_price": str(extra_usd_display_price) if extra_usd_display_price is not None else None,
         "is_guest_selectable": bool(option.get("is_guest_selectable", True)),
-        "is_guaranteed": bool(option.get("is_guaranteed", False)),
+        "is_guaranteed": False,
         "total_base_price": str(extra_base_price * nights * quantity),
     }
 
@@ -633,8 +640,6 @@ def resolve_room_preferences(room_type, preferences, nights, quantity):
             "core_value_id": submitted_id,
             "name": (option.get(relation_name) or {}).get("name", ""),
         }
-        if option.get("is_guaranteed", False):
-            constraints[kind] = submitted_id
 
     select_option(
         "bed",
@@ -666,8 +671,7 @@ def resolve_room_preferences(room_type, preferences, nights, quantity):
         #     raise ValidationError({"preferences": f"{room_type.name} does not support smoking rooms."})
         # if smoking_type == "non_smoking" and not snapshot.get("supports_non_smoking", True):
         #     raise ValidationError({"preferences": f"{room_type.name} does not support non-smoking rooms."})
-        selected["smoking"] = {"value": smoking_type, "is_guaranteed": True}
-        constraints["smoking"] = smoking_type
+        selected["smoking"] = {"value": smoking_type, "is_guaranteed": False}
 
     custom_ids = list(dict.fromkeys(preferences.get("core_custom_option_value_ids") or []))
     if custom_ids:
@@ -692,8 +696,6 @@ def resolve_room_preferences(room_type, preferences, nights, quantity):
                 "name": option_value.get("name", ""),
                 "group": (option_value.get("group") or {}).get("name", ""),
             })
-            if option.get("is_guaranteed", False):
-                constraints.setdefault("custom_options", []).append(custom_id)
 
     return {
         "requested": preferences,
@@ -756,43 +758,14 @@ def physical_room_matches_constraints(room, constraints):
 
 
 def ensure_preference_capacity(room_type, dates, constraints, quantity):
-    if not constraints:
-        return
-    matching_room_ids = [
-        room.id
-        for room in PhysicalRoom.objects.filter(room_type=room_type, is_active=True).exclude(
-            status=PhysicalRoom.Status.OUT_OF_SERVICE,
-        )
-        if physical_room_matches_constraints(room, constraints)
-    ]
-    if len(matching_room_ids) < quantity:
-        raise ValidationError({"preferences": f"Not enough physical rooms match the guaranteed preferences for {room_type.name}."})
-
-    overlapping = BookingRoom.objects.filter(
-        room_type=room_type,
-        booking__status__in=[Booking.Status.PENDING_PAYMENT, Booking.Status.CONFIRMED, Booking.Status.CHECKED_IN],
-        booking__check_in__lt=dates[-1] + timedelta(days=1),
-        booking__check_out__gt=dates[0],
-        preference_snapshot__has_key="guaranteed_constraints",
-    )
-    for day in dates:
-        committed = quantity
-        for booking_room in overlapping:
-            existing_constraints = (booking_room.preference_snapshot or {}).get("guaranteed_constraints") or {}
-            if existing_constraints and all(
-                physical_room_matches_constraints(room, existing_constraints)
-                for room in PhysicalRoom.objects.filter(id__in=matching_room_ids)
-            ):
-                if booking_room.booking.check_in <= day < booking_room.booking.check_out:
-                    committed += booking_room.quantity
-        if committed > len(matching_room_ids):
-            raise ValidationError({"preferences": f"Guaranteed preference capacity is no longer available on {day}."})
+    # All room preferences are soft requests. Availability must never be
+    # rejected because a preferred physical-room attribute is unavailable.
+    return
 
 
 def validate_assignment_preferences(booking_room, physical_room):
-    constraints = (booking_room.preference_snapshot or {}).get("guaranteed_constraints") or {}
-    if constraints and not physical_room_matches_constraints(physical_room, constraints):
-        raise ValidationError("The selected physical room does not match this booking room's guaranteed preferences.")
+    # Preferences influence ordering only; a non-matching room is valid.
+    return
 
 
 def _natural_sort_key(value):
@@ -902,15 +875,11 @@ def _available_physical_rooms_for_booking_room(booking_room):
         .exclude(id__in=blocked_room_ids)
     )
     if (
-        booking.source in [Booking.Source.OTA, Booking.Source.DIRECT]
+        booking.source == Booking.Source.OTA
         and booking.hotel.package in [Hotel.Package.OTA, Hotel.Package.OTA_PMS]
     ):
         candidates = candidates.filter(ota_enabled=True, ota_sale_open=True)
-    constraints = (booking_room.preference_snapshot or {}).get("guaranteed_constraints") or {}
-    return [
-        room for room in candidates
-        if not constraints or physical_room_matches_constraints(room, constraints)
-    ]
+    return list(candidates)
 
 
 def auto_assign_physical_rooms_for_booking(booking):
@@ -932,12 +901,13 @@ def auto_assign_physical_rooms_for_booking(booking):
             continue
 
         candidates = _available_physical_rooms_for_booking_room(booking_room)
-        if booking.source in [Booking.Source.OTA, Booking.Source.DIRECT]:
+        if booking.source == Booking.Source.OTA:
             # Deterministic first-fit packing prevents scattered future stays
             # from fragmenting the OTA room pool. Reuse the lowest room number
             # whenever its full requested date range is free, then try the next.
             candidates.sort(key=lambda room: (
                 _ota_preference_standard_priority(booking_room, room),
+                -_preference_match_score(booking_room, room),
                 _natural_sort_key(room.room_number),
                 room.id,
             ))
@@ -954,8 +924,6 @@ def auto_assign_physical_rooms_for_booking(booking):
             created_assignments.append(assignment)
             if booking.source == Booking.Source.OTA:
                 actor_type = PhysicalRoomActionHistory.ActorType.OTA
-            elif booking.source == Booking.Source.DIRECT:
-                actor_type = PhysicalRoomActionHistory.ActorType.GUEST
             else:
                 actor_type = PhysicalRoomActionHistory.ActorType.SYSTEM
             PhysicalRoomActionHistory.objects.create(
@@ -1456,7 +1424,11 @@ def create_booking(data, idempotency_key=None):
         booked_by_core_user_id=data.get("booked_by_core_user_id"),
         core_customer_user_id=data.get("core_customer_user_id"),
         idempotency_key=idempotency_key,
-        source=data.get("source", Booking.Source.DIRECT),
+        source=(
+            Booking.Source.OTA
+            if str(data.get("source", Booking.Source.OTA)).lower() in {"ota", "direct"}
+            else Booking.Source.PMS
+        ),
         source_name=data.get("source_name", ""),
         check_in=check_in,
         check_out=check_out,
@@ -1993,6 +1965,8 @@ def record_payment(booking, data, auto_assign=True):
         paid_at=timezone.now() if data.get("status", Payment.Status.PAID) == Payment.Status.PAID else None,
     )
     if payment.status == Payment.Status.PAID:
+        from booking.booking_services.receipt import finalize_receipt_snapshot
+        finalize_receipt_snapshot(payment)
         was_pending = booking.status == Booking.Status.PENDING_PAYMENT
         booking.amount_paid += payment.amount
         # A successful full payment or accepted deposit commits the reservation.
@@ -2157,7 +2131,7 @@ def create_walk_in_booking(data, idempotency_key=None, core_business_id=None, ch
         {
             "core_business_id": hotel.core_business_id,
             "core_customer_user_id": data.get("core_customer_user_id"),
-            "source": Booking.Source.WALK_IN,
+            "source": Booking.Source.PMS,
             "source_name": "Walk-in",
             "check_in": check_in,
             "check_out": check_out,

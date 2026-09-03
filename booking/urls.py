@@ -30,6 +30,7 @@ from booking.views import (
     PublicBookingCreateView,
     PublicBookingEstimateView,
     PublicBookingDetailView,
+    PublicReceiptPDFView,
     PublicDemoPaymentView,
     PublicGlobalAvailabilityView,
     PublicStayBillView,
@@ -91,6 +92,10 @@ urlpatterns = [
     path("public/my-bookings/", MyBookingHistoryView.as_view()),
     path("public/bookings/", PublicBookingCreateView.as_view()),
     path("public/bookings/<uuid:public_token>/", PublicBookingDetailView.as_view()),
+    path(
+        "public/bookings/<uuid:public_token>/receipts/<uuid:payment_id>/pdf/",
+        PublicReceiptPDFView.as_view(),
+    ),
     path("public/bookings/<uuid:public_token>/stay-bill/", PublicStayBillView.as_view()),
     path("public/bookings/<uuid:public_token>/aya-payment/", PublicAYAPaymentView.as_view()),
     path("public/bookings/<uuid:public_token>/demo-payment/", PublicDemoPaymentView.as_view()),
