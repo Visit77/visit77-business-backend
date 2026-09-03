@@ -74,7 +74,7 @@ from booking.serializers import (
     RoomTypeSerializer,
     WalkInBookingCreateSerializer,
 )
-from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, deprovision_hotel, ensure_daily_inventory_for_room_type, estimate_booking, format_money, record_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, sync_guest_profile, update_reservation_for_check_in, validate_assignment_preferences
+from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, deprovision_hotel, ensure_daily_inventory_for_room_type, estimate_booking, format_money, record_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, replace_booking_payment_snapshot, sync_guest_profile, update_reservation_for_check_in, validate_assignment_preferences
 from config.response_formatter import success
 
 
@@ -3640,7 +3640,11 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
             guest_updates = data.pop("guests", [])
             payment_data = data.pop("payment", None)
             data.pop("workflow", None)
-            booking = update_reservation_for_check_in(booking, data)
+            booking = update_reservation_for_check_in(
+                booking,
+                data,
+                replace_payment=payment_data is not None,
+            )
             existing_guests = list(booking.guests.order_by("id"))
             for guest_index, guest_data in enumerate(guest_updates):
                 guest_id = guest_data.pop("id", None)
@@ -3678,17 +3682,11 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
                             "verified_by_core_user_id": None,
                         },
                     )
-            if payment_data:
-                payment_data = dict(payment_data)
-                outstanding_balance = max(
-                    booking.grand_total - booking.amount_paid, Decimal("0"),
-                )
-                # Mobile clients may resend the payment section when saving an
-                # already-paid check-in form. Treat it as an idempotent no-op.
-                if outstanding_balance > 0:
-                    if "amount" not in payment_data:
-                        payment_data["amount"] = outstanding_balance
-                    record_payment(booking, payment_data, auto_assign=False)
+            if payment_data is not None:
+                # During the demo phase the check-in form is the authoritative
+                # payment snapshot. Rebuild it after repricing instead of
+                # combining it with payments captured during reservation.
+                replace_booking_payment_snapshot(booking, payment_data)
         booking = self.get_queryset().prefetch_related("guests__identity_documents").get(pk=booking.pk)
         return success({
             "booking": BookingSerializer(booking, context={"request": request}).data,

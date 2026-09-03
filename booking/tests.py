@@ -2035,6 +2035,56 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(booking.payments.count(), payment_count)
         self.assertEqual(response.data["data"]["payment_summary"]["amount_due"], Decimal("0"))
 
+    def test_check_in_form_replaces_full_payment_after_room_quantity_is_reduced(self):
+        booking = create_admin_reservation({
+            **self.payload(),
+            "source": Booking.Source.PMS,
+            "rooms": [{
+                "core_room_type_id": self.room_type.core_room_type_id,
+                "rate_plan_id": self.rate_plan.id,
+                "quantity": 2,
+                "adults": 2,
+                "children": 0,
+            }],
+        })
+        original_total = booking.grand_total
+        record_payment(booking, {
+            "payment_type": Payment.Type.FULL_PAYMENT,
+            "provider": Payment.Provider.CASH,
+            "amount": original_total,
+            "status": Payment.Status.PAID,
+        }, auto_assign=False)
+
+        response = self.client.patch(
+            f"/api/v1/admin/bookings/{booking.id}/check-in-form/",
+            {
+                "rooms": [{
+                    "core_room_type_id": self.room_type.core_room_type_id,
+                    "rate_plan_id": self.rate_plan.id,
+                    "quantity": 1,
+                    "adults": 1,
+                    "children": 0,
+                }],
+                "payment": {
+                    "payment_type": "full_payment",
+                    "provider": "cash",
+                    "status": "paid",
+                },
+            },
+            format="json",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        booking.refresh_from_db()
+        self.assertLess(booking.grand_total, original_total)
+        self.assertEqual(booking.rooms.get().quantity, 1)
+        self.assertEqual(booking.payments.count(), 1)
+        self.assertEqual(booking.amount_paid, booking.grand_total)
+        self.assertEqual(booking.payments.get().amount, booking.grand_total)
+        self.assertEqual(response.data["data"]["payment_summary"]["amount_due"], Decimal("0"))
+
     def test_check_in_form_accepts_multi_room_payment_and_photo_multipart_fields(self):
         first_room = PhysicalRoom.objects.create(
             hotel=self.hotel, room_type=self.room_type, room_number="CHECKIN-MULTI-1",
@@ -3165,6 +3215,7 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(data["grand_total"], Decimal("380000"))
         self.assertEqual(data["formatted_grand_total"], "MMK 380,000")
         self.assertEqual(data["summary_text"], "2 Rooms x 2 Nights x 1 Extra Bed")
+        self.assertEqual(data["breakfast_summary_text"], "")
         self.assertEqual(data["summary_items"][0]["label"], "2 x Double Room")
         self.assertEqual(data["summary_items"][1]["label"], "1 x Extra Bed(s)")
 
@@ -3201,8 +3252,8 @@ class BookingApiTests(BookingServiceTests):
             "rooms": [{
                 "core_room_type_id": self.room_type.core_room_type_id,
                 "rate_plan_id": self.rate_plan.id,
-                "quantity": 1,
-                "adults": 1,
+                "quantity": 3,
+                "adults": 3,
                 "children": 0,
                 "breakfast_selected": True,
             }],
@@ -3213,10 +3264,11 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(response.status_code, 200, response.data)
         data = response.data["data"]
         self.assertEqual(data["guests"], guests)
-        self.assertEqual(data["room_total"], Decimal("160000"))
-        self.assertEqual(data["breakfast_total"], Decimal("20000"))
-        self.assertEqual(data["grand_total"], Decimal("180000"))
-        self.assertEqual(data["formatted_breakfast_total"], "MMK 20,000")
+        self.assertEqual(data["room_total"], Decimal("480000"))
+        self.assertEqual(data["breakfast_total"], Decimal("60000"))
+        self.assertEqual(data["grand_total"], Decimal("540000"))
+        self.assertEqual(data["formatted_breakfast_total"], "MMK 60,000")
+        self.assertEqual(data["breakfast_summary_text"], "3 x Breakfast")
 
     def test_public_ota_estimate_and_booking_reject_extra_beds_over_room_type_limit(self):
         payload = self.payload()

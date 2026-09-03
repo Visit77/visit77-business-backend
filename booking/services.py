@@ -1214,6 +1214,7 @@ def estimate_booking(data):
     summary_items = []
     selected_room_count = 0
     selected_extra_bed_count = 0
+    selected_breakfast_count = 0
     for requested in data["rooms"]:
         try:
             room_type = RoomType.objects.get(
@@ -1290,6 +1291,8 @@ def estimate_booking(data):
         grand_total += item_total
         selected_room_count += quantity
         selected_extra_bed_count += extra_beds
+        if breakfast_snapshot.get("selected"):
+            selected_breakfast_count += quantity
         room_stay_total = item_total - extra_bed_stay_total - option_total - meal_plan_stay_total - breakfast_stay_total
         summary_items.append({
             "type": "room",
@@ -1394,6 +1397,10 @@ def estimate_booking(data):
         "summary_text": " x ".join(summary_text_parts[:2]) + (
             f" x {selected_extra_bed_count} Extra Bed{'s' if selected_extra_bed_count != 1 else ''}"
             if selected_extra_bed_count else ""
+        ),
+        "breakfast_summary_text": (
+            f"{selected_breakfast_count} x Breakfast"
+            if selected_breakfast_count else ""
         ),
         "room_total": room_total,
         "breakfast_total": breakfast_total,
@@ -1981,6 +1988,28 @@ def record_payment(booking, data, auto_assign=True):
     return payment
 
 
+@transaction.atomic
+def replace_booking_payment_snapshot(booking, data):
+    """Replace demo check-in payments with the form's latest payment state."""
+    booking = Booking.objects.select_for_update().get(pk=booking.pk)
+    booking.payments.all().delete()
+    booking.amount_paid = Decimal("0")
+    booking.save(update_fields=["amount_paid", "updated_at"])
+    for invoice in booking.invoices.all():
+        _sync_invoice_status(invoice)
+
+    if booking.grand_total <= 0:
+        return None
+
+    payment_data = dict(data)
+    if payment_data.get("payment_type") in {
+        Payment.Type.FULL_PAYMENT,
+        Payment.Type.BALANCE,
+    } or "amount" not in payment_data:
+        payment_data["amount"] = booking.grand_total
+    return record_payment(booking, payment_data, auto_assign=False)
+
+
 def _default_rate_plan_for_room_type(room_type, guest_market):
     plans = RatePlan.objects.filter(
         room_type=room_type,
@@ -2325,7 +2354,7 @@ def create_admin_reservation(data, idempotency_key=None, core_business_id=None):
 
 
 @transaction.atomic
-def update_reservation_for_check_in(booking, data):
+def update_reservation_for_check_in(booking, data, *, replace_payment=False):
     """Update reservation-form fields while preserving already-booked room rates."""
     booking = Booking.objects.select_for_update().select_related("hotel").get(pk=booking.pk)
     if booking.status not in [Booking.Status.PENDING_PAYMENT, Booking.Status.CONFIRMED]:
@@ -2455,7 +2484,7 @@ def update_reservation_for_check_in(booking, data):
     )
     replacement.save(update_fields=["tax_total", "discount_total", "grand_total", "updated_at"])
 
-    if booking.amount_paid > replacement.grand_total:
+    if not replace_payment and booking.amount_paid > replacement.grand_total:
         raise ValidationError({
             "grand_total": (
                 f"Updated total {replacement.grand_total} {replacement.currency} is below the already-paid "
