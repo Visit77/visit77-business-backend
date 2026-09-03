@@ -5,6 +5,7 @@ from django.core.mail import EmailMultiAlternatives
 from django.template.loader import render_to_string
 from urllib.parse import quote_plus
 from decimal import Decimal
+import json
 
 from booking.booking_services.receipt import ensure_receipt_pdf
 from booking.models import Payment
@@ -28,6 +29,24 @@ def _email_money(value, currency):
     value = Decimal(str(value or 0))
     amount = f"{value:,.2f}" if value % 1 else f"{int(value):,}"
     return f"{currency} {amount}"
+
+
+def _hotel_phone_numbers(value):
+    """Normalize Core phone arrays stored as JSON strings and legacy scalar values."""
+    if isinstance(value, (list, tuple)):
+        values = value
+    else:
+        raw_value = str(value or "").strip()
+        if not raw_value:
+            return []
+        try:
+            decoded = json.loads(raw_value)
+            values = decoded if isinstance(decoded, list) else [decoded]
+        except (TypeError, ValueError):
+            values = [raw_value]
+    return list(dict.fromkeys(
+        str(phone).strip() for phone in values if str(phone or "").strip()
+    ))
 
 
 def build_booking_confirmation_context(booking, primary_guest):
@@ -67,7 +86,7 @@ def build_booking_confirmation_context(booking, primary_guest):
         "property_name": booking.hotel.name,
         "property_address": booking.hotel.address or "-",
         "hotel_img_url": hotel_image,
-        "hotel_phone": booking.hotel.phone or "-",
+        "hotel_phones": _hotel_phone_numbers(booking.hotel.phone),
         "hotel_email": hotel_email,
         "map_url": f"https://www.google.com/maps/search/?api=1&query={quote_plus(booking.hotel.address or booking.hotel.name)}",
         "check_in_date": booking.check_in.strftime("%d %b %Y, %A"),

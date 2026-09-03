@@ -284,6 +284,8 @@ class BookingCodeTests(TestCase):
     @patch("booking.booking_services.email.EmailMultiAlternatives")
     def test_confirmation_email_uses_booking_code(self, email_class_mock):
         booking = self.create_booking("INTERNAL-EMAIL-REFERENCE")
+        self.hotel.phone = '["012312", "123123"]'
+        self.hotel.save(update_fields=["phone"])
         self.add_confirmation_rooms(booking)
         Guest.objects.create(
             booking=booking,
@@ -301,6 +303,9 @@ class BookingCodeTests(TestCase):
         self.assertIn(f"Booking ID: {booking.booking_code}", message)
         self.assertIn(booking.booking_code, html_message)
         self.assertIn(f"/bookings/{booking.public_token}", html_message)
+        self.assertIn('href="tel:012312"', html_message)
+        self.assertIn('href="tel:123123"', html_message)
+        self.assertNotIn('[&quot;012312&quot;', html_message)
         self.assertNotIn("{{", html_message)
         self.assertIn("Room: Standard Twin Room x 2", message)
         self.assertIn("Room: Deluxe Room x 1", message)

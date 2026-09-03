@@ -166,8 +166,12 @@
                                 <td
                                   width="32%"
                                   style="background-color:#eff6ff;border:1px solid #bfdbfe;border-radius:20px;padding:8px;text-align:center;color:#2563eb;font-size:11px;font-weight:600">
-                                  📞
-                                  <!-- -->{{ hotel_phone }}
+                                  <span style="display:block;margin-bottom:3px">📞</span>
+                                  {% for phone in hotel_phones %}
+                                    <a href="tel:{{ phone }}" style="display:block;color:#2563eb;text-decoration:none;line-height:16px">{{ phone }}</a>
+                                  {% empty %}
+                                    <span style="display:block">-</span>
+                                  {% endfor %}
                                 </td>
                                 <td width="2%"></td>
                                 <td

@@ -890,8 +890,8 @@ class PublicDemoPaymentView(APIView):
         if booking.status == Booking.Status.CONFIRMED:
             booking_id = str(booking.id)
             def send_booking_notifications():
-                send_booking_confirmation_email_task(booking_id)
-                send_booking_confirmation_sms_task(booking_id)
+                send_booking_confirmation_email_task.delay(booking_id)
+                send_booking_confirmation_sms_task.delay(booking_id)
 
             transaction.on_commit(send_booking_notifications)
             # transaction.on_commit(
