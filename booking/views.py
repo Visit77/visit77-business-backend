@@ -35,6 +35,7 @@ from booking.serializers import (
     AdminMealPlanSerializer,
     BookingCreateSerializer,
     BookingEstimateSerializer,
+    BookingHistorySerializer,
     BookingSerializer,
     CheckInConfirmSerializer,
     CheckInFormUpdateSerializer,
@@ -629,9 +630,22 @@ class MyBookingHistoryView(APIView):
                 raise ValidationError({"status": f"Use one of: {', '.join(Booking.Status.values)}."})
             queryset = queryset.filter(status=booking_status)
         bookings = list(queryset.order_by("-created_at", "-id"))
+        history_status = request.query_params.get("history_status")
+        if history_status:
+            allowed_history_statuses = {"active", "upcoming", "completed", "cancelled", "pending"}
+            if history_status not in allowed_history_statuses:
+                raise ValidationError({
+                    "history_status": (
+                        "Use one of: active, upcoming, completed, cancelled, pending."
+                    ),
+                })
+            bookings = [
+                booking for booking in bookings
+                if BookingHistorySerializer.get_history_status(booking) == history_status
+            ]
         return success({
             "count": len(bookings),
-            "bookings": BookingSerializer(bookings, many=True).data,
+            "bookings": BookingHistorySerializer(bookings, many=True).data,
         })
 
 

@@ -3,6 +3,7 @@ from decimal import Decimal
 import json
 
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import serializers
 
 from booking.add_on_templates import normalize_configuration_schema
@@ -1284,6 +1285,28 @@ class BookingSerializer(serializers.ModelSerializer):
     class Meta:
         model = Booking
         fields = "__all__"
+
+
+class BookingHistorySerializer(BookingSerializer):
+    history_status = serializers.SerializerMethodField()
+
+    @staticmethod
+    def get_history_status(obj):
+        today = timezone.localdate()
+        if obj.status in {Booking.Status.CANCELED, Booking.Status.EXPIRED}:
+            return "cancelled"
+        if obj.status == Booking.Status.CHECKED_OUT or obj.check_out < today:
+            return "completed"
+        if (
+            obj.status in {Booking.Status.CONFIRMED, Booking.Status.CHECKED_IN}
+            and obj.check_in <= today < obj.check_out
+        ):
+            return "active"
+        if obj.status == Booking.Status.CONFIRMED and obj.check_in > today:
+            return "upcoming"
+        if obj.status == Booking.Status.PENDING_PAYMENT:
+            return "pending"
+        return obj.status
         
 
 

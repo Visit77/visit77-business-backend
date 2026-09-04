@@ -2,13 +2,30 @@
 
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
+from django.contrib.staticfiles import finders
 from django.template.loader import render_to_string
+from email.mime.image import MIMEImage
 from urllib.parse import quote_plus
 from decimal import Decimal
 import json
 
 from booking.booking_services.receipt import ensure_receipt_pdf
 from booking.models import Payment
+
+
+VISIT77_LOGO_CID = "visit77-logo"
+VISIT77_LOGO_STATIC_PATH = "booking/images/visit77-logo.png"
+
+
+def _attach_visit77_logo(email):
+    logo_path = finders.find(VISIT77_LOGO_STATIC_PATH)
+    if not logo_path:
+        raise FileNotFoundError(f"Email logo not found: {VISIT77_LOGO_STATIC_PATH}")
+    with open(logo_path, "rb") as logo_file:
+        logo = MIMEImage(logo_file.read(), _subtype="png")
+    logo.add_header("Content-ID", f"<{VISIT77_LOGO_CID}>")
+    logo.add_header("Content-Disposition", "inline", filename="visit77-logo.png")
+    email.attach(logo)
 
 
 def booking_room_summary(booking):
@@ -49,6 +66,18 @@ def _hotel_phone_numbers(value):
     ))
 
 
+def _booking_cancellation_policy(snapshot):
+    """Return the first effective rate-plan policy from a booking snapshot."""
+    if not isinstance(snapshot, dict):
+        return {}
+    if snapshot.get("type"):
+        return snapshot
+    return next(
+        (policy for policy in snapshot.values() if isinstance(policy, dict) and policy),
+        {},
+    )
+
+
 def build_booking_confirmation_context(booking, primary_guest):
     rooms = list(booking.rooms.select_related("room_type").all())
     invoice = booking.invoices.prefetch_related("lines").order_by("issued_at", "id").first()
@@ -80,13 +109,24 @@ def build_booking_confirmation_context(booking, primary_guest):
     )
     hotel_image = booking.hotel.cover_image_url or hotel_snapshot.get("cover_image_url") or ""
     booking_url = f"{settings.BOOKING_FRONTEND_URL.rstrip('/')}/bookings/{booking.public_token}"
-    policy = booking.cancellation_policy_snapshot or {}
-    policy_text = policy.get("description") or policy.get("name") or policy.get("type") or "Please contact the hotel for cancellation terms."
+    policy = _booking_cancellation_policy(booking.cancellation_policy_snapshot)
+    policy_name = policy.get("name") or {
+        "non_refundable": "Non-Refundable",
+        "full_refund": "Fully Refund",
+        "free_full_refund": "Fully Refund",
+        "partial_refund": "Partial Refund",
+    }.get(policy.get("type"), "Cancellation Terms")
+    policy_description = (
+        policy.get("description")
+        or "Please contact the hotel for detailed cancellation terms."
+    )
+    hotel_phones = _hotel_phone_numbers(booking.hotel.phone)
     return {
         "property_name": booking.hotel.name,
         "property_address": booking.hotel.address or "-",
         "hotel_img_url": hotel_image,
-        "hotel_phones": _hotel_phone_numbers(booking.hotel.phone),
+        "hotel_phones": hotel_phones,
+        "hotel_phone": hotel_phones[0] if hotel_phones else "",
         "hotel_email": hotel_email,
         "map_url": f"https://www.google.com/maps/search/?api=1&query={quote_plus(booking.hotel.address or booking.hotel.name)}",
         "check_in_date": booking.check_in.strftime("%d %b %Y, %A"),
@@ -108,7 +148,8 @@ def build_booking_confirmation_context(booking, primary_guest):
         "total_price": _email_money(invoice.total if invoice else booking.grand_total, booking.currency),
         "booking_code": booking.booking_code,
         "booking_url": booking_url,
-        "cancellation_policy": policy_text.replace("_", " ").title(),
+        "policy_name": policy_name,
+        "policy_description": policy_description,
         "is_fully_paid": booking.amount_paid >= booking.grand_total,
     }
 
@@ -162,7 +203,9 @@ View booking: {booking_url}
         from_email=settings.DEFAULT_FROM_EMAIL,
         to=[recipient_email],
     )
+    email.mixed_subtype = "related"
     email.attach_alternative(html_message, "text/html")
+    _attach_visit77_logo(email)
     latest_receipt = booking.payments.filter(
         status__in=[Payment.Status.PAID, Payment.Status.PARTIALLY_REFUNDED],
         receipt_number__isnull=False,

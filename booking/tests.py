@@ -3988,6 +3988,8 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(created.status_code, 201, created.data)
         booking = Booking.objects.get(id=created.data["data"]["id"])
         self.assertEqual(booking.booked_by_core_user_id, 501)
+        booking.status = Booking.Status.CONFIRMED
+        booking.save(update_fields=["status"])
 
         history = self.client.get(
             "/api/v1/public/my-bookings/",
@@ -3996,6 +3998,46 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(history.status_code, 200, history.data)
         self.assertEqual(history.data["data"]["count"], 1)
         self.assertEqual(history.data["data"]["bookings"][0]["id"], str(booking.id))
+        self.assertEqual(history.data["data"]["bookings"][0]["history_status"], "upcoming")
+
+        upcoming = self.client.get(
+            "/api/v1/public/my-bookings/?history_status=upcoming",
+            HTTP_AUTHORIZATION=f"Bearer {self.core_access_token(user_id=501)}",
+        )
+        self.assertEqual(upcoming.status_code, 200, upcoming.data)
+        self.assertEqual(upcoming.data["data"]["count"], 1)
+
+        completed = self.client.get(
+            "/api/v1/public/my-bookings/?history_status=completed",
+            HTTP_AUTHORIZATION=f"Bearer {self.core_access_token(user_id=501)}",
+        )
+        self.assertEqual(completed.status_code, 200, completed.data)
+        self.assertEqual(completed.data["data"]["count"], 0)
+
+        booking.check_in = timezone.localdate()
+        booking.check_out = timezone.localdate() + timedelta(days=1)
+        booking.save(update_fields=["check_in", "check_out"])
+        active = self.client.get(
+            "/api/v1/public/my-bookings/?history_status=active",
+            HTTP_AUTHORIZATION=f"Bearer {self.core_access_token(user_id=501)}",
+        )
+        self.assertEqual(active.data["data"]["bookings"][0]["history_status"], "active")
+
+        booking.status = Booking.Status.CHECKED_OUT
+        booking.save(update_fields=["status"])
+        completed = self.client.get(
+            "/api/v1/public/my-bookings/?history_status=completed",
+            HTTP_AUTHORIZATION=f"Bearer {self.core_access_token(user_id=501)}",
+        )
+        self.assertEqual(completed.data["data"]["bookings"][0]["history_status"], "completed")
+
+        booking.status = Booking.Status.CANCELED
+        booking.save(update_fields=["status"])
+        cancelled = self.client.get(
+            "/api/v1/public/my-bookings/?history_status=cancelled",
+            HTTP_AUTHORIZATION=f"Bearer {self.core_access_token(user_id=501)}",
+        )
+        self.assertEqual(cancelled.data["data"]["bookings"][0]["history_status"], "cancelled")
 
         other_user = self.client.get(
             "/api/v1/public/my-bookings/",

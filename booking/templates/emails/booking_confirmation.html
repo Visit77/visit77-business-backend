@@ -1,6 +1,7 @@
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
 <html dir="ltr" lang="en">
   <head>
+    <link rel="preload" as="image" href="cid:visit77-logo" />
     <link rel="preload" as="image" href="{{ hotel_img_url }}" />
     <meta content="text/html; charset=UTF-8" http-equiv="Content-Type" />
     <meta name="x-apple-disable-message-reformatting" />
@@ -48,10 +49,12 @@
                       <tbody>
                         <tr>
                           <td>
-                            <p
-                              style="font-size:26px;line-height:24px;font-weight:800;color:#2563eb;margin:0;margin-top:0;margin-bottom:0;margin-left:0;margin-right:0">
-                              Visit<span style="color:#0284c7">77</span>
-                            </p>
+                            <img
+                              alt="Visit77 Logo"
+                              height="auto"
+                              src="cid:visit77-logo"
+                              style="display:block;outline:none;border:none;text-decoration:none;margin:0 auto"
+                              width="140" />
                           </td>
                         </tr>
                       </tbody>
@@ -405,11 +408,11 @@
                                   <td>
                                     <p
                                       style="font-size:12px;line-height:24px;font-weight:700;color:#166534;margin:0;margin-top:0;margin-bottom:0;margin-left:0;margin-right:0">
-                                      Cancellation terms
+                                      {{ policy_name }}
                                     </p>
                                     <p
                                       style="font-size:11px;line-height:24px;color:#15803d;margin:0;margin-top:0;margin-bottom:0;margin-left:0;margin-right:0">
-                                      {{ cancellation_policy }}
+                                      {{ policy_description }}
                                     </p>
                                   </td>
                                 </tr>

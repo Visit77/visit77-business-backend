@@ -264,8 +264,10 @@ class BookingCodeTests(TestCase):
 
         with patch("booking.booking_services.email.EmailMultiAlternatives") as email_class:
             self.assertTrue(send_booking_confirmation_email(booking))
-            email_class.return_value.attach.assert_called_once()
-            attachment = email_class.return_value.attach.call_args.args
+            self.assertEqual(email_class.return_value.attach.call_count, 2)
+            logo_attachment = email_class.return_value.attach.call_args_list[0].args[0]
+            self.assertEqual(logo_attachment["Content-ID"], "<visit77-logo>")
+            attachment = email_class.return_value.attach.call_args_list[1].args
             self.assertEqual(attachment[0], f"{payment.receipt_number}.pdf")
             self.assertTrue(attachment[1].startswith(b"%PDF"))
             self.assertEqual(attachment[2], "application/pdf")
@@ -303,6 +305,9 @@ class BookingCodeTests(TestCase):
         self.assertIn(f"Booking ID: {booking.booking_code}", message)
         self.assertIn(booking.booking_code, html_message)
         self.assertIn(f"/bookings/{booking.public_token}", html_message)
+        self.assertIn('src="cid:visit77-logo"', html_message)
+        logo_attachment = email_class_mock.return_value.attach.call_args.args[0]
+        self.assertEqual(logo_attachment["Content-ID"], "<visit77-logo>")
         self.assertIn('href="tel:012312"', html_message)
         self.assertIn('href="tel:123123"', html_message)
         self.assertNotIn('[&quot;012312&quot;', html_message)
