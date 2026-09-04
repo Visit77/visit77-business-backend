@@ -3941,6 +3941,9 @@ class BookingApiTests(BookingServiceTests):
     def test_public_booking_flow_and_private_detail_token(self):
         self.hotel.core_snapshot = {
             "hotel_cancellation_policy": {"type": "free_full_refund"},
+            "email": "hotel@example.com",
+            "latitude": 16.8661,
+            "longitude": 96.1951,
         }
         self.hotel.save(update_fields=["core_snapshot"])
         payload = self.payload()
@@ -3956,6 +3959,15 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(detail.data["data"]["contact_name"], "Myo Myo")
         self.assertEqual(detail.data["data"]["booking_code"], response.data["data"]["booking_code"])
         self.assertEqual(detail.data["data"]["source"], Booking.Source.OTA)
+        self.assertEqual(detail.data["data"]["hotel"], {
+            "name": self.hotel.name,
+            "phone": self.hotel.phone,
+            "email": "hotel@example.com",
+            "latitude": 16.8661,
+            "longitude": 96.1951,
+            "image": self.hotel.cover_image_url,
+            "address": self.hotel.address,
+        })
         self.assertEqual(
             detail.data["data"]["hotel_cancellation_policy"],
             {"type": "full_refund", "name": "Fully Refund"},

@@ -1262,7 +1262,20 @@ class BookingSerializer(serializers.ModelSerializer):
     hotel_name = serializers.CharField(source="hotel.name", read_only=True)
     nights = serializers.IntegerField(read_only=True)
     hotel_id = serializers.IntegerField(source='hotel.id')
+    hotel = serializers.SerializerMethodField()
     hotel_cancellation_policy = serializers.SerializerMethodField()
+
+    def get_hotel(self, obj):
+        snapshot = obj.hotel.core_snapshot or {}
+        return {
+            "name": obj.hotel.name,
+            "phone": obj.hotel.phone,
+            "email": snapshot.get("email") or "",
+            "latitude": snapshot.get("latitude"),
+            "longitude": snapshot.get("longitude"),
+            "image": obj.hotel.cover_image_url,
+            "address": obj.hotel.address,
+        }
 
     def get_hotel_cancellation_policy(self, obj):
         policy = (obj.hotel.core_snapshot or {}).get("hotel_cancellation_policy")
@@ -1270,8 +1283,7 @@ class BookingSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Booking
-        # fields = "__all__"
-        exclude = ["hotel"]
+        fields = "__all__"
         
 
 
