@@ -34,6 +34,25 @@ from booking.models import (
 )
 
 
+CANCELLATION_POLICY_NAMES = {
+    "non_refundable": "Non-Refundable",
+    "full_refund": "Fully Refund",
+    "partial_refund": "Partial Refund",
+}
+
+
+def normalize_cancellation_policy(config):
+    if not isinstance(config, dict):
+        return config
+    normalized = dict(config)
+    if normalized.get("type") == "free_full_refund":
+        normalized["type"] = "full_refund"
+    name = CANCELLATION_POLICY_NAMES.get(normalized.get("type"))
+    if name:
+        normalized["name"] = name
+    return normalized
+
+
 def validate_request_business_scope(serializer, attrs):
     request = serializer.context.get("request")
     core_business_id = getattr(request, "booking_core_business_id", None) if request else None
@@ -1243,6 +1262,11 @@ class BookingSerializer(serializers.ModelSerializer):
     hotel_name = serializers.CharField(source="hotel.name", read_only=True)
     nights = serializers.IntegerField(read_only=True)
     hotel_id = serializers.IntegerField(source='hotel.id')
+    hotel_cancellation_policy = serializers.SerializerMethodField()
+
+    def get_hotel_cancellation_policy(self, obj):
+        policy = (obj.hotel.core_snapshot or {}).get("hotel_cancellation_policy")
+        return normalize_cancellation_policy(policy)
 
     class Meta:
         model = Booking
