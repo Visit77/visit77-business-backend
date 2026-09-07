@@ -309,6 +309,13 @@ class BookingCodeTests(TestCase):
         self.assertEqual(logo_attachment["Content-ID"], "<visit77-logo>")
         self.assertIn('href="tel:012312"', html_message)
         self.assertIn('href="tel:123123"', html_message)
+        self.assertIn("Your Booking is Confirmed and Paid.", html_message)
+        self.assertNotIn("Your Booking is Pending Payment.", html_message)
+        self.assertIn(
+            f'href="https://booking.example.com/bookings/{booking.public_token}"',
+            html_message,
+        )
+        self.assertIn("View Booking", html_message)
         self.assertNotIn('[&quot;012312&quot;', html_message)
         self.assertNotIn("{{", html_message)
         self.assertIn("Room: Standard Twin Room x 2", message)

@@ -1125,6 +1125,20 @@ class BookingRoomSerializer(serializers.ModelSerializer):
         exclude = ["room_type"]
 
 
+class BookingHistoryRoomSerializer(BookingRoomSerializer):
+    room_type_images = serializers.SerializerMethodField()
+
+    def get_room_type_images(self, obj):
+        photos = (obj.room_type_snapshot or {}).get("photos")
+        if photos is None:
+            photos = (obj.room_type.core_snapshot or {}).get("photos")
+        if photos:
+            return photos
+        if obj.room_type.cover_image_url:
+            return [{"image": obj.room_type.cover_image_url, "is_cover": True}]
+        return []
+
+
 class BookingAddOnSerializer(serializers.ModelSerializer):
     name = serializers.CharField(source="add_on.name", read_only=True)
 
@@ -1297,7 +1311,18 @@ class BookingSerializer(serializers.ModelSerializer):
 
 
 class BookingHistorySerializer(BookingSerializer):
+    rooms = BookingHistoryRoomSerializer(many=True, read_only=True)
     history_status = serializers.SerializerMethodField()
+
+    def get_hotel(self, obj):
+        hotel = super().get_hotel(obj)
+        snapshot = obj.hotel.core_snapshot or {}
+        subscription_tier = snapshot.get("subscription_tier") or snapshot.get("tier") or "free"
+        if subscription_tier not in {"free", "standard", "premium"}:
+            subscription_tier = "free"
+        hotel["cover_image_url"] = hotel.pop("image")
+        hotel["subscription_tier"] = subscription_tier
+        return hotel
 
     @staticmethod
     def get_history_status(obj):
