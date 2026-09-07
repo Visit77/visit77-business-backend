@@ -10,7 +10,7 @@
   <div
     style="display:none;overflow:hidden;line-height:1px;opacity:0;max-height:0;max-width:0"
     data-skip-in-text="true">
-    Your Booking is Confirmed{% if is_fully_paid %} and Paid{% endif %} - {{ property_name }}
+    Your Booking is Confirmed and Paid - {{ property_name }}
     <div>
        ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿
     </div>
@@ -66,14 +66,13 @@
                       cellpadding="0"
                       cellspacing="0"
                       role="presentation"
-                      style="background-color:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:12px;text-align:center;margin-bottom:16px">
+                      style="background-color:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:12px;text-align:center;margin-bottom:16px">
                       <tbody>
                         <tr>
                           <td>
                             <p
-                              style="font-size:14px;line-height:24px;color:#166534;font-weight:600;margin:0;margin-top:0;margin-bottom:0;margin-left:0;margin-right:0">
-                              <span style="margin-right:6px">✓</span> Your
-                              Booking is Confirmed{% if is_fully_paid %} and Paid{% endif %}.
+                              style="font-size:14px;line-height:24px;color:#92400e;font-weight:600;margin:0;margin-top:0;margin-bottom:0;margin-left:0;margin-right:0">
+                              <span style="margin-right:6px">⏳</span> Your Booking is Pending Payment.
                             </p>
                           </td>
                         </tr>
@@ -180,14 +179,7 @@
                                 <td
                                   width="32%"
                                   style="background-color:#eff6ff;border:1px solid #bfdbfe;border-radius:20px;padding:8px;text-align:center;color:#2563eb;font-size:11px;font-weight:600">
-                                  ✉️
-                                  <!-- -->{{ hotel_email }}
-                                </td>
-                                <td width="2%"></td>
-                                <td
-                                  width="32%"
-                                  style="background-color:#eff6ff;border:1px solid #bfdbfe;border-radius:20px;padding:8px;text-align:center;color:#2563eb;font-size:11px;font-weight:600">
-                                  💬 Send Message
+                                  <a href="mailto:{{ hotel_email }}" style="color:#2563eb;text-decoration-line:none;font-size:11px;font-weight:600;text-decoration:none;display:block" target="_blank">✉️ <!-- -->{{ hotel_email }}</a>
                                 </td>
                               </tr>
                             </table>
@@ -215,16 +207,6 @@
                               cellpadding="0"
                               cellspacing="0"
                               style="width:100%;font-size:12px;border-collapse:collapse">
-                              <tr>
-                                <td
-                                  style="color:#64748b;padding:6px 0;width:40%;vertical-align:top">
-                                  Booking ID
-                                </td>
-                                <td
-                                  style="color:#0f172a;font-weight:600;padding:6px 0;vertical-align:top">
-                                  {{ booking_code }}
-                                </td>
-                              </tr>
                               <tr>
                                 <td
                                   style="color:#64748b;padding:6px 0;width:40%;vertical-align:top">
@@ -323,7 +305,7 @@
                               style="font-size:13px">
                               <tr>
                                 <td style="color:#64748b;padding:4px 0">
-                                  Room &amp; Additional Charges
+                                  Room Charge
                                 </td>
                                 <td
                                   style="text-align:right;font-weight:600;color:#334155;padding:4px 0">
@@ -418,55 +400,6 @@
                                 </tr>
                               </tbody>
                             </table>
-                            <table
-                              align="center"
-                              width="100%"
-                              border="0"
-                              cellpadding="0"
-                              cellspacing="0"
-                              role="presentation"
-                              style="background-color:#fef2f2;border-left:4px solid #ef4444;padding:10px;border-radius:4px;margin-bottom:8px">
-                              <tbody>
-                                <tr>
-                                  <td>
-                                    <p
-                                      style="font-size:12px;line-height:24px;font-weight:700;color:#991b1b;margin:0;margin-top:0;margin-bottom:0;margin-left:0;margin-right:0">
-                                      Important
-                                    </p>
-                                    <p
-                                      style="font-size:11px;line-height:24px;color:#b91c1c;margin:0;margin-top:0;margin-bottom:0;margin-left:0;margin-right:0">
-                                      Conditions apply according to the booking policy.
-                                    </p>
-                                  </td>
-                                </tr>
-                              </tbody>
-                            </table>
-                            <p
-                              style="font-size:11px;line-height:24px;color:#94a3b8;margin:8px 0 0 0;margin-top:8px;margin-right:0;margin-bottom:0;margin-left:0">
-                              For changes or cancellation, contact the hotel using
-                              the details above.
-                            </p>
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                    <table
-                      align="center"
-                      width="100%"
-                      border="0"
-                      cellpadding="0"
-                      cellspacing="0"
-                      role="presentation"
-                      style="margin-bottom:16px">
-                      <tbody>
-                        <tr>
-                          <td align="center">
-                            <a
-                              href="{{ booking_url }}"
-                              target="_blank"
-                              style="display:inline-block;background-color:#2563eb;color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;padding:12px 28px;border-radius:8px">
-                              View Booking
-                            </a>
                           </td>
                         </tr>
                       </tbody>

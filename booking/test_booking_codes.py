@@ -303,8 +303,7 @@ class BookingCodeTests(TestCase):
         message = email_class_mock.call_args.kwargs["body"]
         html_message = email_class_mock.return_value.attach_alternative.call_args.args[0]
         self.assertIn(f"Booking ID: {booking.booking_code}", message)
-        self.assertIn(booking.booking_code, html_message)
-        self.assertIn(f"/bookings/{booking.public_token}", html_message)
+        self.assertNotIn(booking.booking_code, html_message)
         self.assertIn('src="cid:visit77-logo"', html_message)
         logo_attachment = email_class_mock.return_value.attach.call_args.args[0]
         self.assertEqual(logo_attachment["Content-ID"], "<visit77-logo>")

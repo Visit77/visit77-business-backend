@@ -4057,6 +4057,10 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(response.status_code, 200, response.data)
         room = response.data["data"]["rooms"][0]
         self.assertTrue(room["breakfast_selected"])
+        self.assertEqual(room["breakfast"], {
+            "selected": True,
+            "included": False,
+        })
         self.assertEqual(room["extra_bed_count"], 2)
         self.assertEqual(room["extra_beds"], 2)
 
