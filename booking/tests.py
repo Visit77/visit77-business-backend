@@ -4041,6 +4041,25 @@ class BookingApiTests(BookingServiceTests):
             {"type": "full_refund", "name": "Fully Refund"},
         )
 
+    def test_admin_booking_detail_exposes_room_breakfast_and_extra_bed_selection(self):
+        booking, _created = create_booking(self.payload(), "room-selection-detail")
+        booking_room = booking.rooms.get()
+        booking_room.breakfast_snapshot = {"selected": True, "included": False}
+        booking_room.extra_beds = 2
+        booking_room.save(update_fields=["breakfast_snapshot", "extra_beds"])
+
+        response = self.client.get(
+            f"/api/v1/admin/bookings/{booking.id}/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        room = response.data["data"]["rooms"][0]
+        self.assertTrue(room["breakfast_selected"])
+        self.assertEqual(room["extra_bed_count"], 2)
+        self.assertEqual(room["extra_beds"], 2)
+
     def test_logged_in_user_can_list_bookings_they_created(self):
         payload = self.payload()
         payload["check_in"] = str(payload["check_in"])

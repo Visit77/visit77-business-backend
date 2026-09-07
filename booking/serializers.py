@@ -1093,6 +1093,11 @@ class BookingRoomSerializer(serializers.ModelSerializer):
     room_type_id = serializers.CharField(source="room_type.id", read_only=True)
     rate_plan_name = serializers.CharField(source="rate_plan.name", read_only=True)
     assigned_physical_rooms = serializers.SerializerMethodField()
+    breakfast_selected = serializers.SerializerMethodField()
+    extra_bed_count = serializers.IntegerField(source="extra_beds", read_only=True)
+
+    def get_breakfast_selected(self, obj):
+        return bool((obj.breakfast_snapshot or {}).get("selected"))
 
     def get_assigned_physical_rooms(self, obj):
         return [
