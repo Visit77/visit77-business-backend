@@ -1658,6 +1658,22 @@ def release_checked_in_booking_inventory(booking):
     _move_inventory(booking, "reserved_rooms")
 
 
+def release_checked_in_room_inventory(assignment):
+    """Release one physical room while the rest of its booking stays checked in."""
+    booking = assignment.booking_room.booking
+    if booking.status != Booking.Status.CHECKED_IN:
+        raise ValidationError("Only a room from a checked-in booking can check out.")
+    rows = _lock_inventory(
+        assignment.booking_room.room_type,
+        list(stay_dates(booking.check_in, booking.check_out)),
+    )
+    for row in rows:
+        if row.reserved_rooms < 1:
+            raise ValidationError("Inventory state is inconsistent.")
+        row.reserved_rooms -= 1
+        row.save(update_fields=["reserved_rooms"])
+
+
 def _sync_invoice_status(invoice):
     if invoice.status == Invoice.Status.VOID:
         return invoice

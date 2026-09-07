@@ -73,9 +73,10 @@ from booking.serializers import (
     RoomBoardQuerySerializer,
     RoomTypeMealPlanSerializer,
     RoomTypeSerializer,
+    SingleRoomCheckOutSerializer,
     WalkInBookingCreateSerializer,
 )
-from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, deprovision_hotel, ensure_daily_inventory_for_room_type, estimate_booking, format_money, record_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, replace_booking_payment_snapshot, sync_guest_profile, update_reservation_for_check_in, validate_assignment_preferences
+from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, deprovision_hotel, ensure_daily_inventory_for_room_type, estimate_booking, format_money, record_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, release_checked_in_room_inventory, replace_booking_payment_snapshot, sync_guest_profile, update_reservation_for_check_in, validate_assignment_preferences
 from config.response_formatter import success
 
 
@@ -3494,6 +3495,19 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
             )
         )
 
+    @staticmethod
+    def _outstanding_invoices(booking):
+        return [
+            {
+                "invoice_id": str(invoice.id),
+                "invoice_number": invoice.invoice_number,
+                "balance": str(invoice.balance),
+                "currency": invoice.currency,
+            }
+            for invoice in booking.invoices.prefetch_related("receipts").exclude(status=Invoice.Status.VOID)
+            if invoice.balance > 0
+        ]
+
     @action(detail=True, methods=["get"], url_path="stay-bill")
     def stay_bill(self, request, pk=None):
         booking = self.get_object()
@@ -4005,16 +4019,7 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
         booking = Booking.objects.select_for_update().get(pk=self.get_object().pk)
         if booking.status != Booking.Status.CHECKED_IN:
             raise ValidationError("Only a checked-in booking can check out.")
-        outstanding = [
-            {
-                "invoice_id": str(invoice.id),
-                "invoice_number": invoice.invoice_number,
-                "balance": str(invoice.balance),
-                "currency": invoice.currency,
-            }
-            for invoice in booking.invoices.prefetch_related("receipts").exclude(status=Invoice.Status.VOID)
-            if invoice.balance > 0
-        ]
+        outstanding = self._outstanding_invoices(booking)
         if outstanding:
             raise ValidationError({
                 "invoices": "Every invoice must be fully paid before checkout.",
@@ -4055,6 +4060,77 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
                 metadata={"checked_out_at": checked_out_at.isoformat()},
             )
         return success(BookingSerializer(booking).data)
+
+    @action(detail=True, methods=["post"], url_path="check-out-room")
+    @transaction.atomic
+    def check_out_room(self, request, pk=None):
+        serializer = SingleRoomCheckOutSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        booking = Booking.objects.select_for_update().get(pk=self.get_object().pk)
+        if booking.status != Booking.Status.CHECKED_IN:
+            raise ValidationError("Only a checked-in booking can check out a room.")
+        outstanding = self._outstanding_invoices(booking)
+        if outstanding:
+            raise ValidationError({
+                "invoices": "Every invoice must be fully paid before checkout.",
+                "outstanding_invoices": outstanding,
+            })
+        assignment = RoomAssignment.objects.select_for_update().select_related(
+            "physical_room", "booking_room__room_type", "booking_room__booking",
+        ).filter(
+            id=serializer.validated_data["assignment_id"],
+            booking_room__booking=booking,
+            released_at__isnull=True,
+        ).first()
+        if not assignment:
+            raise NotFound("Active room assignment not found for this booking.")
+
+        checked_out_at = timezone.now()
+        release_checked_in_room_inventory(assignment)
+        room = assignment.physical_room
+        room.status = PhysicalRoom.Status.CLEANING
+        room.save(update_fields=["status"])
+        assignment.released_at = checked_out_at
+        assignment.save(update_fields=["released_at"])
+
+        remaining_rooms = RoomAssignment.objects.filter(
+            booking_room__booking=booking,
+            released_at__isnull=True,
+        ).count()
+        if remaining_rooms == 0:
+            booking.status = Booking.Status.CHECKED_OUT
+            booking.save(update_fields=["status", "updated_at"])
+
+        event_metadata = {
+            "assignment_id": assignment.id,
+            "checked_out_at": checked_out_at.isoformat(),
+            "remaining_checked_in_rooms": remaining_rooms,
+        }
+        _record_room_history(
+            room,
+            PhysicalRoomActionHistory.Action.CHECKED_OUT,
+            request=request,
+            booking=booking,
+            old_status=PhysicalRoom.Status.OCCUPIED,
+            new_status=PhysicalRoom.Status.CLEANING,
+            note=booking.special_request,
+            metadata=event_metadata,
+        )
+        _record_room_history(
+            room,
+            PhysicalRoomActionHistory.Action.CLEANING_STARTED,
+            request=request,
+            booking=booking,
+            old_status=PhysicalRoom.Status.OCCUPIED,
+            new_status=PhysicalRoom.Status.CLEANING,
+            metadata=event_metadata,
+        )
+        return success({
+            "booking": BookingSerializer(booking).data,
+            "checked_out_assignment_id": assignment.id,
+            "checked_out_physical_room_id": room.id,
+            "remaining_checked_in_rooms": remaining_rooms,
+        })
 
 
 class WalkInBookingView(APIView):

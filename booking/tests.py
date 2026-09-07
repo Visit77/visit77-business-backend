@@ -2445,11 +2445,9 @@ class BookingApiTests(BookingServiceTests):
             "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
             "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
         }
-
         checked_out = self.client.post(
             f"/api/v1/admin/bookings/{booking.id}/check-out/", {}, format="json", **headers,
         )
-
         self.assertEqual(checked_out.status_code, 200, checked_out.data)
         room.refresh_from_db()
         self.assertEqual(room.status, PhysicalRoom.Status.CLEANING)
@@ -2459,10 +2457,7 @@ class BookingApiTests(BookingServiceTests):
         )
         room.status = PhysicalRoom.Status.VACANT
         room.save(update_fields=["status"])
-        # Simulate counters left by an older deployment. Walk-in creation must
-        # reconcile them from active booking statuses before checking capacity.
         DailyInventory.objects.update(reserved_rooms=1)
-
         second_booking = self.client.post(
             "/api/v1/admin/walk-in-booking-v2/",
             {
@@ -2485,6 +2480,79 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(
             list(DailyInventory.objects.order_by("stay_date").values_list("reserved_rooms", flat=True)),
             [1, 1],
+        )
+
+    def test_checked_in_booking_can_check_out_one_room_at_a_time(self):
+        rooms = [
+            PhysicalRoom.objects.create(
+                hotel=self.hotel,
+                room_type=self.room_type,
+                room_number=f"SINGLE-{number}",
+                status=PhysicalRoom.Status.OCCUPIED,
+            )
+            for number in range(1, 4)
+        ]
+        booking = Booking.objects.create(
+            reference="SINGLE-CHECKOUT",
+            hotel=self.hotel,
+            status=Booking.Status.CHECKED_IN,
+            source=Booking.Source.OTA,
+            check_in=self.check_in,
+            check_out=self.check_out,
+            contact_name="Three Room Guest",
+            contact_phone="091111111",
+        )
+        booking_room = BookingRoom.objects.create(
+            booking=booking,
+            room_type=self.room_type,
+            rate_plan=self.rate_plan,
+            quantity=3,
+            adults=3,
+        )
+        assignments = [
+            RoomAssignment.objects.create(booking_room=booking_room, physical_room=room)
+            for room in rooms
+        ]
+        for stay_date in [self.check_in, self.check_in + timedelta(days=1)]:
+            DailyInventory.objects.update_or_create(
+                room_type=self.room_type,
+                stay_date=stay_date,
+                defaults={"total_rooms": 3, "reserved_rooms": 3},
+            )
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        for index, assignment in enumerate(assignments, start=1):
+            response = self.client.post(
+                f"/api/v1/admin/bookings/{booking.id}/check-out-room/",
+                {"assignment_id": assignment.id},
+                format="json",
+                **headers,
+            )
+            self.assertEqual(response.status_code, 200, response.data)
+            booking.refresh_from_db()
+            rooms[index - 1].refresh_from_db()
+            assignment.refresh_from_db()
+            self.assertEqual(rooms[index - 1].status, PhysicalRoom.Status.CLEANING)
+            self.assertIsNotNone(assignment.released_at)
+            self.assertEqual(response.data["data"]["remaining_checked_in_rooms"], 3 - index)
+            self.assertEqual(
+                list(DailyInventory.objects.order_by("stay_date").values_list("reserved_rooms", flat=True)),
+                [3 - index, 3 - index],
+            )
+            expected_status = (
+                Booking.Status.CHECKED_OUT if index == 3 else Booking.Status.CHECKED_IN
+            )
+            self.assertEqual(booking.status, expected_status)
+
+        self.assertEqual(
+            PhysicalRoomActionHistory.objects.filter(
+                booking=booking,
+                action=PhysicalRoomActionHistory.Action.CHECKED_OUT,
+            ).count(),
+            3,
         )
 
     def setUp(self):

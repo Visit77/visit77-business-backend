@@ -1307,6 +1307,10 @@ class BookingHistorySerializer(BookingSerializer):
         if obj.status == Booking.Status.PENDING_PAYMENT:
             return "pending"
         return obj.status
+
+
+class SingleRoomCheckOutSerializer(serializers.Serializer):
+    assignment_id = serializers.IntegerField(min_value=1)
         
 
 
