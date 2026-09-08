@@ -26,7 +26,7 @@ class Hotel(models.Model):
     base_currency = models.CharField(max_length=3, default="MMK")
     package = models.CharField(max_length=24, choices=Package.choices, default=Package.OTA)
     features = models.JSONField(default=dict, blank=True)
-    timezone = models.CharField(max_length=64, default="UTC")
+    timezone = models.CharField(max_length=64, default="Asia/Yangon")
     check_in_time = models.TimeField(default=time(12, 0))
     check_out_time = models.TimeField(default=time(12, 0))
     is_active = models.BooleanField(default=True)

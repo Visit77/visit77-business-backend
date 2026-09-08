@@ -16,7 +16,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name="hotel",
             name="timezone",
-            field=models.CharField(default="UTC", max_length=64),
+            field=models.CharField(default="Asia/Yangon", max_length=64),
         ),
         migrations.RunPython(backfill_default_times, migrations.RunPython.noop),
         migrations.AlterField(

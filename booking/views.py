@@ -658,9 +658,9 @@ class OTARevenueView(APIView):
     @staticmethod
     def _hotel_timezone(booking):
         try:
-            return ZoneInfo(booking.hotel.timezone or "UTC")
+            return ZoneInfo(booking.hotel.timezone or "Asia/Yangon")
         except ZoneInfoNotFoundError:
-            return ZoneInfo("UTC")
+            return ZoneInfo("Asia/Yangon")
 
     @classmethod
     def _stay_datetimes(cls, booking):

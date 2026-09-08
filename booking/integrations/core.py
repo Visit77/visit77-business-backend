@@ -168,7 +168,7 @@ def sync_business_from_core(core_business_id: int, client=None, *, preserve_acce
         "base_currency": base_currency,
         "package": package,
         "features": features,
-        "timezone": business_data.get("timezone") or "UTC",
+        "timezone": business_data.get("timezone") or "Asia/Yangon",
         "check_in_time": business_data.get("check_in_time") or "12:00",
         "check_out_time": business_data.get("check_out_time") or "12:00",
         "is_active": bool(business_data.get("status", business_data.get("is_active", True))),
