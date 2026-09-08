@@ -158,7 +158,10 @@ def sync_business_from_core(core_business_id: int, client=None, *, preserve_acce
         and (policy.get("is_configured", True) or bool(policy.get("config")))
     ), {})
     business_snapshot = dict(business_data)
-    business_snapshot["hotel_cancellation_policy"] = hotel_cancellation_policy or None
+    business_snapshot["hotel_cancellation_policy"] = hotel_cancellation_policy or {
+        "type": "non_refundable",
+        "name": "Non-Refundable",
+    }
     hotel_defaults = {
         "name": business_data.get("name_1") or business_data.get("name") or f"Business {core_business_id}",
         "slug": business_data.get("slug") or "",

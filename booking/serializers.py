@@ -42,6 +42,11 @@ CANCELLATION_POLICY_NAMES = {
     "partial_refund": "Partial Refund",
 }
 
+DEFAULT_CANCELLATION_POLICY = {
+    "type": "non_refundable",
+    "name": "Non-Refundable",
+}
+
 
 def normalize_cancellation_policy(config):
     if not isinstance(config, dict):

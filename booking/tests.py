@@ -1430,6 +1430,19 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(excluded.status_code, 200, excluded.data)
         self.assertEqual(excluded.data["data"]["count"], 0)
 
+        self.hotel.core_snapshot = {}
+        self.hotel.save(update_fields=["core_snapshot"])
+        default_policy = self.client.get(
+            "/api/v1/admin/ota-revenue/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(default_policy.status_code, 200, default_policy.data)
+        self.assertEqual(default_policy.data["data"]["hotel_cancellation_policy"], {
+            "type": "non_refundable",
+            "name": "Non-Refundable",
+        })
+
     def test_admin_meal_plan_list_supports_business_default_and_package_type_filters(self):
         matching = MealPlan.objects.create(
             hotel=self.hotel,
