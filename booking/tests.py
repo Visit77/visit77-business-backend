@@ -1409,6 +1409,27 @@ class BookingApiTests(BookingServiceTests):
         )
         self.assertNotIn("hotel_cancellation_policy", response.data["data"]["records"][0])
 
+        check_in_filtered = self.client.get(
+            "/api/v1/admin/ota-revenue/",
+            {"date_from": self.check_in, "date_to": self.check_in},
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(check_in_filtered.status_code, 200, check_in_filtered.data)
+        self.assertEqual(check_in_filtered.data["data"]["count"], 1)
+
+        excluded = self.client.get(
+            "/api/v1/admin/ota-revenue/",
+            {
+                "date_from": self.check_in + timedelta(days=1),
+                "date_to": self.check_in + timedelta(days=1),
+            },
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(excluded.status_code, 200, excluded.data)
+        self.assertEqual(excluded.data["data"]["count"], 0)
+
     def test_admin_meal_plan_list_supports_business_default_and_package_type_filters(self):
         matching = MealPlan.objects.create(
             hotel=self.hotel,

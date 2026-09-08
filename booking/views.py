@@ -754,9 +754,9 @@ class OTARevenueView(APIView):
             .distinct()
         )
         if parsed_from:
-            queryset = queryset.filter(payments__paid_at__date__gte=parsed_from)
+            queryset = queryset.filter(check_in__gte=parsed_from)
         if parsed_to:
-            queryset = queryset.filter(payments__paid_at__date__lte=parsed_to)
+            queryset = queryset.filter(check_in__lte=parsed_to)
 
         now = timezone.now()
         records = []
