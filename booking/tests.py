@@ -1375,6 +1375,39 @@ class BookingServiceTests(TestCase):
 
 @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key", CORE_JWT_SIGNING_KEY="test-core-jwt-key")
 class BookingApiTests(BookingServiceTests):
+    def test_ota_revenue_includes_normalized_hotel_cancellation_policy(self):
+        self.hotel.core_snapshot = {
+            "hotel_cancellation_policy": {
+                "type": "free_full_refund",
+                "description": "Free cancellation before check-in.",
+            },
+        }
+        self.hotel.save(update_fields=["core_snapshot"])
+        payload = self.payload()
+        payload["source"] = Booking.Source.OTA
+        booking, _ = create_booking(payload)
+        record_payment(booking, {
+            "provider": "cash",
+            "amount": booking.grand_total,
+            "status": Payment.Status.PAID,
+        })
+
+        response = self.client.get(
+            "/api/v1/admin/ota-revenue/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            response.data["data"]["records"][0]["hotel_cancellation_policy"],
+            {
+                "type": "full_refund",
+                "name": "Fully Refund",
+                "description": "Free cancellation before check-in.",
+            },
+        )
+
     def test_admin_meal_plan_list_supports_business_default_and_package_type_filters(self):
         matching = MealPlan.objects.create(
             hotel=self.hotel,

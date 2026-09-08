@@ -76,6 +76,7 @@ from booking.serializers import (
     RoomTypeSerializer,
     SingleRoomCheckOutSerializer,
     WalkInBookingCreateSerializer,
+    normalize_cancellation_policy,
 )
 from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, deprovision_hotel, ensure_daily_inventory_for_room_type, estimate_booking, format_money, record_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, release_checked_in_room_inventory, replace_booking_payment_snapshot, sync_guest_profile, update_reservation_for_check_in, validate_assignment_preferences
 from config.response_formatter import success
@@ -806,6 +807,9 @@ class OTARevenueView(APIView):
                 "checkout_at_utc": checkout_at.astimezone(datetime_timezone.utc),
                 "currency": booking.currency,
                 "policy_type": policy_type,
+                "hotel_cancellation_policy": normalize_cancellation_policy(
+                    (booking.hotel.core_snapshot or {}).get("hotel_cancellation_policy")
+                ),
                 "status": status_value,
                 "gross_amount": f"{gross_amount:.2f}",
                 "held_amount": f"{held_amount:.2f}",
