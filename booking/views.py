@@ -719,6 +719,20 @@ class OTARevenueView(APIView):
         if parsed_from and parsed_to and parsed_from > parsed_to:
             raise ValidationError({"date_to": "Must be on or after date_from."})
 
+        raw_limit = request.query_params.get("limit")
+        raw_offset = request.query_params.get("offset")
+        try:
+            limit = int(raw_limit) if raw_limit not in (None, "") else None
+            offset = int(raw_offset) if raw_offset not in (None, "") else 1
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"pagination": "limit and offset must be integers."}) from exc
+        if limit is not None and limit <= 0:
+            raise ValidationError({"limit": "Must be greater than 0."})
+        if offset < 1:
+            raise ValidationError({"offset": "Must be greater than or equal to 1."})
+        if raw_offset not in (None, "") and limit is None:
+            raise ValidationError({"limit": "limit is required when offset is provided."})
+
         paid_statuses = [
             Payment.Status.PAID,
             Payment.Status.PARTIALLY_REFUNDED,
@@ -800,11 +814,23 @@ class OTARevenueView(APIView):
                 "remaining_amount": f"{remaining_amount:.2f}",
             })
 
+        total_count = len(records)
+        if limit is not None:
+            start = (offset - 1) * limit
+            paginated_records = records[start:start + limit]
+            total_pages = (total_count + limit - 1) // limit
+        else:
+            paginated_records = records
+            total_pages = 1 if total_count else 0
         return success({
-            "count": len(records),
+            "count": total_count,
+            "returned_count": len(paginated_records),
+            "limit": limit,
+            "offset": offset,
+            "total_pages": total_pages,
             "currency": records[0]["currency"] if records else "MMK",
             "totals": {key: f"{value:.2f}" for key, value in totals.items()},
-            "records": records,
+            "records": paginated_records,
         })
 
 
