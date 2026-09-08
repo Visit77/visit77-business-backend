@@ -1,5 +1,6 @@
 from datetime import timedelta, timezone as datetime_timezone
 from decimal import Decimal
+from urllib.parse import urlsplit
 import json
 
 from django.db.models import Q
@@ -1126,9 +1127,9 @@ class BookingRoomSerializer(serializers.ModelSerializer):
 
 
 class BookingHistoryRoomSerializer(BookingRoomSerializer):
-    room_type_images = serializers.SerializerMethodField()
+    photos = serializers.SerializerMethodField()
 
-    def get_room_type_images(self, obj):
+    def get_photos(self, obj):
         photos = (obj.room_type_snapshot or {}).get("photos")
         if photos is None:
             photos = (obj.room_type.core_snapshot or {}).get("photos")
@@ -1330,7 +1331,8 @@ class BookingHistorySerializer(BookingSerializer):
         subscription_tier = subscription_tier or "free"
         if subscription_tier not in {"free", "standard", "premium"}:
             subscription_tier = "free"
-        hotel["cover_image_url"] = hotel.pop("image")
+        cover_image_url = hotel.pop("image")
+        hotel["cover_image_url"] = urlsplit(cover_image_url).path if cover_image_url else ""
         hotel["subscription_tier"] = subscription_tier
         return hotel
 

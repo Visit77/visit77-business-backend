@@ -4065,6 +4065,8 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(room["extra_beds"], 2)
 
     def test_logged_in_user_can_list_bookings_they_created(self):
+        self.hotel.cover_image_url = "https://staging-api.visit77.com/media/business_profile/hotel.jpg"
+        self.hotel.save(update_fields=["cover_image_url"])
         self.room_type.core_snapshot = {
             **(self.room_type.core_snapshot or {}),
             "business": {"tier": "premium"},
@@ -4101,16 +4103,21 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(history.data["data"]["bookings"][0]["history_status"], "upcoming")
         self.assertEqual(
             history.data["data"]["bookings"][0]["hotel"]["cover_image_url"],
-            self.hotel.cover_image_url,
+            "/media/business_profile/hotel.jpg",
         )
         self.assertNotIn("image", history.data["data"]["bookings"][0]["hotel"])
+        self.assertNotIn("cover_path", history.data["data"]["bookings"][0]["hotel"])
         self.assertEqual(
             history.data["data"]["bookings"][0]["hotel"]["subscription_tier"],
             "premium",
         )
         self.assertEqual(
-            history.data["data"]["bookings"][0]["rooms"][0]["room_type_images"],
+            history.data["data"]["bookings"][0]["rooms"][0]["photos"],
             self.room_type.core_snapshot["photos"],
+        )
+        self.assertNotIn(
+            "room_type_images",
+            history.data["data"]["bookings"][0]["rooms"][0],
         )
 
         upcoming = self.client.get(
