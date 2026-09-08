@@ -1400,13 +1400,14 @@ class BookingApiTests(BookingServiceTests):
 
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(
-            response.data["data"]["records"][0]["hotel_cancellation_policy"],
+            response.data["data"]["hotel_cancellation_policy"],
             {
                 "type": "full_refund",
                 "name": "Fully Refund",
                 "description": "Free cancellation before check-in.",
             },
         )
+        self.assertNotIn("hotel_cancellation_policy", response.data["data"]["records"][0])
 
     def test_admin_meal_plan_list_supports_business_default_and_package_type_filters(self):
         matching = MealPlan.objects.create(

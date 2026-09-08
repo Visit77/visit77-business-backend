@@ -739,6 +739,10 @@ class OTARevenueView(APIView):
             Payment.Status.PARTIALLY_REFUNDED,
             Payment.Status.REFUNDED,
         ]
+        hotel = Hotel.objects.filter(core_business_id=core_business_id).only("core_snapshot").first()
+        hotel_cancellation_policy = normalize_cancellation_policy(
+            (hotel.core_snapshot or {}).get("hotel_cancellation_policy") if hotel else None
+        )
         queryset = (
             Booking.objects.filter(
                 hotel__core_business_id=core_business_id,
@@ -807,9 +811,6 @@ class OTARevenueView(APIView):
                 "checkout_at_utc": checkout_at.astimezone(datetime_timezone.utc),
                 "currency": booking.currency,
                 "policy_type": policy_type,
-                "hotel_cancellation_policy": normalize_cancellation_policy(
-                    (booking.hotel.core_snapshot or {}).get("hotel_cancellation_policy")
-                ),
                 "status": status_value,
                 "gross_amount": f"{gross_amount:.2f}",
                 "held_amount": f"{held_amount:.2f}",
@@ -833,6 +834,7 @@ class OTARevenueView(APIView):
             "offset": offset,
             "total_pages": total_pages,
             "currency": records[0]["currency"] if records else "MMK",
+            "hotel_cancellation_policy": hotel_cancellation_policy,
             "totals": {key: f"{value:.2f}" for key, value in totals.items()},
             "records": paginated_records,
         })
