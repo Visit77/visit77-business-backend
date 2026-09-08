@@ -1,4 +1,5 @@
 import uuid
+from datetime import time
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
@@ -25,8 +26,9 @@ class Hotel(models.Model):
     base_currency = models.CharField(max_length=3, default="MMK")
     package = models.CharField(max_length=24, choices=Package.choices, default=Package.OTA)
     features = models.JSONField(default=dict, blank=True)
-    check_in_time = models.TimeField(null=True, blank=True)
-    check_out_time = models.TimeField(null=True, blank=True)
+    timezone = models.CharField(max_length=64, default="UTC")
+    check_in_time = models.TimeField(default=time(12, 0))
+    check_out_time = models.TimeField(default=time(12, 0))
     is_active = models.BooleanField(default=True)
     core_snapshot = models.JSONField(default=dict, blank=True)
     access_snapshot = models.JSONField(default=dict, blank=True)

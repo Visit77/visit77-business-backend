@@ -1,8 +1,9 @@
 from collections import defaultdict
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone as datetime_timezone
 from decimal import Decimal
 import json
 import re
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
 from django.http import FileResponse
@@ -655,17 +656,26 @@ class OTARevenueView(APIView):
     business_scoped = True
 
     @staticmethod
-    def _checkout_at(booking):
+    def _hotel_timezone(booking):
+        try:
+            return ZoneInfo(booking.hotel.timezone or "UTC")
+        except ZoneInfoNotFoundError:
+            return ZoneInfo("UTC")
+
+    @classmethod
+    def _stay_datetimes(cls, booking):
+        hotel_timezone = cls._hotel_timezone(booking)
+        checkin_at = datetime.combine(
+            booking.check_in,
+            booking.hotel.check_in_time or time(12, 0),
+            tzinfo=hotel_timezone,
+        )
         checkout_at = datetime.combine(
             booking.check_out,
-            booking.hotel.check_out_time or time.max,
+            booking.hotel.check_out_time or time(12, 0),
+            tzinfo=hotel_timezone,
         )
-        if timezone.is_aware(timezone.now()):
-            checkout_at = timezone.make_aware(
-                checkout_at,
-                timezone.get_current_timezone(),
-            )
-        return checkout_at
+        return checkin_at, checkout_at
 
     @staticmethod
     def _policy_type(booking):
@@ -744,7 +754,7 @@ class OTARevenueView(APIView):
             refunded_amount = sum((payment.refunded_amount for payment in payments), Decimal("0"))
             remaining_amount = max(gross_amount - refunded_amount, Decimal("0"))
             policy_type = self._policy_type(booking)
-            checkout_at = self._checkout_at(booking)
+            checkin_at, checkout_at = self._stay_datetimes(booking)
 
             if remaining_amount == 0 and refunded_amount > 0:
                 status_value = "refunded"
@@ -773,7 +783,13 @@ class OTARevenueView(APIView):
                 "paid_at": latest_paid_at,
                 "check_in": booking.check_in,
                 "check_out": booking.check_out,
+                "check_in_time": booking.hotel.check_in_time,
+                "check_out_time": booking.hotel.check_out_time,
+                "hotel_timezone": booking.hotel.timezone,
+                "checkin_at": checkin_at,
                 "checkout_at": checkout_at,
+                "checkin_at_utc": checkin_at.astimezone(datetime_timezone.utc),
+                "checkout_at_utc": checkout_at.astimezone(datetime_timezone.utc),
                 "currency": booking.currency,
                 "policy_type": policy_type,
                 "status": status_value,
