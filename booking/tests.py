@@ -4065,13 +4065,9 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(room["extra_beds"], 2)
 
     def test_logged_in_user_can_list_bookings_they_created(self):
-        self.hotel.core_snapshot = {
-            **(self.hotel.core_snapshot or {}),
-            "subscription_tier": "premium",
-        }
-        self.hotel.save(update_fields=["core_snapshot"])
         self.room_type.core_snapshot = {
             **(self.room_type.core_snapshot or {}),
+            "business": {"tier": "premium"},
             "photos": [
                 {"id": 101, "image": "https://example.com/room-1.jpg", "is_cover": True},
                 {"id": 102, "image": "https://example.com/room-2.jpg", "is_cover": False},

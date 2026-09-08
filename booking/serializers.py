@@ -1317,7 +1317,17 @@ class BookingHistorySerializer(BookingSerializer):
     def get_hotel(self, obj):
         hotel = super().get_hotel(obj)
         snapshot = obj.hotel.core_snapshot or {}
-        subscription_tier = snapshot.get("subscription_tier") or snapshot.get("tier") or "free"
+        subscription_tier = snapshot.get("subscription_tier") or snapshot.get("tier")
+        if not subscription_tier:
+            subscription_tier = next(
+                (
+                    (room.room_type_snapshot.get("business") or {}).get("tier")
+                    for room in obj.rooms.all()
+                    if (room.room_type_snapshot.get("business") or {}).get("tier")
+                ),
+                None,
+            )
+        subscription_tier = subscription_tier or "free"
         if subscription_tier not in {"free", "standard", "premium"}:
             subscription_tier = "free"
         hotel["cover_image_url"] = hotel.pop("image")
