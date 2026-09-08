@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from decimal import Decimal
 import json
 import re
@@ -647,6 +647,148 @@ class MyBookingHistoryView(APIView):
         return success({
             "count": len(bookings),
             "bookings": BookingHistorySerializer(bookings, many=True).data,
+        })
+
+
+class OTARevenueView(APIView):
+    permission_classes = [HasBookingAdminKey]
+    business_scoped = True
+
+    @staticmethod
+    def _checkout_at(booking):
+        checkout_at = datetime.combine(
+            booking.check_out,
+            booking.hotel.check_out_time or time.max,
+        )
+        if timezone.is_aware(timezone.now()):
+            checkout_at = timezone.make_aware(
+                checkout_at,
+                timezone.get_current_timezone(),
+            )
+        return checkout_at
+
+    @staticmethod
+    def _policy_type(booking):
+        snapshot = booking.cancellation_policy_snapshot or {}
+        if snapshot.get("type"):
+            policies = [snapshot["type"]]
+        else:
+            policies = [
+                policy.get("type")
+                for policy in snapshot.values()
+                if isinstance(policy, dict) and policy.get("type")
+            ]
+        policies = ["full_refund" if value == "free_full_refund" else value for value in policies]
+        unique = set(policies)
+        if unique == {"non_refundable"}:
+            return "non_refundable"
+        if len(unique) == 1:
+            return policies[0]
+        if unique:
+            return "mixed_refundable"
+        # An unknown/legacy policy remains held to avoid premature payout.
+        return "refundable"
+
+    def get(self, request):
+        core_business_id = getattr(request, "booking_core_business_id", None)
+        if not core_business_id:
+            raise ValidationError({"core_business_id": "X-Booking-Business-ID is required."})
+
+        revenue_status = str(request.query_params.get("status", "all")).strip().lower()
+        if revenue_status not in {"all", "available", "held", "refunded"}:
+            raise ValidationError({"status": "Use all, available, held, or refunded."})
+
+        date_from = request.query_params.get("date_from") or request.query_params.get("from")
+        date_to = request.query_params.get("date_to") or request.query_params.get("to")
+        parsed_from = parse_date(date_from) if date_from else None
+        parsed_to = parse_date(date_to) if date_to else None
+        if date_from and not parsed_from:
+            raise ValidationError({"date_from": "Use YYYY-MM-DD format."})
+        if date_to and not parsed_to:
+            raise ValidationError({"date_to": "Use YYYY-MM-DD format."})
+        if parsed_from and parsed_to and parsed_from > parsed_to:
+            raise ValidationError({"date_to": "Must be on or after date_from."})
+
+        paid_statuses = [
+            Payment.Status.PAID,
+            Payment.Status.PARTIALLY_REFUNDED,
+            Payment.Status.REFUNDED,
+        ]
+        queryset = (
+            Booking.objects.filter(
+                hotel__core_business_id=core_business_id,
+                source=Booking.Source.OTA,
+                payments__status__in=paid_statuses,
+            )
+            .select_related("hotel")
+            .prefetch_related("rooms", "payments")
+            .distinct()
+        )
+        if parsed_from:
+            queryset = queryset.filter(payments__paid_at__date__gte=parsed_from)
+        if parsed_to:
+            queryset = queryset.filter(payments__paid_at__date__lte=parsed_to)
+
+        now = timezone.now()
+        records = []
+        totals = {
+            "gross_amount": Decimal("0"),
+            "held_amount": Decimal("0"),
+            "available_amount": Decimal("0"),
+            "refunded_amount": Decimal("0"),
+            "remaining_amount": Decimal("0"),
+        }
+        for booking in queryset.order_by("-created_at", "-id"):
+            payments = [payment for payment in booking.payments.all() if payment.status in paid_statuses]
+            gross_amount = sum((payment.amount for payment in payments), Decimal("0"))
+            refunded_amount = sum((payment.refunded_amount for payment in payments), Decimal("0"))
+            remaining_amount = max(gross_amount - refunded_amount, Decimal("0"))
+            policy_type = self._policy_type(booking)
+            checkout_at = self._checkout_at(booking)
+
+            if remaining_amount == 0 and refunded_amount > 0:
+                status_value = "refunded"
+            elif policy_type == "non_refundable" or now >= checkout_at:
+                status_value = "available"
+            else:
+                status_value = "held"
+
+            held_amount = remaining_amount if status_value == "held" else Decimal("0")
+            available_amount = remaining_amount if status_value == "available" else Decimal("0")
+            for key, value in {
+                "gross_amount": gross_amount,
+                "held_amount": held_amount,
+                "available_amount": available_amount,
+                "refunded_amount": refunded_amount,
+                "remaining_amount": remaining_amount,
+            }.items():
+                totals[key] += value
+
+            if revenue_status != "all" and status_value != revenue_status:
+                continue
+            latest_paid_at = max((payment.paid_at for payment in payments if payment.paid_at), default=None)
+            records.append({
+                "booking_id": str(booking.id),
+                "booking_code": booking.booking_code,
+                "paid_at": latest_paid_at,
+                "check_in": booking.check_in,
+                "check_out": booking.check_out,
+                "checkout_at": checkout_at,
+                "currency": booking.currency,
+                "policy_type": policy_type,
+                "status": status_value,
+                "gross_amount": f"{gross_amount:.2f}",
+                "held_amount": f"{held_amount:.2f}",
+                "available_amount": f"{available_amount:.2f}",
+                "refunded_amount": f"{refunded_amount:.2f}",
+                "remaining_amount": f"{remaining_amount:.2f}",
+            })
+
+        return success({
+            "count": len(records),
+            "currency": records[0]["currency"] if records else "MMK",
+            "totals": {key: f"{value:.2f}" for key, value in totals.items()},
+            "records": records,
         })
 
 
