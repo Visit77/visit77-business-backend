@@ -3256,6 +3256,15 @@ class PhysicalRoomViewSet(AdminModelViewSet):
                 (guest for guest in booking.guests.all() if guest.is_primary),
                 None,
             )
+            contact_name = primary_guest.name if primary_guest else booking.contact_name
+            contact_phone = (
+                primary_guest.phone if primary_guest and primary_guest.phone
+                else booking.contact_phone
+            )
+            contact_email = (
+                primary_guest.email if primary_guest and primary_guest.email
+                else booking.contact_email
+            )
             records.append({
                 "assignment_id": assignment.id,
                 "reservation_status": (
@@ -3269,9 +3278,13 @@ class PhysicalRoomViewSet(AdminModelViewSet):
                 "booking_status": booking.status,
                 "check_in": booking.check_in,
                 "check_out": booking.check_out,
+                "contact_name": contact_name,
+                "contact_phone": contact_phone,
+                "contact_email": contact_email,
                 "guest": {
-                    "name": primary_guest.name if primary_guest else booking.contact_name,
-                    "phone": primary_guest.phone if primary_guest else booking.contact_phone,
+                    "name": contact_name,
+                    "phone": contact_phone,
+                    "email": contact_email,
                 },
                 "invoice_url": booking_invoice_url(booking),
                 "receipt_url": booking_receipt_url(booking),

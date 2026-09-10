@@ -4752,6 +4752,13 @@ class BookingApiTests(BookingServiceTests):
         earlier, earlier_payment = assigned_paid_booking(
             "EARLIER-STAY", self.check_in, Booking.Status.CHECKED_IN,
         )
+        Guest.objects.create(
+            booking=earlier,
+            name="Primary Invoice Guest",
+            phone="099999999",
+            email="primary@example.com",
+            is_primary=True,
+        )
         response = self.client.get(
             f"/api/v1/admin/physical-rooms/{room.core_physical_room_id}/active-invoices/",
             HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
@@ -4770,6 +4777,9 @@ class BookingApiTests(BookingServiceTests):
             ["occupied", "reserved"],
         )
         first = data["records"][0]
+        self.assertEqual(first["contact_name"], "Primary Invoice Guest")
+        self.assertEqual(first["contact_phone"], "099999999")
+        self.assertEqual(first["contact_email"], "primary@example.com")
         self.assertEqual(
             first["invoice_url"],
             f"/api/v1/public/bookings/{earlier.public_token}/invoices/{earlier_payment.invoice_id}/pdf/",
