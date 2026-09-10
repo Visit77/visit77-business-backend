@@ -195,6 +195,17 @@ class BulkHotelAvailabilityQuerySerializer(serializers.Serializer):
         return attrs
 
 
+class OTAHotelIdsQuerySerializer(serializers.Serializer):
+    business_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        allow_empty=False,
+        max_length=5000,
+    )
+
+    def validate_business_ids(self, value):
+        return list(dict.fromkeys(value))
+
+
 class PublicOTARoomTypeCatalogQuerySerializer(serializers.Serializer):
     guest_market = serializers.ChoiceField(
         choices=[RatePlan.GuestMarket.LOCAL, RatePlan.GuestMarket.FOREIGN],
@@ -1469,7 +1480,6 @@ class RequestedRoomSerializer(serializers.Serializer):
     adults = serializers.IntegerField(min_value=1, max_value=100, required=False)
     children = serializers.IntegerField(min_value=0, max_value=100, required=False)
     extra_beds = serializers.IntegerField(min_value=0, max_value=20, default=0)
-    extra_bed_count = serializers.IntegerField(min_value=0, max_value=20, required=False)
     preferences = RequestedRoomPreferenceSerializer(required=False, default=dict)
 
     def validate(self, attrs):

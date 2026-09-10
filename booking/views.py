@@ -56,6 +56,7 @@ from booking.serializers import (
     GuestIdentityDocumentSerializer,
     GuestIdentityDocumentUploadSerializer,
     MealPlanSerializer,
+    OTAHotelIdsQuerySerializer,
     OTARoomSelectionUpdateSerializer,
     OTARoomSaleStatusSerializer,
     OTARoomTimelineQuerySerializer,
@@ -496,6 +497,36 @@ class AdminAvailableHotelIdsView(APIView):
                 if availability.get(hotel.id)
             ],
         })
+
+
+class AdminOTAHotelIdsView(APIView):
+    permission_classes = [HasBookingAdminKey]
+
+    def post(self, request):
+        serializer = OTAHotelIdsQuerySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        ota_business_ids = list(
+            Hotel.objects.filter(
+                core_business_id__in=serializer.validated_data["business_ids"],
+                is_active=True,
+                package__in=[Hotel.Package.OTA, Hotel.Package.OTA_PMS],
+                room_types__booking_enabled=True,
+                room_types__core_active=True,
+                room_types__rate_plans__is_active=True,
+                room_types__physical_rooms__is_active=True,
+                room_types__physical_rooms__ota_enabled=True,
+                room_types__physical_rooms__ota_sale_open=True,
+                room_types__physical_rooms__status__in=[
+                    PhysicalRoom.Status.VACANT,
+                    PhysicalRoom.Status.OCCUPIED,
+                    PhysicalRoom.Status.CLEANING,
+                ],
+            )
+            .order_by("core_business_id")
+            .values_list("core_business_id", flat=True)
+            .distinct()
+        )
+        return success({"ota_business_ids": ota_business_ids})
 
 
 class PublicBookingCreateView(APIView):

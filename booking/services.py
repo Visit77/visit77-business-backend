@@ -566,82 +566,6 @@ def room_type_extra_bed_config(room_type):
     return {"extra_bed_available": available and count > 0, "extra_bed_quantity": count}
 
 
-def physical_room_extra_bed_count(room, room_type=None):
-    snapshot = room.core_snapshot or {}
-    if "extra_bed_quantity" not in snapshot and "extra_bed_available" not in snapshot:
-        if room_type is None:
-            room_type = room.room_type
-        return room_type_extra_bed_config(room_type)["extra_bed_quantity"]
-    if not snapshot.get("extra_bed_available", False):
-        return 0
-    try:
-        return max(int(snapshot.get("extra_bed_quantity") or 0), 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def available_physical_rooms_for_stay(room_type, check_in, check_out):
-    rooms = room_type.physical_rooms.filter(is_active=True).exclude(
-        status=PhysicalRoom.Status.OUT_OF_SERVICE,
-    )
-    if room_type.hotel.package in [Hotel.Package.OTA, Hotel.Package.OTA_PMS]:
-        rooms = rooms.filter(ota_enabled=True, ota_sale_open=True)
-    blocked_ids = PhysicalRoomBlock.objects.filter(
-        physical_room__room_type=room_type,
-        physical_room__in=rooms,
-        is_active=True,
-        start_date__lt=check_out,
-        end_date__gte=check_in,
-    ).values_list("physical_room_id", flat=True)
-    assigned_ids = RoomAssignment.objects.filter(
-        physical_room__in=rooms,
-        released_at__isnull=True,
-        booking_room__booking__status__in=[
-            Booking.Status.PENDING_PAYMENT,
-            Booking.Status.CONFIRMED,
-            Booking.Status.CHECKED_IN,
-        ],
-        booking_room__booking__check_in__lt=check_out,
-        booking_room__booking__check_out__gt=check_in,
-    ).values_list("physical_room_id", flat=True)
-    return list(rooms.exclude(id__in=blocked_ids).exclude(id__in=assigned_ids).order_by("id"))
-
-
-def validate_extra_bed_variant(room_type, dates, requested, room_quantity):
-    selected_count = requested.get("extra_bed_count")
-    if selected_count is None:
-        validate_requested_extra_beds(
-            room_type, requested.get("extra_beds", 0), room_quantity,
-        )
-        return None
-    maximum = selected_count * room_quantity
-    if requested.get("extra_beds", 0) > maximum:
-        raise ValidationError({
-            "rooms": (
-                f"{room_type.name} variant allows at most {maximum} extra bed(s) "
-                f"for {room_quantity} selected room(s)."
-            )
-        })
-    available_variant_rooms = [
-        room for room in available_physical_rooms_for_stay(
-            room_type, dates[0], dates[-1] + timedelta(days=1),
-        )
-        if physical_room_extra_bed_count(room, room_type) == selected_count
-    ] if dates else []
-    if available_variant_rooms and len(available_variant_rooms) < room_quantity:
-        raise ValidationError({
-            "rooms": (
-                f"Only {len(available_variant_rooms)} {room_type.name} room(s) with "
-                f"extra_bed_count={selected_count} are available."
-            )
-        })
-    if room_type.physical_rooms.exists() and not available_variant_rooms:
-        raise ValidationError({
-            "rooms": f"{room_type.name} with extra_bed_count={selected_count} is unavailable."
-        })
-    return selected_count
-
-
 def validate_requested_extra_beds(room_type, extra_beds, room_quantity):
     config = room_type_extra_bed_config(room_type)
     maximum = config["extra_bed_quantity"] * room_quantity
@@ -955,16 +879,7 @@ def _available_physical_rooms_for_booking_room(booking_room):
         and booking.hotel.package in [Hotel.Package.OTA, Hotel.Package.OTA_PMS]
     ):
         candidates = candidates.filter(ota_enabled=True, ota_sale_open=True)
-    candidates = list(candidates)
-    selected_extra_bed_count = (booking_room.room_type_snapshot or {}).get(
-        "selected_extra_bed_count"
-    )
-    if selected_extra_bed_count is not None:
-        candidates = [
-            room for room in candidates
-            if physical_room_extra_bed_count(room, booking_room.room_type) == selected_extra_bed_count
-        ]
-    return candidates
+    return list(candidates)
 
 
 def auto_assign_physical_rooms_for_booking(booking):
@@ -1270,40 +1185,17 @@ def availability_for_hotels(hotels, check_in, check_out, adults=1, children=0, g
                 "rate_plans": room_plans,
                 "core_snapshot": room_type.core_snapshot,
             }
-            physical_rooms = available_physical_rooms_for_stay(
-                room_type, check_in, check_out,
-            )
-            variant_counts = defaultdict(int)
-            for physical_room in physical_rooms:
-                variant_counts[physical_room_extra_bed_count(physical_room, room_type)] += 1
-            if not room_type.physical_rooms.exists():
-                variant_counts[extra_bed_config["extra_bed_quantity"]] = available
-            for extra_bed_count, physical_available in sorted(
-                variant_counts.items(), reverse=True,
-            ):
-                variant_available = min(physical_available, available)
-                if variant_available < required_room_quantity:
-                    continue
-                variant = dict(base_payload)
-                variant.update({
-                    "availability_variant_id": f"{room_type.id}:{extra_bed_count}",
-                    "name": (
-                        f"{room_type.name} ({extra_bed_count} extra bed(s) available)"
-                        if extra_bed_count else room_type.name
-                    ),
-                    "extra_bed_available": extra_bed_count > 0,
-                    "extra_bed_count": extra_bed_count,
-                    "extra_bed_quantity": extra_bed_count * variant_available,
-                    "available_rooms": variant_available,
-                })
-                results[room_type.hotel_id].append(variant)
+            base_payload.update({
+                "extra_bed_available": extra_bed_config["extra_bed_available"],
+                "extra_bed_quantity": extra_bed_config["extra_bed_quantity"],
+            })
+            results[room_type.hotel_id].append(base_payload)
     for hotel_id in results:
         results[hotel_id].sort(key=lambda item: (
             item["required_room_quantity"],
             item["required_room_capacity"] - item["guest_count"],
             -item["max_occupancy"],
             item["room_type_id"],
-            -item["extra_bed_count"],
         ))
     return results
 
@@ -1375,10 +1267,8 @@ def estimate_booking(data):
             raise ValidationError({"rooms": "A selected room type or rate plan is unavailable."})
         quantity = requested["quantity"]
         extra_beds = requested.get("extra_beds", 0)
-        selected_extra_bed_variant_count = validate_extra_bed_variant(
-            room_type, dates, requested, quantity,
-        )
-        total_guest_capacity += room_type.max_occupancy * quantity + extra_beds
+        validate_requested_extra_beds(room_type, extra_beds, quantity)
+        total_guest_capacity += room_type.max_occupancy * quantity
         preference_snapshot, option_total = resolve_room_preferences(
             room_type,
             requested.get("preferences") or {},
@@ -1509,7 +1399,6 @@ def estimate_booking(data):
             "rate_plan_name": rate_plan.name,
             "quantity": quantity,
             "extra_beds": requested.get("extra_beds", 0),
-            "extra_bed_count": selected_extra_bed_variant_count,
             "preference_snapshot": preference_snapshot,
             "option_total": option_total,
             "meal_plan": meal_plan_snapshot,
@@ -1532,7 +1421,7 @@ def estimate_booking(data):
     if not can_create_booking:
         capacity_warning = (
             f"Selected rooms have capacity for {total_guest_capacity} guest(s); "
-            f"add room or extra-bed capacity for {guest_capacity_shortfall} more guest(s)."
+            f"add room capacity for {guest_capacity_shortfall} more guest(s)."
         )
     return {
         "hotel": {
@@ -1630,10 +1519,10 @@ def create_booking(data, idempotency_key=None):
         except (RoomType.DoesNotExist, RatePlan.DoesNotExist):
             raise ValidationError({"rooms": "A selected room type or rate plan is unavailable."})
         quantity = requested["quantity"]
-        selected_extra_bed_count = validate_extra_bed_variant(
-            room_type, dates, requested, quantity,
+        validate_requested_extra_beds(
+            room_type, requested.get("extra_beds", 0), quantity,
         )
-        total_guest_capacity += room_type.max_occupancy * quantity + requested.get("extra_beds", 0)
+        total_guest_capacity += room_type.max_occupancy * quantity
         preference_snapshot, option_total = resolve_room_preferences(
             room_type,
             requested.get("preferences") or {},
@@ -1672,7 +1561,6 @@ def create_booking(data, idempotency_key=None):
                 "core_room_type_id": room_type.core_room_type_id,
                 "name": room_type.name,
                 **room_type.core_snapshot,
-                "selected_extra_bed_count": selected_extra_bed_count,
             },
             rate_plan_snapshot={
                 "code": rate_plan.code,
@@ -1761,7 +1649,7 @@ def create_booking(data, idempotency_key=None):
         remaining_adults = common_adults
         remaining_children = common_children
         for booking_room in created_booking_rooms:
-            capacity = booking_room.room_type.max_occupancy * booking_room.quantity + booking_room.extra_beds
+            capacity = booking_room.room_type.max_occupancy * booking_room.quantity
             assigned_adults = min(remaining_adults, capacity)
             remaining_adults -= assigned_adults
             remaining_capacity = capacity - assigned_adults
