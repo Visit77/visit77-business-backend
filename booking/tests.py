@@ -1375,6 +1375,32 @@ class BookingServiceTests(TestCase):
 
 @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key", CORE_JWT_SIGNING_KEY="test-core-jwt-key")
 class BookingApiTests(BookingServiceTests):
+    def test_bulk_hotel_availability_returns_only_available_candidate_ids(self):
+        PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            core_physical_room_id=70001,
+            room_number="OTA-AVAILABLE-1",
+            ota_enabled=True,
+            ota_sale_open=True,
+        )
+        response = self.client.post(
+            "/api/v1/admin/availability/hotel-ids/",
+            {
+                "business_ids": [self.hotel.core_business_id, 999999],
+                "check_in": self.check_in,
+                "check_out": self.check_out,
+            },
+            format="json",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            response.data["data"]["available_business_ids"],
+            [self.hotel.core_business_id],
+        )
+
     def test_ota_revenue_includes_normalized_hotel_cancellation_policy(self):
         self.hotel.core_snapshot = {
             "hotel_cancellation_policy": {

@@ -38,6 +38,7 @@ from booking.serializers import (
     BookingEstimateSerializer,
     BookingHistorySerializer,
     BookingSerializer,
+    BulkHotelAvailabilityQuerySerializer,
     CheckInConfirmSerializer,
     CheckInFormUpdateSerializer,
     CorePaymentSuccessSerializer,
@@ -454,6 +455,43 @@ class PublicGlobalAvailabilityView(APIView):
                 "has_next": end < total,
                 "has_previous": data["page"] > 1,
             },
+        })
+
+
+class AdminAvailableHotelIdsView(APIView):
+    permission_classes = [HasBookingAdminKey]
+
+    def post(self, request):
+        serializer = BulkHotelAvailabilityQuerySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        hotels = list(
+            Hotel.objects.filter(
+                core_business_id__in=data["business_ids"],
+                is_active=True,
+                room_types__booking_enabled=True,
+                room_types__core_active=True,
+                room_types__rate_plans__is_active=True,
+                room_types__rate_plans__guest_market__in=[
+                    data["guest_market"],
+                    RatePlan.GuestMarket.ALL,
+                ],
+            ).distinct().order_by("id")
+        )
+        availability = availability_for_hotels(
+            hotels,
+            data["check_in"],
+            data["check_out"],
+            data["adults"],
+            data["children"],
+            data["guest_market"],
+        )
+        return success({
+            "available_business_ids": [
+                hotel.core_business_id
+                for hotel in hotels
+                if availability.get(hotel.id)
+            ],
         })
 
 

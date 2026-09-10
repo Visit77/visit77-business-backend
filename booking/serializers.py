@@ -139,6 +139,30 @@ class AvailabilitySearchQuerySerializer(serializers.Serializer):
         return attrs
 
 
+class BulkHotelAvailabilityQuerySerializer(serializers.Serializer):
+    business_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        allow_empty=False,
+        max_length=5000,
+    )
+    check_in = serializers.DateField()
+    check_out = serializers.DateField()
+    adults = serializers.IntegerField(min_value=1, max_value=100, default=1)
+    children = serializers.IntegerField(min_value=0, max_value=100, default=0)
+    guest_market = serializers.ChoiceField(
+        choices=[RatePlan.GuestMarket.LOCAL, RatePlan.GuestMarket.FOREIGN],
+        default=RatePlan.GuestMarket.LOCAL,
+    )
+
+    def validate(self, attrs):
+        if attrs["check_out"] <= attrs["check_in"]:
+            raise serializers.ValidationError({"check_out": "Must be after check_in."})
+        if (attrs["check_out"] - attrs["check_in"]).days > 90:
+            raise serializers.ValidationError({"check_out": "A stay cannot exceed 90 nights."})
+        attrs["business_ids"] = list(dict.fromkeys(attrs["business_ids"]))
+        return attrs
+
+
 class PublicOTARoomTypeCatalogQuerySerializer(serializers.Serializer):
     guest_market = serializers.ChoiceField(
         choices=[RatePlan.GuestMarket.LOCAL, RatePlan.GuestMarket.FOREIGN],
