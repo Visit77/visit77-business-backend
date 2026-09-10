@@ -48,6 +48,28 @@ DEFAULT_CANCELLATION_POLICY = {
 }
 
 
+def booking_invoice_url(booking):
+    if not booking or not list(booking.invoices.all()):
+        return None
+    return f"/api/v1/admin/bookings/{booking.id}/stay-bill/"
+
+
+def booking_receipt_url(booking):
+    if not booking:
+        return None
+    payments = [payment for payment in booking.payments.all() if payment.receipt_number]
+    if not payments:
+        return None
+    payment = max(
+        payments,
+        key=lambda item: (item.paid_at or item.created_at, item.created_at, str(item.id)),
+    )
+    return (
+        f"/api/v1/public/bookings/{booking.public_token}/"
+        f"receipts/{payment.id}/pdf/"
+    )
+
+
 def normalize_cancellation_policy(config):
     if not isinstance(config, dict):
         return config
@@ -752,6 +774,8 @@ class PhysicalRoomActionHistorySerializer(serializers.ModelSerializer):
     booking_source_label = serializers.CharField(source="booking.get_source_display", read_only=True, allow_null=True)
     guest_name = serializers.CharField(source="booking.contact_name", read_only=True, allow_null=True)
     invoice_numbers = serializers.SerializerMethodField()
+    invoice_url = serializers.SerializerMethodField()
+    receipt_url = serializers.SerializerMethodField()
 
     class Meta:
         model = PhysicalRoomActionHistory
@@ -762,7 +786,7 @@ class PhysicalRoomActionHistorySerializer(serializers.ModelSerializer):
             "actor_core_user_id", "booking", "booking_reference", "booking_code",
             "source", "source_name", "source_label",
             "booking_source", "booking_source_label", "guest_name",
-            "block", "invoice_numbers", "metadata",
+            "block", "invoice_numbers", "invoice_url", "receipt_url", "metadata",
         ]
         read_only_fields = fields
 
@@ -812,6 +836,12 @@ class PhysicalRoomActionHistorySerializer(serializers.ModelSerializer):
         if not obj.booking_id:
             return []
         return [payment.invoice_number for payment in obj.booking.payments.all()]
+
+    def get_invoice_url(self, obj):
+        return booking_invoice_url(obj.booking) if obj.booking_id else None
+
+    def get_receipt_url(self, obj):
+        return booking_receipt_url(obj.booking) if obj.booking_id else None
 
 
 class RatePlanSerializer(serializers.ModelSerializer):

@@ -250,6 +250,10 @@ class BookingCodeTests(TestCase):
         response = self.client.get(receipt_url)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertEqual(
+            response["Content-Disposition"],
+            f'inline; filename="{payment.receipt_number}.pdf"',
+        )
         self.assertTrue(b"".join(response.streaming_content).startswith(b"%PDF"))
         payment.refresh_from_db()
         original_name = payment.receipt_pdf.name

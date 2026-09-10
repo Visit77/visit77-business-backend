@@ -3018,6 +3018,11 @@ class BookingApiTests(BookingServiceTests):
         assign("OTA-DISABLED", disabled_room, Booking.Source.OTA, self.check_in)
         Booking.objects.filter(id=older.id).update(created_at=timezone.now() - timedelta(hours=1))
         Booking.objects.filter(id=newer.id).update(created_at=timezone.now())
+        payment = record_payment(newer, {
+            "provider": Payment.Provider.CASH,
+            "amount": newer.grand_total,
+            "status": Payment.Status.PAID,
+        })
 
         response = self.client.get(
             "/api/v1/admin/ota-records/",
@@ -3030,11 +3035,21 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(data["ordering"], "-created_at")
         self.assertEqual(data["count"], 2)
         self.assertEqual(
-            [record["booking_reference"] for record in data["records"]],
+            [record["booking_reference"] for record in data["rooms"]],
             ["OTA-301-NEWER", "OTA-301-OLDER"],
         )
-        self.assertEqual([record["room_number"] for record in data["records"]], ["301", "301"])
-        self.assertEqual(data["records"][0]["booking_code"], newer.booking_code)
+        self.assertEqual([record["room_number"] for record in data["rooms"]], ["301", "301"])
+        self.assertEqual(data["rooms"][0]["booking_code"], newer.booking_code)
+        self.assertIn("invoice_url", data["rooms"][0])
+        self.assertIn("receipt_url", data["rooms"][0])
+        self.assertEqual(
+            data["rooms"][0]["invoice_url"],
+            f"/api/v1/admin/bookings/{newer.id}/stay-bill/",
+        )
+        self.assertEqual(
+            data["rooms"][0]["receipt_url"],
+            f"/api/v1/public/bookings/{newer.public_token}/receipts/{payment.id}/pdf/",
+        )
 
     def test_ota_room_records_are_sorted_and_close_open_controls_sale(self):
         room = PhysicalRoom.objects.create(
@@ -4436,6 +4451,8 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(event["booking_source"], Booking.Source.OTA)
         self.assertEqual(event["booking_source_label"], "OTA")
         self.assertEqual(event["booking_code"], booking.booking_code)
+        self.assertIn("invoice_url", event)
+        self.assertIn("receipt_url", event)
 
     def test_public_booking_form_data_parses_meal_plan_ids_json_string(self):
         breakfast = MealPlan.objects.create(

@@ -38,6 +38,8 @@ from booking.serializers import (
     BookingEstimateSerializer,
     BookingHistorySerializer,
     BookingSerializer,
+    booking_invoice_url,
+    booking_receipt_url,
     BulkHotelAvailabilityQuerySerializer,
     CheckInConfirmSerializer,
     CheckInFormUpdateSerializer,
@@ -645,7 +647,7 @@ class PublicReceiptPDFView(APIView):
         return FileResponse(
             payment.receipt_pdf.open("rb"),
             content_type="application/pdf",
-            as_attachment=True,
+            as_attachment=False,
             filename=f"{payment.receipt_number}.pdf",
         )
 
@@ -1953,6 +1955,7 @@ class OTARecordListView(APIView):
         ).prefetch_related(
             "booking_room__booking__guests",
             "booking_room__booking__invoices",
+            "booking_room__booking__payments",
         ).order_by(
             "-booking_room__booking__created_at",
             "-id",
@@ -2015,6 +2018,8 @@ class OTARecordListView(APIView):
                 "invoice_count": len(invoices),
                 "invoices": invoices,
                 "stay_bill_url": f"/api/v1/admin/bookings/{booking.id}/stay-bill/",
+                "invoice_url": booking_invoice_url(booking),
+                "receipt_url": booking_receipt_url(booking),
             })
 
         return success({
@@ -3202,6 +3207,7 @@ class PhysicalRoomViewSet(AdminModelViewSet):
             raise NotFound("Physical room was not found for the supplied core physical room ID.")
         queryset = room.action_history.select_related("booking", "block").prefetch_related(
             "booking__payments",
+            "booking__invoices",
         )
         include_system_events = str(
             request.query_params.get("include_system_events", "")
