@@ -473,6 +473,7 @@ class AdminAvailableHotelIdsView(APIView):
             Hotel.objects.filter(
                 core_business_id__in=data["business_ids"],
                 is_active=True,
+                package__in=[Hotel.Package.OTA, Hotel.Package.OTA_PMS],
                 room_types__booking_enabled=True,
                 room_types__core_active=True,
                 room_types__rate_plans__is_active=True,
