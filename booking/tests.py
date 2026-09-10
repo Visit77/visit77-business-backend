@@ -1045,6 +1045,178 @@ class BookingServiceTests(TestCase):
         booking, _ = create_booking(self.payload())
         self.assertEqual(booking.grand_total, Decimal("540000"))
 
+    def test_availability_uses_enough_rooms_for_total_guest_occupancy_and_prioritizes_exact_fit(self):
+        six_guest_room = RoomType.objects.create(
+            hotel=self.hotel,
+            core_room_type_id=302,
+            name="Six Guest Room",
+            max_adults=6,
+            max_children=0,
+            max_occupancy=6,
+            default_inventory=1,
+        )
+        two_guest_room = RoomType.objects.create(
+            hotel=self.hotel,
+            core_room_type_id=303,
+            name="Two Guest Room",
+            max_adults=2,
+            max_children=0,
+            max_occupancy=2,
+            default_inventory=3,
+        )
+        for room_type in [six_guest_room, two_guest_room]:
+            RatePlan.objects.create(
+                room_type=room_type,
+                code=f"local-{room_type.id}",
+                name="Local Rate",
+                guest_market=RatePlan.GuestMarket.LOCAL,
+                default_price=Decimal("80000"),
+            )
+        for room_type, count, prefix in [
+            (self.room_type, 3, "THREE"),
+            (six_guest_room, 1, "SIX"),
+            (two_guest_room, 3, "TWO"),
+        ]:
+            for number in range(1, count + 1):
+                PhysicalRoom.objects.create(
+                    hotel=self.hotel,
+                    room_type=room_type,
+                    room_number=f"{prefix}-{number}",
+                    ota_enabled=True,
+                    ota_sale_open=True,
+                )
+
+        available = availability_for_hotel(
+            self.hotel, self.check_in, self.check_out, adults=6, children=0,
+        )
+
+        self.assertEqual(
+            [item["max_occupancy"] for item in available],
+            [6, 3, 2],
+        )
+        self.assertEqual(
+            [item["required_room_quantity"] for item in available],
+            [1, 2, 3],
+        )
+        self.assertTrue(all(item["occupancy_exact_match"] for item in available))
+
+    def test_availability_hides_room_type_when_required_room_quantity_is_unavailable(self):
+        self.room_type.default_inventory = 1
+        self.room_type.save(update_fields=["default_inventory"])
+
+        available = availability_for_hotel(
+            self.hotel, self.check_in, self.check_out, adults=6, children=0,
+        )
+
+        self.assertEqual(available, [])
+
+    def test_estimate_warns_and_create_rejects_insufficient_guest_capacity(self):
+        payload = self.payload()
+        payload["rooms"] = [{
+            "core_room_type_id": self.room_type.core_room_type_id,
+            "rate_plan_id": self.rate_plan.id,
+            "quantity": 1,
+            "adults": 6,
+            "children": 0,
+            "extra_beds": 1,
+        }]
+
+        estimate = estimate_booking(payload)
+
+        self.assertFalse(estimate["can_create_booking"])
+        self.assertEqual(estimate["rooms"][0]["guest_capacity"], 4)
+        self.assertEqual(estimate["rooms"][0]["guest_capacity_shortfall"], 2)
+        self.assertFalse(estimate["rooms"][0]["can_accommodate_guests"])
+        self.assertIn("2 more guest(s)", estimate["rooms"][0]["capacity_warning"])
+        with self.assertRaisesMessage(ValidationError, "capacity for 2 more guest(s) is required"):
+            create_booking(payload)
+
+    def test_availability_splits_room_type_by_physical_extra_bed_capacity(self):
+        self.room_type.default_inventory = 6
+        self.room_type.save(update_fields=["default_inventory"])
+        for number in range(1, 5):
+            PhysicalRoom.objects.create(
+                hotel=self.hotel,
+                room_type=self.room_type,
+                room_number=f"EXTRA-3-{number}",
+                ota_enabled=True,
+                ota_sale_open=True,
+                core_snapshot={"extra_bed_available": True, "extra_bed_quantity": 3},
+            )
+        for number in range(1, 3):
+            PhysicalRoom.objects.create(
+                hotel=self.hotel,
+                room_type=self.room_type,
+                room_number=f"EXTRA-0-{number}",
+                ota_enabled=True,
+                ota_sale_open=True,
+                core_snapshot={"extra_bed_available": False, "extra_bed_quantity": 0},
+            )
+
+        available = availability_for_hotel(
+            self.hotel, self.check_in, self.check_out, adults=1, children=0,
+        )
+
+        self.assertEqual([item["extra_bed_count"] for item in available], [3, 0])
+        self.assertEqual([item["available_rooms"] for item in available], [4, 2])
+        self.assertEqual([item["extra_bed_quantity"] for item in available], [12, 0])
+        self.assertEqual(
+            [item["availability_variant_id"] for item in available],
+            [f"{self.room_type.id}:3", f"{self.room_type.id}:0"],
+        )
+
+    def test_booking_validates_and_assigns_selected_extra_bed_variant(self):
+        self.room_type.default_inventory = 2
+        self.room_type.core_snapshot = {
+            "extra_bed_available": True,
+            "extra_bed_quantity": 3,
+        }
+        self.room_type.save(update_fields=["default_inventory", "core_snapshot"])
+        capable_room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="EXTRA-CAPABLE",
+            ota_enabled=True,
+            ota_sale_open=True,
+            core_snapshot={"extra_bed_available": True, "extra_bed_quantity": 3},
+        )
+        PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="NO-EXTRA",
+            ota_enabled=True,
+            ota_sale_open=True,
+            core_snapshot={"extra_bed_available": False, "extra_bed_quantity": 0},
+        )
+        payload = self.payload()
+        payload["rooms"] = [{
+            "core_room_type_id": self.room_type.core_room_type_id,
+            "rate_plan_id": self.rate_plan.id,
+            "quantity": 1,
+            "adults": 3,
+            "children": 0,
+            "extra_bed_count": 3,
+            "extra_beds": 1,
+        }]
+
+        booking, _ = create_booking(payload)
+        payment = record_payment(booking, {
+            "provider": Payment.Provider.CASH,
+            "amount": booking.grand_total,
+            "status": Payment.Status.PAID,
+        })
+
+        self.assertIsNotNone(payment.receipt_number)
+        assignment = RoomAssignment.objects.get(booking_room__booking=booking)
+        self.assertEqual(assignment.physical_room_id, capable_room.id)
+        invalid_payload = self.payload()
+        invalid_payload["rooms"] = [{
+            **payload["rooms"][0],
+            "extra_beds": 4,
+        }]
+        with self.assertRaisesMessage(ValidationError, "allows at most 3 extra bed(s)"):
+            estimate_booking(invalid_payload)
+
     def test_foreigner_uses_foreigner_period_and_daily_prices(self):
         foreign_rate_plan = RatePlan.objects.create(
             room_type=self.room_type,
@@ -3044,7 +3216,7 @@ class BookingApiTests(BookingServiceTests):
         self.assertIn("receipt_url", data["rooms"][0])
         self.assertEqual(
             data["rooms"][0]["invoice_url"],
-            f"/api/v1/admin/bookings/{newer.id}/stay-bill/",
+            f"/api/v1/public/bookings/{newer.public_token}/invoices/{payment.invoice_id}/pdf/",
         )
         self.assertEqual(
             data["rooms"][0]["receipt_url"],
@@ -3157,7 +3329,7 @@ class BookingApiTests(BookingServiceTests):
         current_record = history_data["ota_records"][0]
         self.assertEqual(
             current_record["invoice_url"],
-            f"/api/v1/admin/bookings/{current.id}/stay-bill/",
+            f"/api/v1/public/bookings/{current.public_token}/invoices/{current_payment.invoice_id}/pdf/",
         )
         self.assertEqual(
             current_record["receipt_url"],
@@ -4467,6 +4639,81 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(event["booking_code"], booking.booking_code)
         self.assertIn("invoice_url", event)
         self.assertIn("receipt_url", event)
+
+    def test_physical_room_active_invoices_are_sorted_by_check_in(self):
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="ACTIVE-INVOICE-ROOM",
+            core_physical_room_id=99102,
+        )
+
+        def assigned_paid_booking(reference, check_in, status):
+            booking = Booking.objects.create(
+                reference=reference,
+                hotel=self.hotel,
+                status=status,
+                source=Booking.Source.OTA,
+                check_in=check_in,
+                check_out=check_in + timedelta(days=1),
+                contact_name=f"{reference} Guest",
+                contact_phone="091111111",
+                grand_total=Decimal("80000"),
+            )
+            booking_room = BookingRoom.objects.create(
+                booking=booking,
+                room_type=self.room_type,
+                rate_plan=self.rate_plan,
+                quantity=1,
+                adults=1,
+                total=Decimal("80000"),
+            )
+            RoomAssignment.objects.create(
+                booking_room=booking_room,
+                physical_room=room,
+            )
+            payment = record_payment(booking, {
+                "provider": Payment.Provider.CASH,
+                "amount": booking.grand_total,
+                "status": Payment.Status.PAID,
+            })
+            return booking, payment
+
+        later, later_payment = assigned_paid_booking(
+            "LATER-STAY", self.check_in + timedelta(days=3), Booking.Status.CONFIRMED,
+        )
+        earlier, earlier_payment = assigned_paid_booking(
+            "EARLIER-STAY", self.check_in, Booking.Status.CHECKED_IN,
+        )
+        response = self.client.get(
+            f"/api/v1/admin/physical-rooms/{room.core_physical_room_id}/active-invoices/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.data["data"]
+        self.assertEqual(data["ordering"], "check_in")
+        self.assertEqual(
+            [item["booking_reference"] for item in data["records"]],
+            ["EARLIER-STAY", "LATER-STAY"],
+        )
+        self.assertEqual(
+            [item["reservation_status"] for item in data["records"]],
+            ["occupied", "reserved"],
+        )
+        first = data["records"][0]
+        self.assertEqual(
+            first["invoice_url"],
+            f"/api/v1/public/bookings/{earlier.public_token}/invoices/{earlier_payment.invoice_id}/pdf/",
+        )
+        self.assertEqual(
+            first["receipt_url"],
+            f"/api/v1/public/bookings/{earlier.public_token}/receipts/{earlier_payment.id}/pdf/",
+        )
+        self.assertTrue(first["invoices"][0]["invoice_pdf_url"].endswith(
+            f"/api/v1/public/bookings/{earlier.public_token}/invoices/{earlier_payment.invoice_id}/pdf/"
+        ))
 
     def test_public_booking_form_data_parses_meal_plan_ids_json_string(self):
         breakfast = MealPlan.objects.create(

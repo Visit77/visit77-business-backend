@@ -128,7 +128,7 @@ def finalize_receipt_snapshot(payment):
     return payment
 
 
-def render_receipt_pdf(snapshot):
+def _render_payment_document_pdf(snapshot, document_title, document_number):
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer, pagesize=A4, rightMargin=18 * mm, leftMargin=18 * mm,
@@ -156,8 +156,8 @@ def render_receipt_pdf(snapshot):
     ], colWidths=[105 * mm, 54 * mm]))
     story.extend([Spacer(1, 3 * mm), Table([[""]], colWidths=[159 * mm], rowHeights=[0.4], style=[("BACKGROUND", (0, 0), (-1, -1), border)]), Spacer(1, 4 * mm)])
     story.append(Table([
-        [Paragraph("<b>Receipt</b>", title), Paragraph(f"<b>Booking ID:</b> &nbsp; {booking['booking_code']}<br/><b>Payment Date:</b> &nbsp; {payment_date}", small)],
-        [Paragraph(snapshot["receipt_number"], styles["BodyText"]), ""],
+        [Paragraph(f"<b>{document_title}</b>", title), Paragraph(f"<b>Booking ID:</b> &nbsp; {booking['booking_code']}<br/><b>Payment Date:</b> &nbsp; {payment_date}", small)],
+        [Paragraph(document_number, styles["BodyText"]), ""],
     ], colWidths=[105 * mm, 54 * mm]))
     story.append(Spacer(1, 4 * mm))
 
@@ -212,6 +212,14 @@ def render_receipt_pdf(snapshot):
 
     doc.build(story, onFirstPage=footer, onLaterPages=footer)
     return buffer.getvalue()
+
+
+def render_receipt_pdf(snapshot):
+    return _render_payment_document_pdf(snapshot, "Receipt", snapshot["receipt_number"])
+
+
+def render_invoice_pdf(snapshot):
+    return _render_payment_document_pdf(snapshot, "Invoice", snapshot["invoice_number"])
 
 
 @transaction.atomic

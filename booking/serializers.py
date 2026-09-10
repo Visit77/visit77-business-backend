@@ -48,22 +48,32 @@ DEFAULT_CANCELLATION_POLICY = {
 }
 
 
-def booking_invoice_url(booking):
-    if not booking or not list(booking.invoices.all()):
-        return None
-    return f"/api/v1/admin/bookings/{booking.id}/stay-bill/"
-
-
-def booking_receipt_url(booking):
+def _latest_receipt_payment(booking):
     if not booking:
         return None
     payments = [payment for payment in booking.payments.all() if payment.receipt_number]
     if not payments:
         return None
-    payment = max(
+    return max(
         payments,
         key=lambda item: (item.paid_at or item.created_at, item.created_at, str(item.id)),
     )
+
+
+def booking_invoice_url(booking):
+    payment = _latest_receipt_payment(booking)
+    if not payment or not payment.invoice_id:
+        return None
+    return (
+        f"/api/v1/public/bookings/{booking.public_token}/"
+        f"invoices/{payment.invoice_id}/pdf/"
+    )
+
+
+def booking_receipt_url(booking):
+    payment = _latest_receipt_payment(booking)
+    if not payment:
+        return None
     return (
         f"/api/v1/public/bookings/{booking.public_token}/"
         f"receipts/{payment.id}/pdf/"
@@ -1237,6 +1247,17 @@ class InvoiceSerializer(serializers.ModelSerializer):
     balance = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     invoice_details = serializers.SerializerMethodField()
     charge_groups = serializers.SerializerMethodField()
+    invoice_pdf_url = serializers.SerializerMethodField()
+
+    def get_invoice_pdf_url(self, obj):
+        if not any(payment.receipt_number for payment in obj.receipts.all()):
+            return None
+        path = (
+            f"/api/v1/public/bookings/{obj.booking.public_token}/"
+            f"invoices/{obj.id}/pdf/"
+        )
+        request = self.context.get("request")
+        return request.build_absolute_uri(path) if request else path
 
     def get_charge_groups(self, obj):
         room_lines = []
@@ -1448,6 +1469,7 @@ class RequestedRoomSerializer(serializers.Serializer):
     adults = serializers.IntegerField(min_value=1, max_value=100, default=1)
     children = serializers.IntegerField(min_value=0, max_value=100, default=0)
     extra_beds = serializers.IntegerField(min_value=0, max_value=20, default=0)
+    extra_bed_count = serializers.IntegerField(min_value=0, max_value=20, required=False)
     preferences = RequestedRoomPreferenceSerializer(required=False, default=dict)
 
     def validate(self, attrs):

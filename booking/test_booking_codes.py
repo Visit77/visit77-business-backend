@@ -255,6 +255,18 @@ class BookingCodeTests(TestCase):
             f'inline; filename="{payment.receipt_number}.pdf"',
         )
         self.assertTrue(b"".join(response.streaming_content).startswith(b"%PDF"))
+        invoice_url = (
+            f"/api/v1/public/bookings/{booking.public_token}/"
+            f"invoices/{payment.invoice_id}/pdf/"
+        )
+        invoice_response = self.client.get(invoice_url)
+        self.assertEqual(invoice_response.status_code, 200)
+        self.assertEqual(invoice_response["Content-Type"], "application/pdf")
+        self.assertEqual(
+            invoice_response["Content-Disposition"],
+            f'inline; filename="{payment.invoice_number}.pdf"',
+        )
+        self.assertTrue(b"".join(invoice_response.streaming_content).startswith(b"%PDF"))
         payment.refresh_from_db()
         original_name = payment.receipt_pdf.name
         with payment.receipt_pdf.open("rb") as receipt_file:

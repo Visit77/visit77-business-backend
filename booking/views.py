@@ -1,4 +1,5 @@
 from collections import defaultdict
+from io import BytesIO
 from datetime import datetime, time, timedelta, timezone as datetime_timezone
 from decimal import Decimal
 import json
@@ -649,6 +650,27 @@ class PublicReceiptPDFView(APIView):
             content_type="application/pdf",
             as_attachment=False,
             filename=f"{payment.receipt_number}.pdf",
+        )
+
+
+class PublicInvoicePDFView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request, public_token, invoice_id):
+        payment = Payment.objects.filter(
+            invoice_id=invoice_id,
+            booking__public_token=public_token,
+            receipt_number__isnull=False,
+        ).order_by("-paid_at", "-created_at").first()
+        if not payment:
+            raise NotFound("Paid invoice not found.")
+        from booking.booking_services.receipt import finalize_receipt_snapshot, render_invoice_pdf
+        payment = finalize_receipt_snapshot(payment)
+        return FileResponse(
+            BytesIO(render_invoice_pdf(payment.receipt_snapshot)),
+            content_type="application/pdf",
+            as_attachment=False,
+            filename=f"{payment.invoice_number}.pdf",
         )
 
 
@@ -3200,6 +3222,74 @@ class PhysicalRoomViewSet(AdminModelViewSet):
                 note=room.note,
                 metadata={"note_changed": True, "previous_note": previous_note},
             )
+
+    @action(detail=True, methods=["get"], url_path="active-invoices")
+    def active_invoices(self, request, pk=None):
+        room = self.filter_queryset(self.get_queryset()).filter(
+            core_physical_room_id=pk,
+        ).first()
+        if room is None:
+            raise NotFound("Physical room was not found for the supplied core physical room ID.")
+        assignments = RoomAssignment.objects.filter(
+            physical_room=room,
+            released_at__isnull=True,
+            booking_room__booking__status__in=[
+                Booking.Status.CONFIRMED,
+                Booking.Status.CHECKED_IN,
+            ],
+        ).select_related(
+            "booking_room__booking",
+        ).prefetch_related(
+            "booking_room__booking__guests",
+            "booking_room__booking__payments",
+            "booking_room__booking__invoices__lines",
+            "booking_room__booking__invoices__receipts",
+        ).order_by(
+            "booking_room__booking__check_in",
+            "booking_room__booking__check_out",
+            "id",
+        )
+        records = []
+        for assignment in assignments:
+            booking = assignment.booking_room.booking
+            primary_guest = next(
+                (guest for guest in booking.guests.all() if guest.is_primary),
+                None,
+            )
+            records.append({
+                "assignment_id": assignment.id,
+                "reservation_status": (
+                    "occupied"
+                    if booking.status == Booking.Status.CHECKED_IN
+                    else "reserved"
+                ),
+                "booking_id": str(booking.id),
+                "booking_code": booking.booking_code,
+                "booking_reference": booking.reference,
+                "booking_status": booking.status,
+                "check_in": booking.check_in,
+                "check_out": booking.check_out,
+                "guest": {
+                    "name": primary_guest.name if primary_guest else booking.contact_name,
+                    "phone": primary_guest.phone if primary_guest else booking.contact_phone,
+                },
+                "invoice_url": booking_invoice_url(booking),
+                "receipt_url": booking_receipt_url(booking),
+                "invoices": InvoiceSerializer(
+                    booking.invoices.all(), many=True, context={"request": request},
+                ).data,
+            })
+        return success({
+            "physical_room": {
+                "id": room.id,
+                "core_physical_room_id": room.core_physical_room_id,
+                "room_number": room.room_number,
+                "status": room.status,
+            },
+            "ordering": "check_in",
+            "count": len(records),
+            "records": records,
+        })
 
     @action(detail=True, methods=["get"], url_path="history")
     def history(self, request, pk=None):
