@@ -3100,6 +3100,11 @@ class BookingApiTests(BookingServiceTests):
         past_far, past_far_assignment = assigned_booking(
             "OTA-PAST-FAR", today - timedelta(days=8), today - timedelta(days=6), Booking.Status.CHECKED_OUT,
         )
+        current_payment = record_payment(current, {
+            "provider": Payment.Provider.CASH,
+            "amount": current.grand_total,
+            "status": Payment.Status.PAID,
+        })
         RoomAssignment.objects.filter(id__in=[past_near_assignment.id, past_far_assignment.id]).update(
             released_at=timezone.now(),
         )
@@ -3148,6 +3153,15 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(
             [item["booking_reference"] for item in history_data["ota_records"]],
             ["OTA-CURRENT", "OTA-UPCOMING-NEAR", "OTA-UPCOMING-FAR", "OTA-PAST-NEAR", "OTA-PAST-FAR"],
+        )
+        current_record = history_data["ota_records"][0]
+        self.assertEqual(
+            current_record["invoice_url"],
+            f"/api/v1/admin/bookings/{current.id}/stay-bill/",
+        )
+        self.assertEqual(
+            current_record["receipt_url"],
+            f"/api/v1/public/bookings/{current.public_token}/receipts/{current_payment.id}/pdf/",
         )
 
         for timeline_status, expected_references in [

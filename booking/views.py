@@ -1668,6 +1668,7 @@ class OTARoomSelectionView(APIView):
             "booking_room__booking",
         ).prefetch_related(
             "booking_room__booking__invoices",
+            "booking_room__booking__payments",
         ))
         records_by_room = defaultdict(list)
         active_booking_counts = defaultdict(int)
@@ -1724,6 +1725,8 @@ class OTARoomSelectionView(APIView):
                 "invoice_count": len(invoices),
                 "invoices": invoices,
                 "stay_bill_url": f"/api/v1/admin/bookings/{booking.id}/stay-bill/",
+                "invoice_url": booking_invoice_url(booking),
+                "receipt_url": booking_receipt_url(booking),
             }))
         for room_id, records in records_by_room.items():
             records_by_room[room_id] = [payload for _key, payload in sorted(records, key=lambda item: item[0])]
