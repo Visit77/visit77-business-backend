@@ -1112,22 +1112,22 @@ class BookingServiceTests(TestCase):
 
     def test_estimate_warns_and_create_rejects_insufficient_guest_capacity(self):
         payload = self.payload()
+        payload["adults"] = 6
+        payload["children"] = 0
         payload["rooms"] = [{
             "core_room_type_id": self.room_type.core_room_type_id,
             "rate_plan_id": self.rate_plan.id,
             "quantity": 1,
-            "adults": 6,
-            "children": 0,
             "extra_beds": 1,
         }]
 
         estimate = estimate_booking(payload)
 
         self.assertFalse(estimate["can_create_booking"])
-        self.assertEqual(estimate["rooms"][0]["guest_capacity"], 4)
-        self.assertEqual(estimate["rooms"][0]["guest_capacity_shortfall"], 2)
-        self.assertFalse(estimate["rooms"][0]["can_accommodate_guests"])
-        self.assertIn("2 more guest(s)", estimate["rooms"][0]["capacity_warning"])
+        self.assertEqual(estimate["occupancy"], 6)
+        self.assertEqual(estimate["guest_capacity"], 4)
+        self.assertEqual(estimate["guest_capacity_shortfall"], 2)
+        self.assertIn("2 more guest(s)", estimate["warning"])
         with self.assertRaisesMessage(ValidationError, "capacity for 2 more guest(s) is required"):
             create_booking(payload)
 
@@ -1216,6 +1216,73 @@ class BookingServiceTests(TestCase):
         }]
         with self.assertRaisesMessage(ValidationError, "allows at most 3 extra bed(s)"):
             estimate_booking(invalid_payload)
+
+    def test_common_guest_counts_cover_multiple_variants_of_same_room_type(self):
+        self.room_type.max_occupancy = 2
+        self.room_type.max_adults = 2
+        self.room_type.default_inventory = 2
+        self.room_type.core_snapshot = {
+            "extra_bed_available": True,
+            "extra_bed_quantity": 2,
+        }
+        self.room_type.save(update_fields=[
+            "max_occupancy", "max_adults", "default_inventory", "core_snapshot",
+        ])
+        extra_room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="COMMON-EXTRA-2",
+            ota_enabled=True,
+            ota_sale_open=True,
+            core_snapshot={"extra_bed_available": True, "extra_bed_quantity": 2},
+        )
+        no_extra_room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="COMMON-EXTRA-0",
+            ota_enabled=True,
+            ota_sale_open=True,
+            core_snapshot={"extra_bed_available": False, "extra_bed_quantity": 0},
+        )
+        payload = self.payload()
+        payload["adults"] = 6
+        payload["children"] = 0
+        payload["rooms"] = [
+            {
+                "core_room_type_id": self.room_type.core_room_type_id,
+                "rate_plan_id": self.rate_plan.id,
+                "quantity": 1,
+                "extra_bed_count": 2,
+                "extra_beds": 2,
+            },
+            {
+                "core_room_type_id": self.room_type.core_room_type_id,
+                "rate_plan_id": self.rate_plan.id,
+                "quantity": 1,
+                "extra_bed_count": 0,
+                "extra_beds": 0,
+            },
+        ]
+
+        estimate = estimate_booking(payload)
+        self.assertTrue(estimate["can_create_booking"])
+        self.assertEqual(estimate["occupancy"], 6)
+        self.assertEqual(estimate["guest_capacity"], 6)
+        booking, _ = create_booking(payload)
+        record_payment(booking, {
+            "provider": Payment.Provider.CASH,
+            "amount": booking.grand_total,
+            "status": Payment.Status.PAID,
+        })
+
+        assigned_ids = set(RoomAssignment.objects.filter(
+            booking_room__booking=booking,
+        ).values_list("physical_room_id", flat=True))
+        self.assertEqual(assigned_ids, {extra_room.id, no_extra_room.id})
+        self.assertEqual(
+            sum(booking.rooms.values_list("adults", flat=True)),
+            6,
+        )
 
     def test_foreigner_uses_foreigner_period_and_daily_prices(self):
         foreign_rate_plan = RatePlan.objects.create(

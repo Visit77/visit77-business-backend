@@ -1330,6 +1330,15 @@ def _lock_inventory(room_type, dates):
     return list(DailyInventory.objects.select_for_update().filter(room_type=room_type, stay_date__in=dates).order_by("stay_date"))
 
 
+def booking_guest_counts(data):
+    if "adults" in data or "children" in data:
+        return data.get("adults", 1), data.get("children", 0)
+    return (
+        sum(room.get("adults", 1) for room in data["rooms"]),
+        sum(room.get("children", 0) for room in data["rooms"]),
+    )
+
+
 def estimate_booking(data):
     hotel = Hotel.objects.get(core_business_id=data["core_business_id"], is_active=True)
     check_in, check_out = data["check_in"], data["check_out"]
@@ -1345,7 +1354,9 @@ def estimate_booking(data):
     selected_room_count = 0
     selected_extra_bed_count = 0
     selected_breakfast_count = 0
-    capacity_warnings = []
+    common_adults, common_children = booking_guest_counts(data)
+    occupancy = common_adults + common_children
+    total_guest_capacity = 0
     for requested in data["rooms"]:
         try:
             room_type = RoomType.objects.get(
@@ -1364,20 +1375,10 @@ def estimate_booking(data):
             raise ValidationError({"rooms": "A selected room type or rate plan is unavailable."})
         quantity = requested["quantity"]
         extra_beds = requested.get("extra_beds", 0)
-        selected_extra_bed_count = validate_extra_bed_variant(
+        selected_extra_bed_variant_count = validate_extra_bed_variant(
             room_type, dates, requested, quantity,
         )
-        requested_guest_count = requested.get("adults", 1) + requested.get("children", 0)
-        selected_guest_capacity = room_type.max_occupancy * quantity + extra_beds
-        guest_capacity_shortfall = max(requested_guest_count - selected_guest_capacity, 0)
-        can_accommodate_guests = guest_capacity_shortfall == 0
-        capacity_warning = None
-        if not can_accommodate_guests:
-            capacity_warning = (
-                f"{room_type.name} selection has capacity for {selected_guest_capacity} guest(s); "
-                f"add room or extra-bed capacity for {guest_capacity_shortfall} more guest(s)."
-            )
-            capacity_warnings.append(capacity_warning)
+        total_guest_capacity += room_type.max_occupancy * quantity + extra_beds
         preference_snapshot, option_total = resolve_room_preferences(
             room_type,
             requested.get("preferences") or {},
@@ -1508,12 +1509,7 @@ def estimate_booking(data):
             "rate_plan_name": rate_plan.name,
             "quantity": quantity,
             "extra_beds": requested.get("extra_beds", 0),
-            "extra_bed_count": selected_extra_bed_count,
-            "guest_count": requested_guest_count,
-            "guest_capacity": selected_guest_capacity,
-            "guest_capacity_shortfall": guest_capacity_shortfall,
-            "can_accommodate_guests": can_accommodate_guests,
-            "capacity_warning": capacity_warning,
+            "extra_bed_count": selected_extra_bed_variant_count,
             "preference_snapshot": preference_snapshot,
             "option_total": option_total,
             "meal_plan": meal_plan_snapshot,
@@ -1530,6 +1526,14 @@ def estimate_booking(data):
         summary_text_parts.append(f"{len(dates)} Night{'s' if len(dates) != 1 else ''}")
     if selected_extra_bed_count:
         summary_text_parts.append(f"{selected_extra_bed_count} Extra Bed{'s' if selected_extra_bed_count != 1 else ''}")
+    guest_capacity_shortfall = max(occupancy - total_guest_capacity, 0)
+    can_create_booking = guest_capacity_shortfall == 0
+    capacity_warning = None
+    if not can_create_booking:
+        capacity_warning = (
+            f"Selected rooms have capacity for {total_guest_capacity} guest(s); "
+            f"add room or extra-bed capacity for {guest_capacity_shortfall} more guest(s)."
+        )
     return {
         "hotel": {
             "id": hotel.id,
@@ -1542,6 +1546,11 @@ def estimate_booking(data):
         "nights": len(dates),
         "currency": hotel.base_currency,
         "guests": data.get("guests", []),
+        "adults": common_adults,
+        "children": common_children,
+        "occupancy": occupancy,
+        "guest_capacity": total_guest_capacity,
+        "guest_capacity_shortfall": guest_capacity_shortfall,
         "rooms": rooms,
         "summary_items": summary_items,
         "summary_text": " x ".join(summary_text_parts[:2]) + (
@@ -1558,8 +1567,9 @@ def estimate_booking(data):
         "formatted_room_total": format_money(room_total, hotel.base_currency),
         "formatted_breakfast_total": format_money(breakfast_total, hotel.base_currency),
         "formatted_grand_total": format_money(grand_total, hotel.base_currency),
-        "can_create_booking": not capacity_warnings,
-        "warnings": capacity_warnings,
+        "can_create_booking": can_create_booking,
+        "warning": capacity_warning,
+        "warnings": [capacity_warning] if capacity_warning else [],
     }
 
 
@@ -1603,6 +1613,11 @@ def create_booking(data, idempotency_key=None):
     booking_currency = hotel.base_currency
     guest_market = data.get("guest_market", RatePlan.GuestMarket.LOCAL)
     policy_snapshot = {}
+    common_adults, common_children = booking_guest_counts(data)
+    occupancy = common_adults + common_children
+    total_guest_capacity = 0
+    created_booking_rooms = []
+    uses_common_guest_counts = "adults" in data or "children" in data
     for requested in data["rooms"]:
         try:
             room_type = RoomType.objects.get(hotel=hotel, core_room_type_id=requested["core_room_type_id"], booking_enabled=True, core_active=True)
@@ -1618,16 +1633,7 @@ def create_booking(data, idempotency_key=None):
         selected_extra_bed_count = validate_extra_bed_variant(
             room_type, dates, requested, quantity,
         )
-        guest_count = requested.get("adults", 1) + requested.get("children", 0)
-        guest_capacity = room_type.max_occupancy * quantity + requested.get("extra_beds", 0)
-        if guest_count > guest_capacity:
-            shortfall = guest_count - guest_capacity
-            raise ValidationError({
-                "rooms": (
-                    f"{room_type.name} selection has capacity for {guest_capacity} guest(s); "
-                    f"capacity for {shortfall} more guest(s) is required."
-                )
-            })
+        total_guest_capacity += room_type.max_occupancy * quantity + requested.get("extra_beds", 0)
         preference_snapshot, option_total = resolve_room_preferences(
             room_type,
             requested.get("preferences") or {},
@@ -1658,7 +1664,7 @@ def create_booking(data, idempotency_key=None):
             room_type=room_type,
             rate_plan=rate_plan,
             quantity=quantity,
-            adults=requested.get("adults", 1),
+            adults=requested.get("adults", 0 if uses_common_guest_counts else 1),
             children=requested.get("children", 0),
             extra_beds=requested.get("extra_beds", 0),
             meal_plan_link=meal_plan_link,
@@ -1739,8 +1745,31 @@ def create_booking(data, idempotency_key=None):
             "meal_plan_snapshot", "meal_plan_snapshots", "meal_plan_total",
             "breakfast_total", "total",
         ])
+        created_booking_rooms.append(booking_room)
         room_total += item_total
         policy_snapshot[str(rate_plan.id)] = rate_plan.cancellation_policy
+
+    if occupancy > total_guest_capacity:
+        shortfall = occupancy - total_guest_capacity
+        raise ValidationError({
+            "rooms": (
+                f"Selected rooms have capacity for {total_guest_capacity} guest(s); "
+                f"capacity for {shortfall} more guest(s) is required."
+            )
+        })
+    if uses_common_guest_counts:
+        remaining_adults = common_adults
+        remaining_children = common_children
+        for booking_room in created_booking_rooms:
+            capacity = booking_room.room_type.max_occupancy * booking_room.quantity + booking_room.extra_beds
+            assigned_adults = min(remaining_adults, capacity)
+            remaining_adults -= assigned_adults
+            remaining_capacity = capacity - assigned_adults
+            assigned_children = min(remaining_children, remaining_capacity)
+            remaining_children -= assigned_children
+            booking_room.adults = assigned_adults
+            booking_room.children = assigned_children
+            booking_room.save(update_fields=["adults", "children"])
 
     add_on_total = Decimal("0")
     for requested in data.get("add_ons", []):

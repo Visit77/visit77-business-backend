@@ -1466,8 +1466,8 @@ class RequestedRoomSerializer(serializers.Serializer):
     )
     breakfast_selected = serializers.BooleanField(required=False, default=False)
     quantity = serializers.IntegerField(min_value=1, max_value=20)
-    adults = serializers.IntegerField(min_value=1, max_value=100, default=1)
-    children = serializers.IntegerField(min_value=0, max_value=100, default=0)
+    adults = serializers.IntegerField(min_value=1, max_value=100, required=False)
+    children = serializers.IntegerField(min_value=0, max_value=100, required=False)
     extra_beds = serializers.IntegerField(min_value=0, max_value=20, default=0)
     extra_bed_count = serializers.IntegerField(min_value=0, max_value=20, required=False)
     preferences = RequestedRoomPreferenceSerializer(required=False, default=dict)
@@ -1642,6 +1642,8 @@ class BookingCreateSerializer(serializers.Serializer):
     contact_phone = serializers.CharField(max_length=64)
     contact_email = serializers.EmailField(required=False, allow_blank=True)
     guest_market = serializers.ChoiceField(choices=RatePlan.GuestMarket.choices, default=RatePlan.GuestMarket.LOCAL)
+    adults = serializers.IntegerField(min_value=1, max_value=100, required=False)
+    children = serializers.IntegerField(min_value=0, max_value=100, required=False)
     special_request = serializers.CharField(required=False, allow_blank=True)
     rooms = RequestedRoomSerializer(many=True, allow_empty=False)
     guests = RequestedGuestSerializer(many=True, required=False)
@@ -1652,6 +1654,14 @@ class BookingCreateSerializer(serializers.Serializer):
             raise serializers.ValidationError({"check_out": "Must be after check_in."})
         if (attrs["check_out"] - attrs["check_in"]).days > 90:
             raise serializers.ValidationError({"check_out": "A stay cannot exceed 90 nights."})
+        has_common_guests = "adults" in attrs or "children" in attrs
+        has_room_guests = any(
+            "adults" in room or "children" in room for room in attrs["rooms"]
+        )
+        if has_common_guests and has_room_guests:
+            raise serializers.ValidationError({
+                "rooms": "Send adults and children at booking level or room level, not both."
+            })
         return attrs
 
 
@@ -1736,6 +1746,8 @@ class BookingEstimateSerializer(serializers.Serializer):
     check_in = serializers.DateField()
     check_out = serializers.DateField()
     guest_market = serializers.ChoiceField(choices=RatePlan.GuestMarket.choices, default=RatePlan.GuestMarket.LOCAL)
+    adults = serializers.IntegerField(min_value=1, max_value=100, required=False)
+    children = serializers.IntegerField(min_value=0, max_value=100, required=False)
     rooms = RequestedRoomSerializer(many=True, allow_empty=False)
     add_ons = RequestedAddOnSerializer(many=True, required=False)
     guests = RequestedGuestSerializer(many=True, required=False, default=list)
@@ -1745,6 +1757,14 @@ class BookingEstimateSerializer(serializers.Serializer):
             raise serializers.ValidationError({"check_out": "Must be after check_in."})
         if (attrs["check_out"] - attrs["check_in"]).days > 90:
             raise serializers.ValidationError({"check_out": "A stay cannot exceed 90 nights."})
+        has_common_guests = "adults" in attrs or "children" in attrs
+        has_room_guests = any(
+            "adults" in room or "children" in room for room in attrs["rooms"]
+        )
+        if has_common_guests and has_room_guests:
+            raise serializers.ValidationError({
+                "rooms": "Send adults and children at booking level or room level, not both."
+            })
         return attrs
 
 
