@@ -1045,7 +1045,7 @@ class BookingServiceTests(TestCase):
         booking, _ = create_booking(self.payload())
         self.assertEqual(booking.grand_total, Decimal("540000"))
 
-    def test_availability_uses_enough_rooms_for_total_guest_occupancy_and_prioritizes_exact_fit(self):
+    def test_availability_uses_enough_rooms_and_orders_room_types_by_lowest_price(self):
         six_guest_room = RoomType.objects.create(
             hotel=self.hotel,
             core_room_type_id=302,
@@ -1064,13 +1064,17 @@ class BookingServiceTests(TestCase):
             max_occupancy=2,
             default_inventory=3,
         )
+        prices = {
+            six_guest_room.id: Decimal("90000"),
+            two_guest_room.id: Decimal("70000"),
+        }
         for room_type in [six_guest_room, two_guest_room]:
             RatePlan.objects.create(
                 room_type=room_type,
                 code=f"local-{room_type.id}",
                 name="Local Rate",
                 guest_market=RatePlan.GuestMarket.LOCAL,
-                default_price=Decimal("80000"),
+                default_price=prices[room_type.id],
             )
         for room_type, count, prefix in [
             (self.room_type, 3, "THREE"),
@@ -1092,11 +1096,11 @@ class BookingServiceTests(TestCase):
 
         self.assertEqual(
             [item["max_occupancy"] for item in available],
-            [6, 3, 2],
+            [2, 3, 6],
         )
         self.assertEqual(
             [item["required_room_quantity"] for item in available],
-            [1, 2, 3],
+            [3, 2, 1],
         )
         self.assertTrue(all(item["occupancy_exact_match"] for item in available))
 
@@ -1109,6 +1113,50 @@ class BookingServiceTests(TestCase):
         )
 
         self.assertEqual(available, [])
+
+    def test_availability_uses_combined_capacity_across_hotel_room_types(self):
+        self.room_type.default_inventory = 1
+        self.room_type.save(update_fields=["default_inventory"])
+        PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="MIXED-THREE-1",
+            ota_enabled=True,
+            ota_sale_open=True,
+        )
+        second_room_type = RoomType.objects.create(
+            hotel=self.hotel,
+            core_room_type_id=304,
+            name="Second Three Guest Room",
+            max_adults=3,
+            max_children=0,
+            max_occupancy=3,
+            default_inventory=1,
+        )
+        RatePlan.objects.create(
+            room_type=second_room_type,
+            code="local-second-three",
+            name="Local Rate",
+            guest_market=RatePlan.GuestMarket.LOCAL,
+            default_price=Decimal("80000"),
+        )
+        PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=second_room_type,
+            room_number="MIXED-THREE-2",
+            ota_enabled=True,
+            ota_sale_open=True,
+        )
+
+        available = availability_for_hotel(
+            self.hotel, self.check_in, self.check_out, adults=6, children=0,
+        )
+
+        self.assertEqual(len(available), 2)
+        self.assertEqual(sum(
+            item["available_rooms"] * item["max_occupancy"]
+            for item in available
+        ), 6)
 
     def test_estimate_warns_and_create_rejects_insufficient_guest_capacity(self):
         payload = self.payload()
@@ -2161,6 +2209,130 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(refreshed.data["data"]["payment_summary"]["amount_due"], Decimal("0"))
         self.assertEqual(refreshed.data["data"]["payment_summary"]["payment_status"], "paid")
 
+    def test_check_in_additions_update_partially_paid_original_invoice(self):
+        add_on = AddOn.objects.create(
+            hotel=self.hotel,
+            code="deposit-addition",
+            name="Deposit Addition",
+            pricing_unit=AddOn.PricingUnit.PER_BOOKING,
+            price=Decimal("30000"),
+            currency="MMK",
+        )
+        booking = create_admin_reservation({
+            **self.payload(),
+            "source": Booking.Source.PMS,
+            "payment": {
+                "payment_type": Payment.Type.DEPOSIT,
+                "provider": Payment.Provider.CASH,
+                "status": Payment.Status.PAID,
+                "amount": Decimal("50000"),
+            },
+        })
+        original_invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
+        original_payment_id = booking.payments.get().id
+
+        response = self.client.patch(
+            f"/api/v1/admin/bookings/{booking.id}/check-in-form/",
+            {"add_ons": [{"add_on_id": add_on.id, "quantity": 1, "configuration": {}}]},
+            format="json",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        booking.refresh_from_db()
+        original_invoice.refresh_from_db()
+        self.assertEqual(booking.payments.count(), 1)
+        self.assertEqual(booking.payments.get().id, original_payment_id)
+        self.assertEqual(booking.invoices.count(), 1)
+        self.assertEqual(original_invoice.total, booking.grand_total)
+        self.assertEqual(original_invoice.balance, booking.grand_total - Decimal("50000"))
+        self.assertEqual(original_invoice.status, Invoice.Status.PARTIALLY_PAID)
+
+        balance = self.client.post(
+            f"/api/v1/admin/bookings/{booking.id}/payment/",
+            {"payment_type": "balance", "provider": "cash"},
+            format="json",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(balance.status_code, 201, balance.data)
+        self.assertEqual(booking.payments.count(), 2)
+        self.assertEqual(
+            booking.payments.values_list("invoice_id", flat=True).distinct().count(),
+            1,
+        )
+
+    def test_check_in_additions_create_supplemental_invoice_after_full_payment(self):
+        add_on = AddOn.objects.create(
+            hotel=self.hotel,
+            code="paid-addition",
+            name="Paid Addition",
+            pricing_unit=AddOn.PricingUnit.PER_BOOKING,
+            price=Decimal("30000"),
+            currency="MMK",
+        )
+        booking = create_admin_reservation({
+            **self.payload(),
+            "source": Booking.Source.PMS,
+            "payment": {
+                "payment_type": Payment.Type.FULL_PAYMENT,
+                "provider": Payment.Provider.CASH,
+                "status": Payment.Status.PAID,
+            },
+        })
+        original_invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
+        original_total = original_invoice.total
+        original_payment_id = booking.payments.get().id
+
+        response = self.client.patch(
+            f"/api/v1/admin/bookings/{booking.id}/check-in-form/",
+            {"add_ons": [{"add_on_id": add_on.id, "quantity": 1, "configuration": {}}]},
+            format="json",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        booking.refresh_from_db()
+        original_invoice.refresh_from_db()
+        supplemental = booking.invoices.exclude(pk=original_invoice.pk).get()
+        self.assertEqual(original_invoice.status, Invoice.Status.PAID)
+        self.assertEqual(original_invoice.total, original_total)
+        self.assertEqual(supplemental.invoice_type, Invoice.Type.EXTRA_SERVICE)
+        self.assertEqual(supplemental.total, Decimal("30000"))
+        self.assertEqual(supplemental.balance, Decimal("30000"))
+        self.assertEqual(booking.payments.get().id, original_payment_id)
+        self.assertEqual(response.data["data"]["payment_summary"]["amount_due"], Decimal("30000"))
+
+        balance = self.client.post(
+            f"/api/v1/admin/bookings/{booking.id}/payment/",
+            {"payment_type": "balance", "provider": "cash"},
+            format="json",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(balance.status_code, 201, balance.data)
+        self.assertEqual(balance.data["data"]["invoice"], supplemental.id)
+        supplemental.refresh_from_db()
+        self.assertEqual(supplemental.status, Invoice.Status.PAID)
+
+        detail = self.client.get(
+            f"/api/v1/admin/bookings/{booking.id}/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertEqual(len(detail.data["data"]["invoices"]), 2)
+        for invoice_data in detail.data["data"]["invoices"]:
+            self.assertTrue({
+                "id", "invoice_number", "invoice_type", "status", "currency",
+                "lines", "receipts", "subtotal", "tax_total", "discount_total",
+                "total", "paid_amount", "balance", "payment_breakdown",
+                "invoice_details", "charge_groups", "invoice_pdf_url", "is_closed",
+                "issued_at", "created_at", "updated_at", "booking",
+            }.issubset(invoice_data.keys()))
+
     def test_check_in_form_updates_reservation_dates_capacity_and_guests(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-U")
         self.rate_plan.extra_bed_base_price = Decimal("10000")
@@ -2301,7 +2473,7 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(booking.payments.count(), payment_count)
         self.assertEqual(response.data["data"]["payment_summary"]["amount_due"], Decimal("0"))
 
-    def test_check_in_form_replaces_full_payment_after_room_quantity_is_reduced(self):
+    def test_check_in_form_rejects_reducing_a_fully_paid_invoice(self):
         booking = create_admin_reservation({
             **self.payload(),
             "source": Booking.Source.PMS,
@@ -2342,14 +2514,12 @@ class BookingApiTests(BookingServiceTests):
             HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
         )
 
-        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.status_code, 400, response.data)
         booking.refresh_from_db()
-        self.assertLess(booking.grand_total, original_total)
-        self.assertEqual(booking.rooms.get().quantity, 1)
+        self.assertEqual(booking.grand_total, original_total)
+        self.assertEqual(booking.rooms.get().quantity, 2)
         self.assertEqual(booking.payments.count(), 1)
-        self.assertEqual(booking.amount_paid, booking.grand_total)
-        self.assertEqual(booking.payments.get().amount, booking.grand_total)
-        self.assertEqual(response.data["data"]["payment_summary"]["amount_due"], Decimal("0"))
+        self.assertEqual(booking.amount_paid, original_total)
 
     def test_check_in_form_accepts_multi_room_payment_and_photo_multipart_fields(self):
         first_room = PhysicalRoom.objects.create(

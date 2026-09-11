@@ -1076,7 +1076,7 @@ def availability_for_hotels(hotels, check_in, check_out, adults=1, children=0, g
                 "refundable": plan.refundable,
                 "cancellation_policy": plan.cancellation_policy,
             })
-        if room_plans and available >= required_room_quantity:
+        if room_plans and available > 0:
             breakfast, _breakfast_unit_price = _resolve_booking_breakfast(
                 room_type,
                 {"breakfast_selected": room_type.breakfast_plan_type in {
@@ -1191,10 +1191,18 @@ def availability_for_hotels(hotels, check_in, check_out, adults=1, children=0, g
             })
             results[room_type.hotel_id].append(base_payload)
     for hotel_id in results:
+        hotel_capacity = sum(
+            item["available_rooms"] * item["max_occupancy"]
+            for item in results[hotel_id]
+        )
+        if hotel_capacity < adults + children:
+            results[hotel_id] = []
+            continue
         results[hotel_id].sort(key=lambda item: (
-            item["required_room_quantity"],
-            item["required_room_capacity"] - item["guest_count"],
-            -item["max_occupancy"],
+            min(
+                (plan["base_total"] for plan in item["rate_plans"]),
+                default=Decimal("0"),
+            ),
             item["room_type_id"],
         ))
     return results
@@ -1759,6 +1767,10 @@ def release_checked_in_room_inventory(assignment):
 def _sync_invoice_status(invoice):
     if invoice.status == Invoice.Status.VOID:
         return invoice
+    # A payment may have just been created after this invoice's receipts were
+    # prefetched. Drop that stale relation cache before calculating the balance.
+    if hasattr(invoice, "_prefetched_objects_cache"):
+        invoice._prefetched_objects_cache.pop("receipts", None)
     paid_amount = invoice.paid_amount
     invoice.status = (
         Invoice.Status.PAID if invoice.total <= paid_amount
@@ -2030,6 +2042,107 @@ def sync_initial_invoice(booking):
     return _sync_invoice_status(invoice)
 
 
+def _charge_line_key(line):
+    metadata = line.get("metadata", {}) if isinstance(line, dict) else (line.metadata or {})
+    line_type = metadata.get("line_type", "other")
+    identifiers = {
+        "room": metadata.get("core_room_type_id"),
+        "extra_bed": metadata.get("core_room_type_id"),
+        "room_option": metadata.get("core_room_type_id"),
+        "meal_plan": metadata.get("meal_plan_id"),
+        "breakfast": metadata.get("meal_plan_id"),
+        "add_on": metadata.get("add_on_id"),
+    }
+    return line_type, identifiers.get(line_type), (
+        line.get("description", "") if isinstance(line, dict) else line.description
+    ) if identifiers.get(line_type) is None else ""
+
+
+def _replace_invoice_lines(invoice, lines, *, tax_total=Decimal("0"), discount_total=Decimal("0")):
+    invoice.lines.all().delete()
+    subtotal = sum(
+        (Decimal(str(item["quantity"])) * Decimal(str(item["unit_price"])) for item in lines),
+        Decimal("0"),
+    )
+    InvoiceLine.objects.bulk_create([
+        InvoiceLine(
+            invoice=invoice,
+            description=item["description"],
+            quantity=Decimal(str(item["quantity"])),
+            unit_price=Decimal(str(item["unit_price"])),
+            total=Decimal(str(item["quantity"])) * Decimal(str(item["unit_price"])),
+            metadata=item.get("metadata", {}),
+        )
+        for item in lines
+    ])
+    invoice.subtotal = subtotal
+    invoice.tax_total = Decimal(str(tax_total or 0))
+    invoice.discount_total = Decimal(str(discount_total or 0))
+    invoice.total = invoice.subtotal + invoice.tax_total - invoice.discount_total
+    invoice.save(update_fields=["subtotal", "tax_total", "discount_total", "total", "updated_at"])
+    return _sync_invoice_status(invoice)
+
+
+def sync_booking_charge_invoices(booking):
+    """Reprice an unpaid original invoice, or put post-payment deltas on a new invoice."""
+    initial = ensure_initial_invoice(booking)
+    if initial.status != Invoice.Status.PAID:
+        return _replace_invoice_lines(
+            initial,
+            _booking_charge_lines(booking),
+            tax_total=booking.tax_total,
+            discount_total=booking.discount_total,
+        )
+
+    current_lines = _booking_charge_lines(booking)
+    supplemental = booking.invoices.filter(
+        note="Additional stay charges",
+    ).exclude(status__in=[Invoice.Status.PAID, Invoice.Status.VOID]).order_by("-issued_at", "-id").first()
+    locked_invoices = booking.invoices.exclude(status=Invoice.Status.VOID)
+    if supplemental:
+        locked_invoices = locked_invoices.exclude(pk=supplemental.pk)
+
+    invoiced_by_key = defaultdict(lambda: Decimal("0"))
+    for line in InvoiceLine.objects.filter(invoice__in=locked_invoices):
+        invoiced_by_key[_charge_line_key(line)] += line.total
+
+    additional_lines = []
+    for item in current_lines:
+        current_total = Decimal(str(item["quantity"])) * Decimal(str(item["unit_price"]))
+        additional_total = current_total - invoiced_by_key.pop(_charge_line_key(item), Decimal("0"))
+        if additional_total > 0:
+            additional_lines.append({
+                "description": item["description"],
+                "quantity": 1,
+                "unit_price": additional_total,
+                "metadata": {**item.get("metadata", {}), "supplemental": True},
+            })
+        elif additional_total < 0:
+            raise ValidationError({
+                "invoice": "Paid invoice charges cannot be reduced. Refund or void the paid charge first."
+            })
+    if any(amount > 0 for amount in invoiced_by_key.values()):
+        raise ValidationError({
+            "invoice": "Paid invoice charges cannot be removed. Refund or void the paid charge first."
+        })
+
+    if not additional_lines:
+        if supplemental and not supplemental.receipts.exists():
+            supplemental.status = Invoice.Status.VOID
+            supplemental.voided_at = timezone.now()
+            supplemental.save(update_fields=["status", "voided_at", "updated_at"])
+        return initial
+
+    if supplemental:
+        return _replace_invoice_lines(supplemental, additional_lines)
+    return create_invoice(
+        booking,
+        Invoice.Type.EXTRA_SERVICE,
+        additional_lines,
+        note="Additional stay charges",
+    )
+
+
 @transaction.atomic
 def record_payment(booking, data, auto_assign=True):
     booking = Booking.objects.select_for_update().get(pk=booking.pk)
@@ -2088,23 +2201,25 @@ def record_payment(booking, data, auto_assign=True):
 
 @transaction.atomic
 def replace_booking_payment_snapshot(booking, data):
-    """Replace demo check-in payments with the form's latest payment state."""
+    """Record the check-in payment without deleting reservation payments."""
     booking = Booking.objects.select_for_update().get(pk=booking.pk)
-    booking.payments.all().delete()
-    booking.amount_paid = Decimal("0")
-    booking.save(update_fields=["amount_paid", "updated_at"])
-    for invoice in booking.invoices.all():
-        _sync_invoice_status(invoice)
-
-    if booking.grand_total <= 0:
+    invoice = next((
+        item for item in booking.invoices.prefetch_related("receipts").order_by("issued_at", "id")
+        if item.balance > 0 and item.status != Invoice.Status.VOID
+    ), None)
+    if invoice is None:
         return None
 
     payment_data = dict(data)
+    amount_due = invoice.balance
     if payment_data.get("payment_type") in {
         Payment.Type.FULL_PAYMENT,
         Payment.Type.BALANCE,
     } or "amount" not in payment_data:
-        payment_data["amount"] = booking.grand_total
+        payment_data["amount"] = amount_due
+    if booking.amount_paid > 0 and payment_data.get("payment_type") == Payment.Type.FULL_PAYMENT:
+        payment_data["payment_type"] = Payment.Type.BALANCE
+    payment_data["invoice_id"] = invoice.id
     return record_payment(booking, payment_data, auto_assign=False)
 
 
@@ -2684,7 +2799,7 @@ def update_reservation_for_check_in(booking, data, *, replace_payment=False):
         "guest_market", "special_request", "currency", "room_total", "add_on_total",
         "tax_total", "discount_total", "grand_total", "cancellation_policy_snapshot", "updated_at",
     ])
-    sync_initial_invoice(booking)
+    sync_booking_charge_invoices(booking)
     # create_booking() creates the replacement's provisional invoice as well.
     # It is only a calculation container; the real stay keeps its own invoices.
     replacement.invoices.all().delete()

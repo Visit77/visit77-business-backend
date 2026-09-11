@@ -1259,6 +1259,39 @@ class InvoiceSerializer(serializers.ModelSerializer):
     invoice_details = serializers.SerializerMethodField()
     charge_groups = serializers.SerializerMethodField()
     invoice_pdf_url = serializers.SerializerMethodField()
+    payment_breakdown = serializers.SerializerMethodField()
+    is_closed = serializers.SerializerMethodField()
+
+    @staticmethod
+    def get_is_closed(obj):
+        return obj.status in {Invoice.Status.PAID, Invoice.Status.VOID}
+
+    @staticmethod
+    def get_payment_breakdown(obj):
+        breakdown = {
+            "deposit_paid": Decimal("0"),
+            "full_payment_paid": Decimal("0"),
+            "balance_paid": Decimal("0"),
+            "refunded_amount": Decimal("0"),
+        }
+        payments = list(obj.receipts.all())
+        for payment in payments:
+            breakdown["refunded_amount"] += payment.refunded_amount
+            if payment.status not in {Payment.Status.PAID, Payment.Status.PARTIALLY_REFUNDED}:
+                continue
+            net_amount = payment.amount - payment.refunded_amount
+            key = {
+                Payment.Type.DEPOSIT: "deposit_paid",
+                Payment.Type.FULL_PAYMENT: "full_payment_paid",
+                Payment.Type.BALANCE: "balance_paid",
+            }[payment.payment_type]
+            breakdown[key] += net_amount
+        return {
+            **{key: f"{value:.2f}" for key, value in breakdown.items()},
+            "paid_amount": f"{obj.paid_amount:.2f}",
+            "amount_due": f"{obj.balance:.2f}",
+            "payment_count": len(payments),
+        }
 
     def get_invoice_pdf_url(self, obj):
         if not any(payment.receipt_number for payment in obj.receipts.all()):
