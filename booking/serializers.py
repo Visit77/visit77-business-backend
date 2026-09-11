@@ -1235,7 +1235,7 @@ class PaymentSerializer(serializers.ModelSerializer):
     def get_receipt_pdf_url(self, obj):
         if not obj.receipt_number:
             return None
-        path = f"/api/v1/public/bookings/{obj.booking.public_token}/receipts/{obj.id}/pdf/"
+        path = f"api/v1/public/bookings/{obj.booking.public_token}/receipts/{obj.id}/pdf/"
         request = self.context.get("request")
         return request.build_absolute_uri(path) if request else path
 
