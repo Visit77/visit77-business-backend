@@ -17,6 +17,7 @@ from django.utils.text import slugify
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 
@@ -4685,10 +4686,122 @@ class WalkInBookingV2View(APIView):
 
 class AdminReservationView(APIView):
     permission_classes = [HasBookingAdminKey]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     business_scoped = True
 
+    @staticmethod
+    def _multipart_data(request):
+        data = request.data.dict() if hasattr(request.data, "dict") else request.data.copy()
+        nested_guests = {}
+        identity_photos = {}
+        nested_payment = {}
+        nested_rooms = {}
+        guest_pattern = re.compile(
+            r"^guests?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+        )
+        payment_pattern = re.compile(
+            r"^payment\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+        )
+        room_pattern = re.compile(
+            r"^rooms?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+        )
+        room_preference_pattern = re.compile(
+            r"^rooms?\[(\d+)\]\[(?:['\"])?preferences(?:['\"])?\]"
+            r"\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+        )
+
+        for key, value in request.data.items():
+            guest_match = guest_pattern.match(key)
+            if guest_match:
+                index = int(guest_match.group(1))
+                field = guest_match.group(2)
+                if field in {"photo", "identity_photo"}:
+                    if key in request.FILES:
+                        identity_photos[index] = request.FILES[key]
+                    continue
+                nested_guests.setdefault(index, {})[field] = value
+                continue
+
+            payment_match = payment_pattern.match(key)
+            if payment_match:
+                nested_payment[payment_match.group(1)] = value
+                continue
+
+            preference_match = room_preference_pattern.match(key)
+            if preference_match:
+                index = int(preference_match.group(1))
+                field = preference_match.group(2)
+                nested_rooms.setdefault(index, {}).setdefault("preferences", {})[field] = value
+                continue
+
+            room_match = room_pattern.match(key)
+            if room_match:
+                index = int(room_match.group(1))
+                field = room_match.group(2)
+                if field in {"preferences", "meal_plan_ids", "physical_room_ids"} and isinstance(value, str):
+                    try:
+                        value = json.loads(value)
+                    except (TypeError, ValueError):
+                        raise ValidationError({key: "Must be valid JSON."})
+                nested_rooms.setdefault(index, {})[field] = value
+
+        if nested_guests:
+            indexes = sorted(nested_guests)
+            if indexes != list(range(len(indexes))):
+                raise ValidationError({"guests": "Guest indexes must start at 0 and be consecutive."})
+            data["guests"] = [nested_guests[index] for index in indexes]
+        if nested_payment:
+            data["payment"] = nested_payment
+        if nested_rooms:
+            indexes = sorted(nested_rooms)
+            if indexes != list(range(len(indexes))):
+                raise ValidationError({"rooms": "Room indexes must start at 0 and be consecutive."})
+            data["rooms"] = [nested_rooms[index] for index in indexes]
+
+        for field in ("guests", "payment", "rooms"):
+            raw_value = data.get(field)
+            if isinstance(raw_value, str):
+                try:
+                    data[field] = json.loads(raw_value)
+                except (TypeError, ValueError):
+                    raise ValidationError({field: "Must be valid JSON when using multipart/form-data."})
+
+        scoped_business_id = getattr(request, "booking_core_business_id", None)
+        if not data.get("core_business_id") and scoped_business_id:
+            data["core_business_id"] = scoped_business_id
+
+        for index, room_data in enumerate(data.get("rooms") or []):
+            physical_room_id = room_data.pop("physical_room_id", None)
+            if physical_room_id:
+                room_data.setdefault("physical_room_ids", [physical_room_id])
+                room_data.setdefault("quantity", 1)
+                physical_room = PhysicalRoom.objects.select_related("room_type", "hotel").filter(
+                    id=physical_room_id,
+                    is_active=True,
+                ).first()
+                if not physical_room:
+                    raise ValidationError({f"rooms[{index}][physical_room_id]": "Physical room not found."})
+                if scoped_business_id and physical_room.hotel.core_business_id != scoped_business_id:
+                    raise ValidationError({
+                        f"rooms[{index}][physical_room_id]": "Physical room does not belong to this business."
+                    })
+                room_data.setdefault("core_room_type_id", physical_room.room_type.core_room_type_id)
+
+        if any(
+            "adults" in room_data or "children" in room_data
+            for room_data in data.get("rooms") or []
+        ):
+            # Some PMS clients send summary guest counts at booking level as
+            # well as the authoritative allocation for each selected room.
+            data.pop("adults", None)
+            data.pop("children", None)
+
+        return data, identity_photos
+
+    @transaction.atomic
     def post(self, request):
-        serializer = AdminReservationCreateSerializer(data=request.data)
+        data, identity_photos = self._multipart_data(request)
+        serializer = AdminReservationCreateSerializer(data=data)
         serializer.is_valid(raise_exception=True)
         booking = create_admin_reservation(
             serializer.validated_data,
@@ -4698,6 +4811,23 @@ class AdminReservationView(APIView):
         _record_booking_room_assignments(
             booking, request, PhysicalRoomActionHistory.Action.RESERVED,
         )
+        guests = list(booking.guests.order_by("id"))
+        guest_data = serializer.validated_data.get("guests") or []
+        for index, photo in identity_photos.items():
+            if index >= len(guests):
+                raise ValidationError({f"guest[{index}][photo]": "Guest index does not exist."})
+            identity = guest_data[index]
+            GuestIdentityDocument.objects.create(
+                guest=guests[index],
+                document_type=GuestIdentityDocument.DocumentType.IDENTITY_PHOTO,
+                document_number=(
+                    identity.get("identity_number")
+                    or identity.get("nrc_number")
+                    or identity.get("passport_number")
+                    or ""
+                ),
+                file=photo,
+            )
         return success(
             {
                 "booking": BookingSerializer(booking, context={"request": request}).data,

@@ -3860,6 +3860,60 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(room.status, PhysicalRoom.Status.VACANT)
         self.assertTrue(response.data["data"]["verification"]["can_check_in"])
 
+    def test_phone_reservation_accepts_bracket_notation_multipart_form_data(self):
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="305-MULTIPART",
+        )
+        response = self.client.post(
+            "/api/v1/admin/reservations/",
+            {
+                "check_in": str(self.check_in),
+                "check_out": str(self.check_out),
+                "contact_name": "Mg Mg",
+                "contact_phone": "1234567890",
+                "guest_market": "local",
+                "adults": "1",
+                "children": "0",
+                "guest[0][name]": "Mg Mg",
+                "guest[0][identity_type]": "nrc",
+                "guest[0][nrc_number]": "/ABC(N)654321",
+                "guest[0][is_primary]": "true",
+                "guest[0][photo]": SimpleUploadedFile(
+                    "mg-mg.jpg", b"identity-image", content_type="image/jpeg",
+                ),
+                "rooms[0][physical_room_id]": str(room.id),
+                "rooms[0][rate_plan_id]": str(self.rate_plan.id),
+                "rooms[0][adults]": "2",
+                "rooms[0][children]": "0",
+                "rooms[0][extra_beds]": "0",
+                "rooms[0][breakfast_selected]": "false",
+                "payment[payment_type]": "deposit",
+                "payment[provider]": "cash",
+                "payment[status]": "paid",
+                "payment[amount]": "50000.00",
+            },
+            format="multipart",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        booking = Booking.objects.get(id=response.data["data"]["booking"]["id"])
+        self.assertEqual(booking.guests.count(), 1)
+        self.assertEqual(booking.payments.get().amount, Decimal("50000.00"))
+        self.assertFalse(booking.rooms.get().breakfast_snapshot["selected"])
+        self.assertEqual(
+            booking.rooms.get().assignments.get().physical_room_id,
+            room.id,
+        )
+        self.assertTrue(
+            booking.guests.get().identity_documents.filter(
+                document_type=GuestIdentityDocument.DocumentType.IDENTITY_PHOTO,
+            ).exists()
+        )
+
     def test_future_reservation_accepts_occupied_room_after_current_checkout(self):
         room = PhysicalRoom.objects.create(
             hotel=self.hotel,
