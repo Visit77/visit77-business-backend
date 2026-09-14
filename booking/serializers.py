@@ -134,6 +134,16 @@ class HotelSerializer(serializers.ModelSerializer):
 
 class PublicHotelSerializer(serializers.ModelSerializer):
     direct_booking_package = serializers.CharField(source="package", read_only=True)
+    latitude = serializers.SerializerMethodField()
+    longitude = serializers.SerializerMethodField()
+
+    @staticmethod
+    def get_latitude(obj):
+        return (obj.core_snapshot or {}).get("latitude")
+
+    @staticmethod
+    def get_longitude(obj):
+        return (obj.core_snapshot or {}).get("longitude")
 
     class Meta:
         model = Hotel
@@ -144,6 +154,8 @@ class PublicHotelSerializer(serializers.ModelSerializer):
             "address",
             "phone",
             "cover_image_url",
+            "latitude",
+            "longitude",
             "base_currency",
             "direct_booking_package",
             "check_in_time",
@@ -1176,6 +1188,8 @@ class BookingRoomSerializer(serializers.ModelSerializer):
     assigned_physical_rooms = serializers.SerializerMethodField()
     breakfast = serializers.SerializerMethodField()
     breakfast_selected = serializers.SerializerMethodField()
+    meal_plans = serializers.SerializerMethodField()
+    meal_plan_ids = serializers.SerializerMethodField()
     extra_bed_count = serializers.IntegerField(source="extra_beds", read_only=True)
 
     def get_breakfast(self, obj):
@@ -1183,6 +1197,20 @@ class BookingRoomSerializer(serializers.ModelSerializer):
 
     def get_breakfast_selected(self, obj):
         return bool((obj.breakfast_snapshot or {}).get("selected"))
+
+    @staticmethod
+    def get_meal_plans(obj):
+        snapshots = obj.meal_plan_snapshots or []
+        if not snapshots and obj.meal_plan_snapshot:
+            snapshots = [obj.meal_plan_snapshot]
+        return snapshots
+
+    def get_meal_plan_ids(self, obj):
+        return [
+            snapshot["meal_plan_id"]
+            for snapshot in self.get_meal_plans(obj)
+            if snapshot.get("meal_plan_id") is not None
+        ]
 
     def get_assigned_physical_rooms(self, obj):
         return [

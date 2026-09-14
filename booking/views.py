@@ -647,6 +647,7 @@ class PublicBookingEstimateView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
+        logger.info("PublicBookingEstimateView POST request data: %s", request.data)
         serializer = BookingEstimateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:

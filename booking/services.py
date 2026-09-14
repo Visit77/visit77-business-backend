@@ -8,6 +8,8 @@ from django.db import transaction
 from django.db.models import F, Q
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
+import logging
+logger = logging.getLogger(__name__)
 
 from booking.add_on_templates import validate_configuration_values
 from booking.models import (
@@ -1240,6 +1242,7 @@ def booking_guest_counts(data):
 
 
 def estimate_booking(data):
+    logger.info(data)
     hotel = Hotel.objects.get(core_business_id=data["core_business_id"], is_active=True)
     check_in, check_out = data["check_in"], data["check_out"]
     if check_out <= check_in:

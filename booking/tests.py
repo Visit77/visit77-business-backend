@@ -14,7 +14,7 @@ from rest_framework_simplejwt.backends import TokenBackend
 
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import CoreIntegrationError, sync_business_from_core
-from booking.serializers import InvoiceSerializer
+from booking.serializers import BookingRoomSerializer, InvoiceSerializer, PublicHotelSerializer
 from booking.services import auto_assign_physical_rooms_for_booking, auto_cancel_no_show_reservations, availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, estimate_booking, record_payment, refund_payment, refund_quote, sync_guest_profile
 
 
@@ -724,6 +724,15 @@ class BookingServiceTests(TestCase):
         self.assertEqual(estimate["rooms"][0]["meal_plan_total"], Decimal("200000"))
         self.assertEqual(len(estimate["rooms"][0]["meal_plans"]), 2)
         self.assertEqual(len(booking_room.meal_plan_snapshots), 2)
+        serialized_room = BookingRoomSerializer(booking_room).data
+        self.assertEqual(
+            serialized_room["meal_plan_ids"],
+            [breakfast.id, dinner.id],
+        )
+        self.assertEqual(
+            [item["name"] for item in serialized_room["meal_plans"]],
+            ["Breakfast Package", "Dinner Package"],
+        )
         self.assertEqual(meal_plan_lines.count(), 2)
         self.assertEqual(
             list(meal_plan_lines.values_list("total", flat=True)),
@@ -1547,6 +1556,15 @@ class BookingServiceTests(TestCase):
 
 @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key", CORE_JWT_SIGNING_KEY="test-core-jwt-key")
 class BookingApiTests(BookingServiceTests):
+    def test_public_hotel_serializer_includes_coordinates_from_core_snapshot(self):
+        self.hotel.core_snapshot = {"latitude": 16.8409, "longitude": 96.1735}
+        self.hotel.save(update_fields=["core_snapshot"])
+
+        data = PublicHotelSerializer(self.hotel).data
+
+        self.assertEqual(data["latitude"], 16.8409)
+        self.assertEqual(data["longitude"], 96.1735)
+
     def test_bulk_ota_hotel_ids_returns_only_ota_sellable_candidates(self):
         PhysicalRoom.objects.create(
             hotel=self.hotel,
