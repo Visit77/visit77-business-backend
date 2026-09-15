@@ -154,7 +154,7 @@ def build_booking_confirmation_context(booking, primary_guest):
     }
 
 
-def send_booking_confirmation_email(booking):
+def send_booking_confirmation_email(booking, recipient_email=None):
     primary_guest = booking.guests.filter(is_primary=True).first()
 
     if not primary_guest:
@@ -163,7 +163,7 @@ def send_booking_confirmation_email(booking):
     if not primary_guest:
         return
 
-    recipient_email = primary_guest.email or booking.contact_email
+    recipient_email = recipient_email or primary_guest.email or booking.contact_email
 
     if not recipient_email:
         return

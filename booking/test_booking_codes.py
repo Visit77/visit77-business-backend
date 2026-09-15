@@ -26,7 +26,10 @@ from booking.booking_services.email import send_booking_confirmation_email
 from booking.booking_services.receipt import ensure_receipt_pdf
 from booking.serializers import BookingSerializer, InvoiceSerializer
 from booking.services import record_payment
-from booking.tasks import send_booking_confirmation_sms_task
+from booking.tasks import (
+    send_booking_confirmation_email_task,
+    send_booking_confirmation_sms_task,
+)
 
 
 class BookingCodeTests(TestCase):
@@ -356,3 +359,46 @@ class BookingCodeTests(TestCase):
         self.assertIn("Room: Standard Twin Room x 2", message)
         self.assertIn("Room: Deluxe Room x 1", message)
         self.assertNotIn(booking.reference, message)
+
+    @patch("booking.booking_services.email.EmailMultiAlternatives")
+    def test_ota_confirmation_also_emails_hotel_verification_contact(self, email_class_mock):
+        booking = self.create_booking("OTA-HOTEL-EMAIL")
+        self.hotel.core_snapshot = {
+            "booking_notification_email": "hotel-bookings@example.com",
+        }
+        self.hotel.save(update_fields=["core_snapshot"])
+        Guest.objects.create(
+            booking=booking,
+            name="Email Guest",
+            email="guest@example.com",
+            is_primary=True,
+        )
+
+        self.assertTrue(send_booking_confirmation_email_task(str(booking.id)))
+        self.assertEqual(email_class_mock.call_count, 2)
+        recipients = [call.kwargs["to"] for call in email_class_mock.call_args_list]
+        self.assertEqual(
+            recipients,
+            [["guest@example.com"], ["hotel-bookings@example.com"]],
+        )
+
+    @patch("booking.booking_services.sms.send_custom_sms")
+    def test_ota_confirmation_also_texts_hotel_verification_contact(self, send_sms_mock):
+        booking = self.create_booking("OTA-HOTEL-SMS")
+        self.hotel.core_snapshot = {
+            "booking_notification_phone_number": "+959333333333",
+        }
+        self.hotel.save(update_fields=["core_snapshot"])
+        Guest.objects.create(
+            booking=booking,
+            name="SMS Guest",
+            phone="09123456789",
+            is_primary=True,
+        )
+
+        self.assertTrue(send_booking_confirmation_sms_task(str(booking.id)))
+        self.assertEqual(send_sms_mock.call_count, 2)
+        recipients = [
+            call.kwargs["phone_no"] for call in send_sms_mock.call_args_list
+        ]
+        self.assertEqual(recipients, ["09123456789", "+959333333333"])

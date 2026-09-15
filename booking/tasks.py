@@ -11,6 +11,11 @@ from booking.models import Booking
 from booking.booking_services.email import send_booking_confirmation_email
 logger = logging.getLogger(__name__)
 
+
+def _hotel_booking_notification_contact(booking, field):
+    """Return the hotel booking contact provisioned from Core verification."""
+    return str((booking.hotel.core_snapshot or {}).get(field) or "").strip()
+
 @shared_task
 def expire_booking_holds_task():
     count = expire_pending_bookings()
@@ -53,14 +58,33 @@ def send_booking_confirmation_email_task(self, booking_id):
     )
 
     sent = send_booking_confirmation_email(booking)
+    hotel_sent = False
+    hotel_email = _hotel_booking_notification_contact(
+        booking, "booking_notification_email"
+    )
+    guest_emails = {
+        str(booking.contact_email or "").strip().lower(),
+        *{
+            str(email or "").strip().lower()
+            for email in booking.guests.values_list("email", flat=True)
+        },
+    }
+    if (
+        booking.source == Booking.Source.OTA
+        and hotel_email
+        and hotel_email.lower() not in guest_emails
+    ):
+        hotel_sent = send_booking_confirmation_email(
+            booking, recipient_email=hotel_email
+        )
 
-    if not sent:
+    if not sent and not hotel_sent:
         logger.info(
-            "Booking confirmation email skipped because booking %s has no email.",
+            "Booking confirmation email skipped because booking %s has no recipient email.",
             booking.booking_code,
         )
 
-    return sent
+    return bool(sent or hotel_sent)
 
 @shared_task(
     autoretry_for=(Exception,),
@@ -98,9 +122,6 @@ def send_booking_confirmation_sms_task(booking_id):
         else booking.contact_phone
     )
 
-    if not phone_no:
-        return False
-
     booking_url = (
         f"{settings.BOOKING_FRONTEND_URL.rstrip('/')}"
         f"/bookings/{booking.public_token}"
@@ -119,9 +140,17 @@ def send_booking_confirmation_sms_task(booking_id):
         f"View booking: {booking_url}"
     )
 
-    send_custom_sms(
-        phone_no=phone_no,
-        message=message,
-    )
+    recipients = []
+    if phone_no:
+        recipients.append(str(phone_no).strip())
+    if booking.source == Booking.Source.OTA:
+        hotel_phone = _hotel_booking_notification_contact(
+            booking, "booking_notification_phone_number"
+        )
+        if hotel_phone and hotel_phone not in recipients:
+            recipients.append(hotel_phone)
 
-    return True
+    for recipient in recipients:
+        send_custom_sms(phone_no=recipient, message=message)
+
+    return bool(recipients)
