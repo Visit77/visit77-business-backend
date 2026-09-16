@@ -208,6 +208,56 @@ class BookingCodeTests(TestCase):
         self.assertEqual(payment.receipt_snapshot["booking"]["booking_code"], booking.booking_code)
         self.assertEqual(payment.receipt_snapshot["provider"], Payment.Provider.CASH)
 
+    def test_receipt_groups_same_room_type_and_sums_quantity(self):
+        booking = self.create_booking("TEST-GROUPED-ROOM-RECEIPT")
+        booking.source = Booking.Source.PMS
+        booking.status = Booking.Status.CONFIRMED
+        booking.save(update_fields=["source", "status"])
+        room_type = RoomType.objects.create(
+            hotel=self.hotel,
+            core_room_type_id=82001,
+            name="Penthouse",
+        )
+        rate_plan = RatePlan.objects.create(
+            room_type=room_type,
+            code="penthouse-rate",
+            name="Penthouse Rate",
+            default_price=1000,
+        )
+        BookingRoom.objects.bulk_create([
+            BookingRoom(
+                booking=booking, room_type=room_type, rate_plan=rate_plan,
+                quantity=1, extra_beds=0,
+            ),
+            BookingRoom(
+                booking=booking, room_type=room_type, rate_plan=rate_plan,
+                quantity=1, extra_beds=1,
+            ),
+            BookingRoom(
+                booking=booking, room_type=room_type, rate_plan=rate_plan,
+                quantity=1, extra_beds=0,
+            ),
+        ])
+        invoice = Invoice.objects.create(
+            booking=booking,
+            currency="MMK",
+            subtotal=3000,
+            total=3000,
+        )
+
+        payment = record_payment(booking, {
+            "invoice_id": invoice.id,
+            "provider": Payment.Provider.CASH,
+            "amount": 3000,
+            "status": Payment.Status.PAID,
+        })
+
+        self.assertEqual(payment.receipt_snapshot["booking"]["rooms"], [{
+            "room_type": "Penthouse",
+            "quantity": 3,
+            "extra_beds": 1,
+        }])
+
     @override_settings(STORAGES={
         "default": {"BACKEND": "django.core.files.storage.InMemoryStorage"},
         "private": {"BACKEND": "django.core.files.storage.InMemoryStorage"},

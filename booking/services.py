@@ -137,7 +137,10 @@ def inventory_window_dates(start_date=None, days=None):
 
 def active_sellable_room_count(room_type):
     return room_type.physical_rooms.filter(is_active=True).exclude(
-        status=PhysicalRoom.Status.OUT_OF_SERVICE,
+        status__in=[
+            PhysicalRoom.Status.OUT_OF_SERVICE,
+            PhysicalRoom.Status.CLEANING,
+        ],
     ).count()
 
 
@@ -146,7 +149,10 @@ def active_ota_sellable_room_count(room_type):
         is_active=True,
         ota_enabled=True,
         ota_sale_open=True,
-    ).exclude(status=PhysicalRoom.Status.OUT_OF_SERVICE).count()
+    ).exclude(status__in=[
+        PhysicalRoom.Status.OUT_OF_SERVICE,
+        PhysicalRoom.Status.CLEANING,
+    ]).count()
 
 
 def sellable_room_count_for_date(room_type, stay_date, base_total=None):
@@ -157,6 +163,11 @@ def sellable_room_count_for_date(room_type, stay_date, base_total=None):
         is_active=True,
         start_date__lte=stay_date,
         end_date__gte=stay_date,
+    ).exclude(
+        physical_room__status__in=[
+            PhysicalRoom.Status.OUT_OF_SERVICE,
+            PhysicalRoom.Status.CLEANING,
+        ],
     )
     blocked_rooms = blocked_rooms.values("physical_room_id").distinct().count()
     return max(base_total - blocked_rooms, 0)
@@ -168,7 +179,10 @@ def ota_sellable_room_count_for_date(room_type, stay_date):
         ota_enabled=True,
         ota_sale_open=True,
     ).exclude(
-        status=PhysicalRoom.Status.OUT_OF_SERVICE,
+        status__in=[
+            PhysicalRoom.Status.OUT_OF_SERVICE,
+            PhysicalRoom.Status.CLEANING,
+        ],
     ).values_list("id", flat=True)
     blocked_room_ids = PhysicalRoomBlock.objects.filter(
         physical_room_id__in=eligible_room_ids,
@@ -872,7 +886,10 @@ def _available_physical_rooms_for_booking_room(booking_room):
             room_type=booking_room.room_type,
             is_active=True,
         )
-        .exclude(status=PhysicalRoom.Status.OUT_OF_SERVICE)
+        .exclude(status__in=[
+            PhysicalRoom.Status.OUT_OF_SERVICE,
+            PhysicalRoom.Status.CLEANING,
+        ])
         .exclude(id__in=overlapping_room_ids)
         .exclude(id__in=blocked_room_ids)
     )
@@ -1012,6 +1029,15 @@ def availability_for_hotels(
             else room_type.default_inventory
             for day in dates
         ], default=0)
+        # Keep existing inventory rows from exposing a room that is currently
+        # cleaning (or otherwise not sellable), even before a reconciliation.
+        available = min(
+            available,
+            min(
+                [sellable_room_count_for_date(room_type, day) for day in dates],
+                default=0,
+            ),
+        )
         if room_type.hotel.package in [Hotel.Package.OTA, Hotel.Package.OTA_PMS]:
             # DailyInventory is shared PMS capacity. Public OTA sales are
             # additionally limited to the hotel's selected/open OTA room pool.

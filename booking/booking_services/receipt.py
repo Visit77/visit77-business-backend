@@ -63,6 +63,17 @@ def build_receipt_snapshot(payment):
             Decimal("0"),
         )
     remaining = max((invoice.total if invoice else booking.grand_total) - paid_before - payment.amount, Decimal("0"))
+    grouped_rooms = {}
+    for room in booking.rooms.all():
+        room_key = room.room_type_id
+        if room_key not in grouped_rooms:
+            grouped_rooms[room_key] = {
+                "room_type": room.room_type.name,
+                "quantity": 0,
+                "extra_beds": 0,
+            }
+        grouped_rooms[room_key]["quantity"] += room.quantity
+        grouped_rooms[room_key]["extra_beds"] += room.extra_beds
     return {
         "version": 1,
         "receipt_number": payment.receipt_number,
@@ -82,14 +93,7 @@ def build_receipt_snapshot(payment):
             "nights": booking.nights,
             "hotel_name": booking.hotel.name,
             "hotel_address": booking.hotel.address,
-            "rooms": [
-                {
-                    "room_type": room.room_type.name,
-                    "quantity": room.quantity,
-                    "extra_beds": room.extra_beds,
-                }
-                for room in booking.rooms.all()
-            ],
+            "rooms": list(grouped_rooms.values()),
         },
         "guest": {
             "name": primary_guest.name if primary_guest else booking.contact_name,

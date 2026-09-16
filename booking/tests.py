@@ -205,6 +205,14 @@ class BookingServiceTests(TestCase):
             ota_enabled=False,
             ota_sale_open=True,
         )
+        PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="2-CLEANING",
+            status=PhysicalRoom.Status.CLEANING,
+            ota_enabled=True,
+            ota_sale_open=True,
+        )
         expected = PhysicalRoom.objects.create(
             hotel=self.hotel,
             room_type=self.room_type,
@@ -1139,6 +1147,33 @@ class BookingServiceTests(TestCase):
         )
 
         self.assertEqual(available, [])
+
+    def test_availability_excludes_cleaning_physical_rooms(self):
+        PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="AVAILABLE-1",
+            ota_enabled=True,
+            ota_sale_open=True,
+        )
+        PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="CLEANING-1",
+            status=PhysicalRoom.Status.CLEANING,
+            ota_enabled=True,
+            ota_sale_open=True,
+        )
+
+        available = availability_for_hotel(
+            self.hotel,
+            self.check_in,
+            self.check_out,
+            adults=2,
+            children=0,
+        )
+
+        self.assertEqual(available[0]["available_rooms"], 1)
 
     def test_availability_uses_combined_capacity_across_hotel_room_types(self):
         self.room_type.default_inventory = 1
