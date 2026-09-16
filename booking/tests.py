@@ -71,6 +71,23 @@ class BookingServiceTests(TestCase):
         self.assertEqual(booking.grand_total, Decimal("320000"))
         self.assertEqual(list(DailyInventory.objects.values_list("held_rooms", flat=True)), [2, 2])
 
+    def test_booking_room_serializer_includes_rate_plan_object_from_snapshot(self):
+        booking, _ = create_booking(self.payload())
+        booking_room = booking.rooms.select_related("rate_plan").get()
+
+        # A later catalog edit must not rewrite what the guest booked.
+        self.rate_plan.name = "Renamed Live Plan"
+        self.rate_plan.base_price = Decimal("999999")
+        self.rate_plan.save(update_fields=["name", "base_price"])
+
+        data = BookingRoomSerializer(booking_room).data
+
+        self.assertEqual(data["rate_plan_id"], self.rate_plan.id)
+        self.assertEqual(data["rate_plan"]["id"], self.rate_plan.id)
+        self.assertEqual(data["rate_plan"]["name"], "Local Standard")
+        self.assertEqual(data["rate_plan"]["base_price"], "80000.00")
+        self.assertEqual(data["rate_plan"]["base_currency"], "MMK")
+
     def test_idempotency_returns_original_booking_without_second_hold(self):
         first, _ = create_booking(self.payload(), "same-key")
         second, created = create_booking(self.payload(), "same-key")
@@ -1184,8 +1201,12 @@ class BookingServiceTests(TestCase):
         self.assertEqual(estimate["occupancy"], 6)
         self.assertEqual(estimate["guest_capacity"], 3)
         self.assertEqual(estimate["guest_capacity_shortfall"], 3)
-        self.assertIn("3 more guest(s)", estimate["warning"])
-        with self.assertRaisesMessage(ValidationError, "capacity for 3 more guest(s) is required"):
+        expected_warning = (
+            "Your room selection cannot accommodate 6 guests. "
+            "Please add more rooms or adjust your guest count to continue."
+        )
+        self.assertEqual(estimate["warning"], expected_warning)
+        with self.assertRaisesMessage(ValidationError, expected_warning):
             create_booking(payload)
 
     def test_availability_returns_one_record_per_room_type(self):
@@ -1556,6 +1577,47 @@ class BookingServiceTests(TestCase):
 
 @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key", CORE_JWT_SIGNING_KEY="test-core-jwt-key")
 class BookingApiTests(BookingServiceTests):
+    def test_admin_booking_detail_includes_rate_plan_object(self):
+        booking, _ = create_booking(self.payload())
+
+        response = self.client.get(
+            f"/api/v1/admin/bookings/{booking.id}/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        room = response.data["data"]["rooms"][0]
+        self.assertEqual(room["rate_plan_id"], self.rate_plan.id)
+        self.assertEqual(room["rate_plan"]["id"], self.rate_plan.id)
+        self.assertEqual(room["rate_plan"]["name"], self.rate_plan.name)
+        self.assertEqual(room["rate_plan"]["base_price"], "80000.00")
+
+    def test_public_availability_can_ignore_occupancy_filter(self):
+        PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="OTA-IGNORE-OCCUPANCY-1",
+            ota_enabled=True,
+            ota_sale_open=True,
+        )
+        url = f"/api/v1/public/hotels/{self.hotel.core_business_id}/availability/"
+        params = {
+            "check_in": self.check_in,
+            "check_out": self.check_out,
+            "adults": 7,
+            "children": 0,
+            "guest_market": "local",
+        }
+
+        normal = self.client.get(url, params)
+        self.assertEqual(normal.status_code, 200, normal.data)
+        self.assertEqual(normal.data["data"]["room_types"], [])
+
+        ignored = self.client.get(url, {**params, "ignore_occupancy": "true"})
+        self.assertEqual(ignored.status_code, 200, ignored.data)
+        self.assertEqual(len(ignored.data["data"]["room_types"]), 1)
+
     def test_public_hotel_serializer_includes_coordinates_from_core_snapshot(self):
         self.hotel.core_snapshot = {"latitude": 16.8409, "longitude": 96.1735}
         self.hotel.save(update_fields=["core_snapshot"])

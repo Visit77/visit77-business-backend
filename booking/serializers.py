@@ -1184,6 +1184,8 @@ class BookingRoomSerializer(serializers.ModelSerializer):
     nights = BookingRoomNightSerializer(many=True, read_only=True)
     room_type_name = serializers.CharField(source="room_type.name", read_only=True)
     room_type_id = serializers.CharField(source="room_type.id", read_only=True)
+    rate_plan = serializers.SerializerMethodField()
+    rate_plan_id = serializers.IntegerField(source="rate_plan.id", read_only=True)
     rate_plan_name = serializers.CharField(source="rate_plan.name", read_only=True)
     assigned_physical_rooms = serializers.SerializerMethodField()
     breakfast = serializers.SerializerMethodField()
@@ -1191,6 +1193,22 @@ class BookingRoomSerializer(serializers.ModelSerializer):
     meal_plans = serializers.SerializerMethodField()
     meal_plan_ids = serializers.SerializerMethodField()
     extra_bed_count = serializers.IntegerField(source="extra_beds", read_only=True)
+
+    @staticmethod
+    def get_rate_plan(obj):
+        """Return the booked snapshot while retaining live identifiers/state."""
+        plan = obj.rate_plan
+        snapshot = obj.rate_plan_snapshot or {}
+        data = RatePlanSerializer(plan).data
+        for field in (
+            "code", "name", "base_price", "usd_display_price",
+            "extra_bed_base_price", "extra_bed_usd_display_price",
+            "breakfast_included", "refundable", "cancellation_policy",
+        ):
+            if field in snapshot:
+                data[field] = snapshot[field]
+        data["base_currency"] = snapshot.get("base_currency") or data.get("currency")
+        return data
 
     def get_breakfast(self, obj):
         return obj.breakfast_snapshot or {}

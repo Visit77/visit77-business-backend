@@ -952,7 +952,10 @@ def _reference(prefix):
     return f"{prefix}-{stamp}-{timezone.now().strftime('%H%M%S%f')[-10:]}"
 
 
-def availability_for_hotels(hotels, check_in, check_out, adults=1, children=0, guest_market="local", display_currency=None):
+def availability_for_hotels(
+    hotels, check_in, check_out, adults=1, children=0, guest_market="local",
+    display_currency=None, ignore_occupancy=False,
+):
     if check_out <= check_in:
         raise ValidationError({"check_out": "Must be after check_in."})
     dates = list(stay_dates(check_in, check_out))
@@ -1197,7 +1200,7 @@ def availability_for_hotels(hotels, check_in, check_out, adults=1, children=0, g
             item["available_rooms"] * item["max_occupancy"]
             for item in results[hotel_id]
         )
-        if hotel_capacity < adults + children:
+        if not ignore_occupancy and hotel_capacity < adults + children:
             results[hotel_id] = []
             continue
         results[hotel_id].sort(key=lambda item: (
@@ -1216,9 +1219,13 @@ def availability_for_hotel(hotel, check_in, check_out, adults=1, children=0, gue
     )
 
 
-def availability_for_hotel_with_display(hotel, check_in, check_out, adults=1, children=0, guest_market="local", display_currency=None):
+def availability_for_hotel_with_display(
+    hotel, check_in, check_out, adults=1, children=0, guest_market="local",
+    display_currency=None, ignore_occupancy=False,
+):
     return availability_for_hotels(
-        [hotel], check_in, check_out, adults, children, guest_market, display_currency,
+        [hotel], check_in, check_out, adults, children, guest_market,
+        display_currency, ignore_occupancy,
     ).get(hotel.id, [])
 
 
@@ -1431,8 +1438,8 @@ def estimate_booking(data):
     capacity_warning = None
     if not can_create_booking:
         capacity_warning = (
-            f"Selected rooms have capacity for {total_guest_capacity} guest(s); "
-            f"add room capacity for {guest_capacity_shortfall} more guest(s)."
+            f"Your room selection cannot accommodate {occupancy} guests. "
+            "Please add more rooms or adjust your guest count to continue."
         )
     return {
         "hotel": {
@@ -1649,11 +1656,10 @@ def create_booking(data, idempotency_key=None):
         policy_snapshot[str(rate_plan.id)] = rate_plan.cancellation_policy
 
     if occupancy > total_guest_capacity:
-        shortfall = occupancy - total_guest_capacity
         raise ValidationError({
             "rooms": (
-                f"Selected rooms have capacity for {total_guest_capacity} guest(s); "
-                f"capacity for {shortfall} more guest(s) is required."
+                f"Your room selection cannot accommodate {occupancy} guests. "
+                "Please add more rooms or adjust your guest count to continue."
             )
         })
     if uses_common_guest_counts:
