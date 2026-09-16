@@ -23,7 +23,7 @@ from booking.models import (
     format_receipt_number,
 )
 from booking.booking_services.email import send_booking_confirmation_email
-from booking.booking_services.receipt import ensure_receipt_pdf
+from booking.booking_services.receipt import _contact_values, ensure_receipt_pdf
 from booking.serializers import BookingSerializer, InvoiceSerializer
 from booking.services import record_payment
 from booking.tasks import (
@@ -44,6 +44,13 @@ class BookingCodeTests(TestCase):
             check_out=date(2026, 9, 2),
             contact_name="Test Guest",
             contact_phone="09123456789",
+        )
+
+    def test_receipt_contact_values_hide_empty_and_split_json_lists(self):
+        self.assertEqual(_contact_values('[""]'), [])
+        self.assertEqual(
+            _contact_values('["82 58 5", "09 123 456"]'),
+            ["82 58 5", "09 123 456"],
         )
 
     def add_confirmation_rooms(self, booking):
@@ -214,7 +221,7 @@ class BookingCodeTests(TestCase):
         self.assertEqual(payment.receipt_snapshot["issuer"]["name"], self.hotel.name)
         self.assertEqual(payment.receipt_snapshot["issuer"]["address"], self.hotel.address)
         self.assertEqual(payment.receipt_snapshot["issuer"]["phone"], self.hotel.phone)
-        self.assertEqual(payment.receipt_snapshot["issuer"]["email"], "hotel@example.com")
+        self.assertEqual(payment.receipt_snapshot["issuer"]["email"], ["hotel@example.com"])
         self.assertEqual(payment.receipt_snapshot["issuer"]["branding"], "hotel")
         self.assertEqual(
             payment.receipt_snapshot["issuer"]["footer_text"],

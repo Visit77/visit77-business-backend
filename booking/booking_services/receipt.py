@@ -2,6 +2,7 @@ from io import BytesIO
 from decimal import Decimal
 from xml.sax.saxutils import escape
 from urllib.parse import urlparse
+import json
 
 import httpx
 
@@ -32,11 +33,33 @@ def _hotel_email(hotel):
         or snapshot.get("booking_notification_email")
         or ""
     )
-    if isinstance(value, (list, tuple, set)):
-        return ", ".join(str(item).strip() for item in value if str(item).strip())
+    return _contact_values(value)
+
+
+def _contact_values(value):
+    """Flatten contact/address values and hide empty JSON-list placeholders."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        if text[:1] in {"[", "{"}:
+            try:
+                return _contact_values(json.loads(text))
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return [text]
     if isinstance(value, dict):
-        return ", ".join(str(item).strip() for item in value.values() if str(item).strip())
-    return str(value).strip()
+        values = value.values()
+    elif isinstance(value, (list, tuple, set)):
+        values = value
+    else:
+        values = [value]
+    flattened = []
+    for item in values:
+        flattened.extend(_contact_values(item))
+    return flattened
 
 
 def _hotel_logo(logo_url):
@@ -220,15 +243,12 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     payment_date = timezone.datetime.fromisoformat(snapshot["payment_date"]).strftime("%d %b %Y")
 
     story = [Table([["", ""]], colWidths=[159 * mm, 0], rowHeights=[2 * mm], style=[("BACKGROUND", (0, 0), (-1, -1), blue)]), Spacer(1, 6 * mm)]
-    issuer_details = "<br/>".join(
-        item for item in [
-            f"<b>{escape(str(issuer['name']))}</b>",
-            escape(str(issuer.get("address", ""))),
-            escape(str(issuer.get("email", ""))),
-            escape(str(issuer.get("phone", ""))),
-        ]
-        if item
-    )
+    issuer_detail_lines = [f"<b>{escape(str(issuer['name']))}</b>"]
+    for field_name in ("address", "email", "phone"):
+        issuer_detail_lines.extend(
+            escape(item) for item in _contact_values(issuer.get(field_name))
+        )
+    issuer_details = "<br/>".join(issuer_detail_lines)
     brand_label = (
         issuer["name"]
         if issuer.get("branding") == "hotel"
