@@ -15,11 +15,18 @@ _MONEY_KEY_SUFFIXES = (
     "_price", "_prices", "_amount", "_total", "_subtotal", "_balance",
     "_due", "_paid",
 )
+_NON_MONEY_EXACT_KEYS = {
+    "ota_record_total",
+}
 
 
 def _is_monetary_key(key):
     key = str(key or "").lower()
-    if key.startswith("formatted_") or key.endswith("_formatted"):
+    if (
+        key in _NON_MONEY_EXACT_KEYS
+        or key.startswith("formatted_")
+        or key.endswith("_formatted")
+    ):
         return False
     return key in _MONEY_EXACT_KEYS or key.endswith(_MONEY_KEY_SUFFIXES)
 

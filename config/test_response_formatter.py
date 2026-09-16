@@ -21,6 +21,7 @@ class MonetaryResponseNormalizationTests(SimpleTestCase):
             "formatted_total": "MMK 170,000.50",
             "quantity": 2,
             "refund_percent": 50,
+            "ota_record_total": 3,
         }
 
         normalized = normalize_monetary_response(payload)
@@ -35,6 +36,8 @@ class MonetaryResponseNormalizationTests(SimpleTestCase):
         self.assertEqual(normalized["formatted_total"], "MMK 170,000.50")
         self.assertEqual(normalized["quantity"], 2)
         self.assertEqual(normalized["refund_percent"], 50)
+        self.assertEqual(normalized["ota_record_total"], 3)
+        self.assertIsInstance(normalized["ota_record_total"], int)
 
     def test_success_exposes_float_monetary_values(self):
         response = success({

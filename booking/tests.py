@@ -3606,6 +3606,8 @@ class BookingApiTests(BookingServiceTests):
             )
             self.assertEqual(filtered_room["ota_record_count"], len(expected_references))
             self.assertEqual(filtered_room["ota_record_total"], 5)
+            self.assertIsInstance(filtered_room["ota_record_count"], int)
+            self.assertIsInstance(filtered_room["ota_record_total"], int)
 
             filtered_history = self.client.get(
                 f"/api/v1/admin/ota-rooms/{room.id}/history/",
@@ -3618,6 +3620,7 @@ class BookingApiTests(BookingServiceTests):
                 expected_references,
             )
             self.assertEqual(filtered_history.data["data"]["ota_record_total"], 5)
+            self.assertIsInstance(filtered_history.data["data"]["ota_record_total"], int)
 
         close_conflict = self.client.post(
             f"/api/v1/admin/ota-rooms/{room.id}/sale-status/",
