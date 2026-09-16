@@ -1591,7 +1591,7 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(room["rate_plan_id"], self.rate_plan.id)
         self.assertEqual(room["rate_plan"]["id"], self.rate_plan.id)
         self.assertEqual(room["rate_plan"]["name"], self.rate_plan.name)
-        self.assertEqual(room["rate_plan"]["base_price"], "80000.00")
+        self.assertEqual(room["rate_plan"]["base_price"], 80000.0)
 
     def test_public_availability_can_ignore_occupancy_filter(self):
         PhysicalRoom.objects.create(
@@ -1812,9 +1812,9 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual([item["id"] for item in response.data["data"]], [matching.id])
         item = response.data["data"][0]
-        self.assertEqual(item["effective_price"], "25000.00")
+        self.assertEqual(item["effective_price"], 25000.0)
         self.assertEqual(item["currency"], "MMK")
-        self.assertEqual(item["usd_display"], "10.00")
+        self.assertEqual(item["usd_display"], 10.0)
         self.assertNotIn("local_base_price", item)
         self.assertNotIn("foreign_base_price", item)
 
@@ -2710,7 +2710,7 @@ class BookingApiTests(BookingServiceTests):
             **headers,
         )
         self.assertEqual(paid.status_code, 201, paid.data)
-        self.assertEqual(paid.data["data"]["amount"], "10500.00")
+        self.assertEqual(paid.data["data"]["amount"], 10500.0)
 
         admin_bill = self.client.get(f"/api/v1/admin/bookings/{booking.id}/stay-bill/", **headers)
         self.assertEqual(admin_bill.status_code, 200, admin_bill.data)
@@ -4533,7 +4533,7 @@ class BookingApiTests(BookingServiceTests):
         }
         valid = self.client.post("/api/v1/public/bookings/", payload, format="json")
         self.assertEqual(valid.status_code, 201, valid.data)
-        self.assertEqual(valid.data["data"]["add_on_total"], "30000.00")
+        self.assertEqual(valid.data["data"]["add_on_total"], 30000.0)
 
     def test_hotel_requests_template_and_superadmin_approves_it(self):
         hotel_headers = {
@@ -5655,7 +5655,7 @@ class BookingApiTests(BookingServiceTests):
             **headers,
         )
         self.assertEqual(updated.status_code, 200, updated.data)
-        self.assertEqual(updated.data["data"]["default_price"], "75000.00")
+        self.assertEqual(updated.data["data"]["default_price"], 75000.0)
 
         deleted = self.client.delete(
             f"/api/v1/admin/rate-plans/{created_data['id']}/",
