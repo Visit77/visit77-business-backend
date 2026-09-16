@@ -179,6 +179,10 @@ class BookingCodeTests(TestCase):
         self.assertEqual(payment.receipt_number, "V77-REC-A0000001")
 
     def test_pms_payment_also_creates_a_receipt(self):
+        self.hotel.address = "1 Hotel Road, Yangon"
+        self.hotel.phone = "09123456789"
+        self.hotel.core_snapshot = {"contact_email": "hotel@example.com"}
+        self.hotel.save(update_fields=["address", "phone", "core_snapshot"])
         booking = self.create_booking("TEST-PMS-RECEIPT")
         booking.source = Booking.Source.PMS
         booking.save(update_fields=["source"])
@@ -207,6 +211,15 @@ class BookingCodeTests(TestCase):
         self.assertEqual(payment.receipt_number, "V77-REC-A0000001")
         self.assertEqual(payment.receipt_snapshot["booking"]["booking_code"], booking.booking_code)
         self.assertEqual(payment.receipt_snapshot["provider"], Payment.Provider.CASH)
+        self.assertEqual(payment.receipt_snapshot["issuer"]["name"], self.hotel.name)
+        self.assertEqual(payment.receipt_snapshot["issuer"]["address"], self.hotel.address)
+        self.assertEqual(payment.receipt_snapshot["issuer"]["phone"], self.hotel.phone)
+        self.assertEqual(payment.receipt_snapshot["issuer"]["email"], "hotel@example.com")
+        self.assertEqual(payment.receipt_snapshot["issuer"]["branding"], "hotel")
+        self.assertEqual(
+            payment.receipt_snapshot["issuer"]["footer_text"],
+            "VISIT 77 PMS SYSTEM",
+        )
 
     def test_receipt_groups_same_room_type_and_sums_quantity(self):
         booking = self.create_booking("TEST-GROUPED-ROOM-RECEIPT")
@@ -294,6 +307,8 @@ class BookingCodeTests(TestCase):
 
         self.assertEqual(payment.receipt_snapshot["booking"]["booking_code"], booking.booking_code)
         self.assertEqual(payment.receipt_snapshot["amount_paid"], "1000.00")
+        self.assertEqual(payment.receipt_snapshot["issuer"]["branding"], "visit77")
+        self.assertEqual(payment.receipt_snapshot["issuer"]["footer_text"], "")
         self.assertFalse(payment.receipt_pdf)
 
         receipt_url = (

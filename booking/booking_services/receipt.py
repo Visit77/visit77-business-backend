@@ -1,5 +1,9 @@
 from io import BytesIO
 from decimal import Decimal
+from xml.sax.saxutils import escape
+from urllib.parse import urlparse
+
+import httpx
 
 from django.conf import settings
 from django.core.files.base import ContentFile
@@ -10,7 +14,7 @@ from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from booking.models import Payment
 
@@ -20,6 +24,48 @@ def _money(value, currency):
     return f"{currency} {amount:,.2f}" if amount % 1 else f"{currency} {int(amount):,}"
 
 
+def _hotel_email(hotel):
+    snapshot = hotel.core_snapshot or {}
+    value = (
+        snapshot.get("contact_email")
+        or snapshot.get("email")
+        or snapshot.get("booking_notification_email")
+        or ""
+    )
+    if isinstance(value, (list, tuple, set)):
+        return ", ".join(str(item).strip() for item in value if str(item).strip())
+    if isinstance(value, dict):
+        return ", ".join(str(item).strip() for item in value.values() if str(item).strip())
+    return str(value).strip()
+
+
+def _hotel_logo(logo_url):
+    """Load only Visit77-hosted hotel branding; fall back safely on any error."""
+    if not logo_url:
+        return None
+    parsed = urlparse(str(logo_url))
+    hostname = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or not (
+        hostname == "visit77.com" or hostname.endswith(".visit77.com")
+    ):
+        return None
+    try:
+        response = httpx.get(str(logo_url), timeout=3, follow_redirects=True)
+        response.raise_for_status()
+        final_hostname = (urlparse(str(response.url)).hostname or "").lower()
+        if not (
+            final_hostname == "visit77.com"
+            or final_hostname.endswith(".visit77.com")
+        ):
+            return None
+        content = response.content
+        if not content or len(content) > 2 * 1024 * 1024:
+            return None
+        return Image(BytesIO(content), width=40 * mm, height=15 * mm, kind="proportional")
+    except (httpx.HTTPError, OSError, ValueError):
+        return None
+
+
 def build_receipt_snapshot(payment):
     """Capture immutable financial and booking data used by the receipt."""
     payment = Payment.objects.select_related("booking__hotel", "invoice").prefetch_related(
@@ -27,6 +73,7 @@ def build_receipt_snapshot(payment):
     ).get(pk=payment.pk)
     booking = payment.booking
     invoice = payment.invoice
+    is_pms = booking.source == booking.Source.PMS
     primary_guest = next(
         (guest for guest in booking.guests.all() if guest.is_primary),
         next(iter(booking.guests.all()), None),
@@ -75,7 +122,7 @@ def build_receipt_snapshot(payment):
         grouped_rooms[room_key]["quantity"] += room.quantity
         grouped_rooms[room_key]["extra_beds"] += room.extra_beds
     return {
-        "version": 1,
+        "version": 2,
         "receipt_number": payment.receipt_number,
         "invoice_number": invoice.invoice_number if invoice else payment.invoice_number,
         "payment_date": (payment.paid_at or payment.created_at or timezone.now()).isoformat(),
@@ -112,14 +159,33 @@ def build_receipt_snapshot(payment):
             "invoice_total": str(invoice.total if invoice else booking.grand_total),
         },
         "issuer": {
-            "name": getattr(settings, "RECEIPT_ISSUER_NAME", "Visit77 Co.,Ltd."),
-            "address": getattr(
-                settings,
-                "RECEIPT_ISSUER_ADDRESS",
-                "10-06, Panchan Tower, Bargayar St., Sanchaung Tsp., Yangon, Myanmar.",
+            "name": (
+                booking.hotel.name
+                if is_pms
+                else getattr(settings, "RECEIPT_ISSUER_NAME", "Visit77 Co.,Ltd.")
             ),
-            "email": getattr(settings, "RECEIPT_ISSUER_EMAIL", settings.DEFAULT_FROM_EMAIL),
-            "phone": getattr(settings, "RECEIPT_ISSUER_PHONE", "(+95) 988 577 0011"),
+            "address": (
+                booking.hotel.address
+                if is_pms
+                else getattr(
+                    settings,
+                    "RECEIPT_ISSUER_ADDRESS",
+                    "10-06, Panchan Tower, Bargayar St., Sanchaung Tsp., Yangon, Myanmar.",
+                )
+            ),
+            "email": (
+                _hotel_email(booking.hotel)
+                if is_pms
+                else getattr(settings, "RECEIPT_ISSUER_EMAIL", settings.DEFAULT_FROM_EMAIL)
+            ),
+            "phone": (
+                booking.hotel.phone
+                if is_pms
+                else getattr(settings, "RECEIPT_ISSUER_PHONE", "(+95) 988 577 0011")
+            ),
+            "logo_url": booking.hotel.cover_image_url if is_pms else "",
+            "branding": "hotel" if is_pms else "visit77",
+            "footer_text": "VISIT 77 PMS SYSTEM" if is_pms else "",
         },
     }
 
@@ -154,9 +220,30 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     payment_date = timezone.datetime.fromisoformat(snapshot["payment_date"]).strftime("%d %b %Y")
 
     story = [Table([["", ""]], colWidths=[159 * mm, 0], rowHeights=[2 * mm], style=[("BACKGROUND", (0, 0), (-1, -1), blue)]), Spacer(1, 6 * mm)]
+    issuer_details = "<br/>".join(
+        item for item in [
+            f"<b>{escape(str(issuer['name']))}</b>",
+            escape(str(issuer.get("address", ""))),
+            escape(str(issuer.get("email", ""))),
+            escape(str(issuer.get("phone", ""))),
+        ]
+        if item
+    )
+    brand_label = (
+        issuer["name"]
+        if issuer.get("branding") == "hotel"
+        else "Visit77"
+    )
+    brand_content = None
+    if issuer.get("branding") == "hotel":
+        brand_content = _hotel_logo(issuer.get("logo_url"))
+    if brand_content is None:
+        brand_content = Paragraph(
+            f"<font color='#3039F5' size='18'><b>{escape(str(brand_label))}</b></font>",
+            right,
+        )
     story.append(Table([
-        [Paragraph(f"<b>{issuer['name']}</b><br/>{issuer['address']}<br/>{issuer['email']}<br/>{issuer['phone']}", small),
-         Paragraph("<font color='#3039F5' size='18'><b>Visit77</b></font>", right)],
+        [Paragraph(issuer_details, small), brand_content],
     ], colWidths=[105 * mm, 54 * mm]))
     story.extend([Spacer(1, 3 * mm), Table([[""]], colWidths=[159 * mm], rowHeights=[0.4], style=[("BACKGROUND", (0, 0), (-1, -1), border)]), Spacer(1, 4 * mm)])
     story.append(Table([
@@ -211,6 +298,8 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     def footer(canvas, document):
         canvas.saveState()
         canvas.setFont("Helvetica", 8)
+        if issuer.get("footer_text"):
+            canvas.drawString(18 * mm, 10 * mm, issuer["footer_text"])
         canvas.drawRightString(A4[0] - 18 * mm, 10 * mm, f"Page {document.page} of {document.page}")
         canvas.restoreState()
 
