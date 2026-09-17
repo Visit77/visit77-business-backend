@@ -48,8 +48,8 @@ def _email_money(value, currency):
     return f"{currency} {amount}"
 
 
-def _hotel_phone_numbers(value):
-    """Normalize Core phone arrays stored as JSON strings and legacy scalar values."""
+def _contact_values(value):
+    """Normalize Core contact arrays stored as JSON strings and legacy scalars."""
     if isinstance(value, (list, tuple)):
         values = value
     else:
@@ -62,8 +62,12 @@ def _hotel_phone_numbers(value):
         except (TypeError, ValueError):
             values = [raw_value]
     return list(dict.fromkeys(
-        str(phone).strip() for phone in values if str(phone or "").strip()
+        str(item).strip() for item in values if str(item or "").strip()
     ))
+
+
+def _hotel_phone_numbers(value):
+    return _contact_values(value)
 
 
 def _booking_cancellation_policy(snapshot):
@@ -102,10 +106,12 @@ def build_booking_confirmation_context(booking, primary_guest):
             meals.append("Breakfast")
     meals = list(dict.fromkeys(meals))
     hotel_snapshot = booking.hotel.core_snapshot or {}
-    hotel_email = (
-        hotel_snapshot.get("email")
-        or hotel_snapshot.get("contact_email")
-        or getattr(settings, "RECEIPT_ISSUER_EMAIL", settings.DEFAULT_FROM_EMAIL)
+    hotel_emails = (
+        _contact_values(hotel_snapshot.get("email"))
+        or _contact_values(hotel_snapshot.get("contact_email"))
+        or _contact_values(
+            getattr(settings, "RECEIPT_ISSUER_EMAIL", settings.DEFAULT_FROM_EMAIL)
+        )
     )
     hotel_image = booking.hotel.cover_image_url or hotel_snapshot.get("cover_image_url") or ""
     booking_url = f"{settings.BOOKING_FRONTEND_URL.rstrip('/')}/bookings/{booking.public_token}"
@@ -127,7 +133,8 @@ def build_booking_confirmation_context(booking, primary_guest):
         "hotel_img_url": hotel_image,
         "hotel_phones": hotel_phones,
         "hotel_phone": hotel_phones[0] if hotel_phones else "",
-        "hotel_email": hotel_email,
+        "hotel_emails": hotel_emails,
+        "hotel_email": hotel_emails[0] if hotel_emails else "",
         "map_url": f"https://www.google.com/maps/search/?api=1&query={quote_plus(booking.hotel.address or booking.hotel.name)}",
         "check_in_date": booking.check_in.strftime("%d %b %Y, %A"),
         "check_in_time": f"After {booking.hotel.check_in_time.strftime('%I:%M %p')}" if booking.hotel.check_in_time else "Check with hotel",

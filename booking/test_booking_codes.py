@@ -380,7 +380,11 @@ class BookingCodeTests(TestCase):
     def test_confirmation_email_uses_booking_code(self, email_class_mock):
         booking = self.create_booking("INTERNAL-EMAIL-REFERENCE")
         self.hotel.phone = '["012312", "123123"]'
-        self.hotel.save(update_fields=["phone"])
+        self.hotel.core_snapshot = {
+            "email": '[""]',
+            "contact_email": '["hotel@example.com", "frontdesk@example.com"]',
+        }
+        self.hotel.save(update_fields=["phone", "core_snapshot"])
         self.add_confirmation_rooms(booking)
         Guest.objects.create(
             booking=booking,
@@ -402,6 +406,9 @@ class BookingCodeTests(TestCase):
         self.assertEqual(logo_attachment["Content-ID"], "<visit77-logo>")
         self.assertIn('href="tel:012312"', html_message)
         self.assertIn('href="tel:123123"', html_message)
+        self.assertIn('href="mailto:hotel@example.com"', html_message)
+        self.assertIn('href="mailto:frontdesk@example.com"', html_message)
+        self.assertNotIn('[&quot;&quot;]', html_message)
         self.assertIn("Your Booking is Confirmed and Paid.", html_message)
         self.assertNotIn("Your Booking is Pending Payment.", html_message)
         self.assertIn(
