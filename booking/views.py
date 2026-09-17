@@ -89,7 +89,8 @@ from booking.serializers import (
 from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, deprovision_hotel, ensure_daily_inventory_for_room_type, estimate_booking, format_money, record_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, release_checked_in_room_inventory, replace_booking_payment_snapshot, sync_guest_profile, update_reservation_for_check_in, validate_assignment_preferences
 from config.response_formatter import success
 
-
+import logging
+logger = logging.getLogger(__name__)
 def _pluralize_day_label(days):
     return "Day" if days == 1 else "Days"
 
@@ -3941,6 +3942,7 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
     @action(detail=True, methods=["get", "patch"], url_path="check-in-form")
     @transaction.atomic
     def check_in_form(self, request, pk=None):
+        logger.info("PublicBookingEstimateView POST request data: %s", request.data)
         booking = Booking.objects.select_for_update().get(pk=self.get_object().pk)
         if booking.status not in [Booking.Status.CONFIRMED, Booking.Status.PENDING_PAYMENT]:
             raise ValidationError("Only pending or confirmed reservations can use the check-in form.")
