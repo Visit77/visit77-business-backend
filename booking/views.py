@@ -56,6 +56,7 @@ from booking.serializers import (
     InvoiceSerializer,
     GuestIdentityDocumentSerializer,
     GuestIdentityDocumentUploadSerializer,
+    GuestSerializer,
     MealPlanSerializer,
     OTAHotelIdsQuerySerializer,
     OTARoomSelectionUpdateSerializer,
@@ -2008,6 +2009,7 @@ class OTARecordListView(APIView):
     business_scoped = True
 
     def get(self, request):
+        print('hi')
         hotel = OTARoomSelectionView._hotel(request)
         assignments = RoomAssignment.objects.filter(
             physical_room__hotel=hotel,
@@ -2020,7 +2022,7 @@ class OTARecordListView(APIView):
             "booking_room",
             "booking_room__booking",
         ).prefetch_related(
-            "booking_room__booking__guests",
+            "booking_room__booking__guests__identity_documents",
             "booking_room__booking__invoices",
             "booking_room__booking__payments",
         ).order_by(
@@ -2037,6 +2039,7 @@ class OTARecordListView(APIView):
                 (guest for guest in booking.guests.all() if guest.is_primary),
                 None,
             )
+            guests = sorted(booking.guests.all(), key=lambda guest: guest.id)
             invoices = [
                 {
                     "id": str(invoice.id),
@@ -2079,6 +2082,7 @@ class OTARecordListView(APIView):
                     "name": primary_guest.name if primary_guest else booking.contact_name,
                     "phone": primary_guest.phone if primary_guest else booking.contact_phone,
                 },
+                "guests": GuestSerializer(guests, many=True).data,
                 "amount": booking_room.total,
                 "price_per_night": booking_room.total / divisor if divisor > 0 else booking_room.total,
                 "currency": booking.currency,

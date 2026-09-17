@@ -3480,6 +3480,20 @@ class BookingApiTests(BookingServiceTests):
         newer = assign(
             "OTA-301-NEWER", ota_room, Booking.Source.OTA, self.check_in + timedelta(days=4),
         )
+        Guest.objects.create(
+            booking=newer,
+            name="Primary Guest",
+            phone="09111111111",
+            email="primary@example.com",
+            is_primary=True,
+        )
+        Guest.objects.create(
+            booking=newer,
+            name="Second Guest",
+            phone="09222222222",
+            email="second@example.com",
+            is_primary=False,
+        )
         assign("OTA-DISABLED", disabled_room, Booking.Source.OTA, self.check_in)
         Booking.objects.filter(id=older.id).update(created_at=timezone.now() - timedelta(hours=1))
         Booking.objects.filter(id=newer.id).update(created_at=timezone.now())
@@ -3505,6 +3519,11 @@ class BookingApiTests(BookingServiceTests):
         )
         self.assertEqual([record["room_number"] for record in data["rooms"]], ["301", "301"])
         self.assertEqual(data["rooms"][0]["booking_code"], newer.booking_code)
+        self.assertEqual(
+            [guest["name"] for guest in data["rooms"][0]["guests"]],
+            ["Primary Guest", "Second Guest"],
+        )
+        self.assertEqual(data["rooms"][0]["guests"][0]["email"], "primary@example.com")
         self.assertIn("invoice_url", data["rooms"][0])
         self.assertIn("receipt_url", data["rooms"][0])
         self.assertEqual(
