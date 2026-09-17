@@ -411,6 +411,8 @@ class BookingCodeTests(TestCase):
         self.assertNotIn('[&quot;&quot;]', html_message)
         self.assertIn("Your Booking is Confirmed and Paid.", html_message)
         self.assertNotIn("Your Booking is Pending Payment.", html_message)
+        self.assertIn(">PAID</span", html_message)
+        self.assertNotIn(">PENDING</span", html_message)
         self.assertIn(
             f'href="https://booking.example.com/bookings/{booking.public_token}"',
             html_message,

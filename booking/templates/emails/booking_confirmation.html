@@ -10,7 +10,7 @@
   <div
     style="display:none;overflow:hidden;line-height:1px;opacity:0;max-height:0;max-width:0"
     data-skip-in-text="true">
-    {% if is_fully_paid %}Your Booking is Confirmed and Paid{% else %}Your Booking is Pending Payment{% endif %} - {{ property_name }}
+    Your Booking is Confirmed and Paid - {{ property_name }}
     <div>
        ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿
     </div>
@@ -59,7 +59,6 @@
                         </tr>
                       </tbody>
                     </table>
-                    {% if is_fully_paid %}
                     <table
                       align="center"
                       width="100%"
@@ -79,27 +78,6 @@
                         </tr>
                       </tbody>
                     </table>
-                    {% else %}
-                    <table
-                      align="center"
-                      width="100%"
-                      border="0"
-                      cellpadding="0"
-                      cellspacing="0"
-                      role="presentation"
-                      style="background-color:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:12px;text-align:center;margin-bottom:16px">
-                      <tbody>
-                        <tr>
-                          <td>
-                            <p
-                              style="font-size:14px;line-height:24px;color:#92400e;font-weight:600;margin:0;margin-top:0;margin-bottom:0;margin-left:0;margin-right:0">
-                              <span style="margin-right:6px">⏳</span> Your Booking is Pending Payment.
-                            </p>
-                          </td>
-                        </tr>
-                      </tbody>
-                    </table>
-                    {% endif %}
                     <table
                       align="center"
                       width="100%"
@@ -384,17 +362,10 @@
                                 <td
                                   style="font-size:14px;font-weight:bold;color:#0f172a">
                                   Total Charged
-                                  {% if is_fully_paid %}
                                   <span
                                     style="background-color:#dcfce7;color:#15803d;font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px"
                                     >PAID</span
                                   >
-                                  {% else %}
-                                  <span
-                                    style="background-color:#fef3c7;color:#92400e;font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px"
-                                    >PENDING</span
-                                  >
-                                  {% endif %}
                                 </td>
                                 <td
                                   style="text-align:right;color:#2563eb;font-size:18px;font-weight:800">

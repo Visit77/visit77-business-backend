@@ -157,7 +157,6 @@ def build_booking_confirmation_context(booking, primary_guest):
         "booking_url": booking_url,
         "policy_name": policy_name,
         "policy_description": policy_description,
-        "is_fully_paid": booking.amount_paid >= booking.grand_total,
     }
 
 
