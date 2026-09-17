@@ -2009,7 +2009,6 @@ class OTARecordListView(APIView):
     business_scoped = True
 
     def get(self, request):
-        print('hi')
         hotel = OTARoomSelectionView._hotel(request)
         assignments = RoomAssignment.objects.filter(
             physical_room__hotel=hotel,
