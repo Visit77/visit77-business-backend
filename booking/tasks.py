@@ -16,6 +16,26 @@ def _hotel_booking_notification_contact(booking, field):
     """Return the hotel booking contact provisioned from Core verification."""
     return str((booking.hotel.core_snapshot or {}).get(field) or "").strip()
 
+
+def queue_booking_confirmation_notifications(booking_id):
+    """Publish independent email, guest SMS, and hotel SMS jobs."""
+    email_result = send_booking_confirmation_email_task.delay(booking_id)
+    guest_sms_result = send_booking_confirmation_sms_task.delay(booking_id, "guest")
+    hotel_sms_result = send_booking_confirmation_sms_task.delay(booking_id, "hotel")
+    logger.info(
+        "Queued booking confirmation notifications for booking %s: "
+        "email_task_id=%s guest_sms_task_id=%s hotel_sms_task_id=%s",
+        booking_id,
+        email_result.id,
+        guest_sms_result.id,
+        hotel_sms_result.id,
+    )
+    return {
+        "email_task_id": email_result.id,
+        "guest_sms_task_id": guest_sms_result.id,
+        "hotel_sms_task_id": hotel_sms_result.id,
+    }
+
 @shared_task
 def expire_booking_holds_task():
     count = expire_pending_bookings()

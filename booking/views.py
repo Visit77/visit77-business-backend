@@ -25,7 +25,7 @@ from booking.authentication import CoreJWTAuthentication
 from booking.integrations.core import CoreClient, sync_business_from_core
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, GuestProfile, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
-from booking.tasks import send_booking_confirmation_email_task, send_booking_confirmation_sms_task
+from booking.tasks import queue_booking_confirmation_notifications
 
 from booking.serializers import (
     AddOnSerializer,
@@ -1193,9 +1193,9 @@ class PublicDemoPaymentView(APIView):
         # Send confirmation email only after successful DB commit
         if booking.status == Booking.Status.CONFIRMED:
             booking_id = str(booking.id)
-            send_booking_confirmation_email_task.delay(booking_id)
-            send_booking_confirmation_sms_task.delay(booking_id, "guest")
-            send_booking_confirmation_sms_task.delay(booking_id, "hotel")
+            transaction.on_commit(
+                lambda: queue_booking_confirmation_notifications(booking_id)
+            )
 
             # def send_booking_notifications():
             #     send_booking_confirmation_email_task.delay(booking_id)
@@ -1343,9 +1343,9 @@ class CorePaymentSuccessView(APIView):
         #
         if booking.status == Booking.Status.CONFIRMED:
             booking_id = str(booking.id)
-            send_booking_confirmation_email_task.delay(booking_id)
-            send_booking_confirmation_sms_task.delay(booking_id, "guest")
-            send_booking_confirmation_sms_task.delay(booking_id, "hotel")
+            transaction.on_commit(
+                lambda: queue_booking_confirmation_notifications(booking_id)
+            )
 
             # def send_booking_notifications():
             #     send_booking_confirmation_email_task.delay(booking_id)

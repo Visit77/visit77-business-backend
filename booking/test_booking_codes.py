@@ -1,5 +1,5 @@
 from datetime import date
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from django.test import TestCase, override_settings
 
@@ -28,6 +28,7 @@ from booking.booking_services.receipt import _contact_values, ensure_receipt_pdf
 from booking.serializers import BookingSerializer, InvoiceSerializer
 from booking.services import record_payment
 from booking.tasks import (
+    queue_booking_confirmation_notifications,
     send_booking_confirmation_email_task,
     send_booking_confirmation_sms_task,
 )
@@ -501,3 +502,26 @@ class BookingCodeTests(TestCase):
         self.assertEqual(normalize_sms_phone_number("+95 9 333-333-333"), "09333333333")
         self.assertEqual(normalize_sms_phone_number("959333333333"), "09333333333")
         self.assertEqual(normalize_sms_phone_number("09 333 333 333"), "09333333333")
+
+    @patch("booking.tasks.send_booking_confirmation_sms_task.delay")
+    @patch("booking.tasks.send_booking_confirmation_email_task.delay")
+    def test_notification_dispatch_queues_email_and_sms_independently(
+        self, email_delay, sms_delay,
+    ):
+        email_delay.return_value.id = "email-task"
+        sms_delay.side_effect = [
+            type("Result", (), {"id": "guest-sms-task"})(),
+            type("Result", (), {"id": "hotel-sms-task"})(),
+        ]
+
+        result = queue_booking_confirmation_notifications("booking-id")
+
+        email_delay.assert_called_once_with("booking-id")
+        self.assertEqual(
+            sms_delay.call_args_list,
+            [
+                call("booking-id", "guest"),
+                call("booking-id", "hotel"),
+            ],
+        )
+        self.assertEqual(result["email_task_id"], "email-task")
