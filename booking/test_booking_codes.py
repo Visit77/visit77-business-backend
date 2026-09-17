@@ -441,6 +441,39 @@ class BookingCodeTests(TestCase):
         self.assertIn("Room: Deluxe Room x 1", message)
         self.assertNotIn(booking.reference, message)
 
+    @patch("booking.booking_services.sms.send_custom_sms")
+    def test_confirmation_sms_prefers_booking_contact_phone(self, send_sms_mock):
+        booking = self.create_booking("CONTACT-PHONE-PRIORITY")
+        booking.contact_phone = "09999999999"
+        booking.save(update_fields=["contact_phone"])
+        Guest.objects.create(
+            booking=booking,
+            name="Primary Guest",
+            phone="09111111111",
+            is_primary=True,
+        )
+
+        self.assertTrue(send_booking_confirmation_sms_task(str(booking.id), "guest"))
+        self.assertEqual(send_sms_mock.call_args.kwargs["phone_no"], "09999999999")
+
+    @patch("booking.booking_services.email.EmailMultiAlternatives")
+    def test_confirmation_email_prefers_booking_contact_email(self, email_class_mock):
+        booking = self.create_booking("CONTACT-EMAIL-PRIORITY")
+        booking.contact_email = "booking-contact@example.com"
+        booking.save(update_fields=["contact_email"])
+        Guest.objects.create(
+            booking=booking,
+            name="Primary Guest",
+            email="primary-guest@example.com",
+            is_primary=True,
+        )
+
+        self.assertTrue(send_booking_confirmation_email(booking))
+        self.assertEqual(
+            email_class_mock.call_args.kwargs["to"],
+            ["booking-contact@example.com"],
+        )
+
     @patch("booking.booking_services.email.EmailMultiAlternatives")
     def test_ota_confirmation_also_emails_hotel_verification_contact(self, email_class_mock):
         booking = self.create_booking("OTA-HOTEL-EMAIL")

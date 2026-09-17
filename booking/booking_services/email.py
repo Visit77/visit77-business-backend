@@ -170,7 +170,7 @@ def send_booking_confirmation_email(booking, recipient_email=None):
     if not primary_guest:
         return
 
-    recipient_email = recipient_email or primary_guest.email or booking.contact_email
+    recipient_email = recipient_email or booking.contact_email or primary_guest.email
 
     if not recipient_email:
         return

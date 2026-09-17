@@ -136,10 +136,8 @@ def send_booking_confirmation_sms_task(booking_id, recipient_type="all"):
         primary_guest = booking.guests.order_by("id").first()
 
     guest_name = primary_guest.name or booking.contact_name
-    phone_no = (
-        primary_guest.phone
-        if primary_guest and primary_guest.phone
-        else booking.contact_phone
+    phone_no = booking.contact_phone or (
+        primary_guest.phone if primary_guest else ""
     )
 
     booking_url = (
