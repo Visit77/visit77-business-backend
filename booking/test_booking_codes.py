@@ -23,6 +23,7 @@ from booking.models import (
     format_receipt_number,
 )
 from booking.booking_services.email import send_booking_confirmation_email
+from booking.booking_services.sms import normalize_sms_phone_number
 from booking.booking_services.receipt import _contact_values, ensure_receipt_pdf
 from booking.serializers import BookingSerializer, InvoiceSerializer
 from booking.services import record_payment
@@ -474,3 +475,29 @@ class BookingCodeTests(TestCase):
             call.kwargs["phone_no"] for call in send_sms_mock.call_args_list
         ]
         self.assertEqual(recipients, ["09123456789", "+959333333333"])
+
+    @patch("booking.booking_services.sms.send_custom_sms")
+    def test_ota_guest_and_hotel_sms_can_run_as_independent_tasks(self, send_sms_mock):
+        booking = self.create_booking("OTA-SPLIT-SMS")
+        self.hotel.core_snapshot = {
+            "booking_notification_phone_number": "+95 9 333-333-333",
+        }
+        self.hotel.save(update_fields=["core_snapshot"])
+        Guest.objects.create(
+            booking=booking,
+            name="SMS Guest",
+            phone="09123456789",
+            is_primary=True,
+        )
+
+        self.assertTrue(send_booking_confirmation_sms_task(str(booking.id), "guest"))
+        self.assertTrue(send_booking_confirmation_sms_task(str(booking.id), "hotel"))
+        self.assertEqual(
+            [call.kwargs["phone_no"] for call in send_sms_mock.call_args_list],
+            ["09123456789", "+95 9 333-333-333"],
+        )
+
+    def test_sms_phone_normalization_uses_local_myanmar_format(self):
+        self.assertEqual(normalize_sms_phone_number("+95 9 333-333-333"), "09333333333")
+        self.assertEqual(normalize_sms_phone_number("959333333333"), "09333333333")
+        self.assertEqual(normalize_sms_phone_number("09 333 333 333"), "09333333333")

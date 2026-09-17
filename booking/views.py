@@ -1194,7 +1194,8 @@ class PublicDemoPaymentView(APIView):
         if booking.status == Booking.Status.CONFIRMED:
             booking_id = str(booking.id)
             send_booking_confirmation_email_task.delay(booking_id)
-            send_booking_confirmation_sms_task.delay(booking_id)
+            send_booking_confirmation_sms_task.delay(booking_id, "guest")
+            send_booking_confirmation_sms_task.delay(booking_id, "hotel")
 
             # def send_booking_notifications():
             #     send_booking_confirmation_email_task.delay(booking_id)
@@ -1343,7 +1344,8 @@ class CorePaymentSuccessView(APIView):
         if booking.status == Booking.Status.CONFIRMED:
             booking_id = str(booking.id)
             send_booking_confirmation_email_task.delay(booking_id)
-            send_booking_confirmation_sms_task.delay(booking_id)
+            send_booking_confirmation_sms_task.delay(booking_id, "guest")
+            send_booking_confirmation_sms_task.delay(booking_id, "hotel")
 
             # def send_booking_notifications():
             #     send_booking_confirmation_email_task.delay(booking_id)

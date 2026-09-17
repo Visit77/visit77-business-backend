@@ -93,7 +93,7 @@ def send_booking_confirmation_email_task(self, booking_id):
     retry_jitter=True,
     max_retries=3,
 )
-def send_booking_confirmation_sms_task(booking_id):
+def send_booking_confirmation_sms_task(booking_id, recipient_type="all"):
     from booking.models import Booking
     from booking.booking_services.email import booking_room_summary
     from booking.booking_services.sms import send_custom_sms
@@ -140,15 +140,25 @@ def send_booking_confirmation_sms_task(booking_id):
         f"View booking: {booking_url}"
     )
 
-    recipients = []
-    if phone_no:
-        recipients.append(str(phone_no).strip())
+    if recipient_type not in {"all", "guest", "hotel"}:
+        raise ValueError("recipient_type must be all, guest, or hotel.")
+
+    guest_phone = str(phone_no or "").strip()
+    hotel_phone = ""
     if booking.source == Booking.Source.OTA:
         hotel_phone = _hotel_booking_notification_contact(
             booking, "booking_notification_phone_number"
         )
-        if hotel_phone and hotel_phone not in recipients:
-            recipients.append(hotel_phone)
+
+    recipients = []
+    if recipient_type in {"all", "guest"} and guest_phone:
+        recipients.append(guest_phone)
+    if (
+        recipient_type in {"all", "hotel"}
+        and hotel_phone
+        and hotel_phone != guest_phone
+    ):
+        recipients.append(hotel_phone)
 
     for recipient in recipients:
         send_custom_sms(phone_no=recipient, message=message)
