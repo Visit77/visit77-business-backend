@@ -2436,6 +2436,14 @@ class RoomBoardView(APIView):
                 # "core_snapshot": room.core_snapshot,
                 "operational_status": room.status,
                 "display_status": display_status,
+                "ota_enabled": room.ota_enabled,
+                "is_ota_selected": room.ota_enabled,
+                "ota_sale_open": room.ota_sale_open,
+                "ota_sale_status": (
+                    "not_selected" if not room.ota_enabled
+                    else "open" if room.ota_sale_open
+                    else "closed"
+                ),
                 "block": PhysicalRoomBlockSerializer(block_by_room[room.id]).data if room.id in block_by_room else None,
                 **self.serialize_room_block_state(
                     target_date=target_date,

@@ -2219,7 +2219,12 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(conflicts[0]["booking_status"], Booking.Status.CONFIRMED)
 
     def test_room_board_exposes_upcoming_and_current_block_state(self):
-        room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="VIP-02")
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="VIP-02",
+            ota_enabled=False,
+        )
         future_start = self.check_in + timedelta(days=2)
         future_end = future_start + timedelta(days=5)
         block = PhysicalRoomBlock.objects.create(
@@ -2242,6 +2247,9 @@ class BookingApiTests(BookingServiceTests):
         today_board = self.client.get("/api/v1/admin/room-board/", {"date": str(self.check_in)}, **headers)
         today_room = next(item for item in today_board.data["data"]["rooms"] if item["id"] == room.id)
         self.assertEqual(today_room["display_status"], "available")
+        self.assertFalse(today_room["ota_enabled"])
+        self.assertFalse(today_room["is_ota_selected"])
+        self.assertEqual(today_room["ota_sale_status"], "not_selected")
         self.assertEqual(today_room["block_status"], "upcoming_block")
         self.assertIsNone(today_room["current_block"])
         self.assertEqual(today_room["upcoming_block"]["id"], block.id)
