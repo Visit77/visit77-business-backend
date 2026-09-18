@@ -2677,16 +2677,14 @@ class BookingApiTests(BookingServiceTests):
                 "contact_name": "Mg Mg",
                 "contact_phone": "091111111",
                 "guest_market": "local",
+                "adults": "4",
+                "children": "0",
                 "rooms[0][physical_room_id]": str(first_room.id),
                 "rooms[0][rate_plan_id]": str(self.rate_plan.id),
-                "rooms[0][adults]": "2",
-                "rooms[0][children]": "0",
                 "rooms[0][extra_beds]": "0",
                 "rooms[0][breakfast_selected]": "false",
                 "rooms[1][physical_room_id]": str(second_room.id),
                 "rooms[1][rate_plan_id]": str(self.rate_plan.id),
-                "rooms[1][adults]": "1",
-                "rooms[1][children]": "1",
                 "rooms[1][extra_beds]": "0",
                 "guest[0][name]": "Mg Mg",
                 "guest[0][is_primary]": "true",
@@ -2704,6 +2702,8 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(response.status_code, 200, response.data)
         booking.refresh_from_db()
         self.assertEqual(booking.rooms.count(), 2)
+        self.assertEqual(sum(booking.rooms.values_list("adults", flat=True)), 4)
+        self.assertEqual(sum(booking.rooms.values_list("children", flat=True)), 0)
         self.assertEqual(
             set(RoomAssignment.objects.filter(booking_room__booking=booking).values_list(
                 "physical_room_id", flat=True,

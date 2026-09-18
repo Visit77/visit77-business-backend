@@ -2665,7 +2665,7 @@ def update_reservation_for_check_in(booking, data, *, replace_payment=False):
     )
     _move_inventory(booking, old_inventory_field)
 
-    replacement, _created = create_booking({
+    replacement_payload = {
         "core_business_id": booking.hotel.core_business_id,
         "core_customer_user_id": booking.core_customer_user_id,
         "source": booking.source,
@@ -2680,7 +2680,11 @@ def update_reservation_for_check_in(booking, data, *, replace_payment=False):
         "rooms": requested_rooms,
         "add_ons": data.get("add_ons", existing_add_ons),
         "guests": [{"name": data.get("contact_name", booking.contact_name), "is_primary": True}],
-    })
+    }
+    for field in ["adults", "children"]:
+        if field in data:
+            replacement_payload[field] = data[field]
+    replacement, _created = create_booking(replacement_payload)
 
     # A confirmed reservation is a price-locked sale.  Core may change the
     # room type/rate-plan price between reservation and check-in, but merely

@@ -1695,16 +1695,27 @@ class CheckInFormUpdateSerializer(serializers.Serializer):
             raise serializers.ValidationError({"check_out": "Must be after check_in."})
         if check_in and check_out and (check_out - check_in).days > 90:
             raise serializers.ValidationError({"check_out": "A stay cannot exceed 90 nights."})
-        if attrs.get("rooms") and any(key in attrs for key in ["adults", "children", "extra_beds"]):
+        rooms = attrs.get("rooms") or []
+        has_top_level_guest_counts = any(
+            key in attrs for key in ["adults", "children"]
+        )
+        has_room_guest_counts = any(
+            "adults" in room or "children" in room for room in rooms
+        )
+        if rooms and has_top_level_guest_counts and has_room_guest_counts:
             raise serializers.ValidationError({
                 "rooms": "Send guest counts either inside rooms or as top-level fields, not both."
+            })
+        if rooms and "extra_beds" in attrs:
+            raise serializers.ValidationError({
+                "rooms": "Send extra_beds inside each room when rooms are provided."
             })
         if attrs.get("rooms") and any(key in attrs for key in ["physical_room_id", "rate_plan_id"]):
             raise serializers.ValidationError({
                 "rooms": "Send room selection either inside rooms or as top-level fields, not both."
             })
         if booking and booking.rooms.count() != 1 and any(
-            key in attrs for key in ["physical_room_id", "rate_plan_id", "adults", "children", "extra_beds"]
+            key in attrs for key in ["physical_room_id", "rate_plan_id", "extra_beds"]
         ):
             raise serializers.ValidationError({
                 "rooms": "Top-level room fields can only be used for a single-room booking."
