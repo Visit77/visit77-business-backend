@@ -1449,6 +1449,8 @@ class InvoiceCreateSerializer(serializers.Serializer):
 
 class BookingSerializer(serializers.ModelSerializer):
     booking_code = serializers.CharField(read_only=True)
+    room_charge_total = serializers.SerializerMethodField()
+    breakfast_total = serializers.SerializerMethodField()
     rooms = BookingRoomSerializer(many=True, read_only=True)
     guests = GuestSerializer(many=True, read_only=True)
     add_ons = BookingAddOnSerializer(many=True, read_only=True)
@@ -1460,6 +1462,32 @@ class BookingSerializer(serializers.ModelSerializer):
     hotel_id = serializers.IntegerField(source='hotel.id')
     hotel = serializers.SerializerMethodField()
     hotel_cancellation_policy = serializers.SerializerMethodField()
+
+    @staticmethod
+    def get_room_charge_total(obj):
+        total = Decimal("0")
+        for room in obj.rooms.all():
+            nights = list(room.nights.all())
+            if nights:
+                total += sum(
+                    (night.unit_price * night.quantity for night in nights),
+                    Decimal("0"),
+                )
+            else:
+                # Legacy bookings may not have component-level nightly rows.
+                total += max(room.total - room.breakfast_total, Decimal("0"))
+        return total
+
+    @staticmethod
+    def get_breakfast_total(obj):
+        return sum(
+            (
+                room.breakfast_total
+                for room in obj.rooms.all()
+                if (room.breakfast_snapshot or {}).get("selected")
+            ),
+            Decimal("0"),
+        )
 
     def get_hotel(self, obj):
         snapshot = obj.hotel.core_snapshot or {}

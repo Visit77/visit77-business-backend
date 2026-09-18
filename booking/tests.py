@@ -1612,6 +1612,44 @@ class BookingServiceTests(TestCase):
 
 @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key", CORE_JWT_SIGNING_KEY="test-core-jwt-key")
 class BookingApiTests(BookingServiceTests):
+    def test_admin_booking_detail_splits_room_and_breakfast_totals(self):
+        self.rate_plan.base_price = Decimal("1000")
+        self.rate_plan.default_price = Decimal("1000")
+        self.rate_plan.save(update_fields=["base_price", "default_price"])
+        self.room_type.breakfast_plan_type = RoomType.BreakfastPlanType.CUSTOM_PRICE
+        self.room_type.breakfast_custom_local_base_price = Decimal("10000")
+        self.room_type.save(update_fields=[
+            "breakfast_plan_type", "breakfast_custom_local_base_price",
+        ])
+        payload = self.payload()
+        payload["rooms"][0]["breakfast_selected"] = True
+        booking, _ = create_booking(payload)
+
+        response = self.client.get(
+            f"/api/v1/admin/bookings/{booking.id}/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["room_total"], Decimal("44000"))
+        self.assertEqual(response.data["data"]["room_charge_total"], Decimal("4000"))
+        self.assertEqual(response.data["data"]["breakfast_total"], Decimal("40000"))
+
+        booking_room = booking.rooms.get()
+        booking_room.breakfast_snapshot = {
+            **booking_room.breakfast_snapshot,
+            "selected": False,
+        }
+        booking_room.save(update_fields=["breakfast_snapshot"])
+        unselected_response = self.client.get(
+            f"/api/v1/admin/bookings/{booking.id}/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(unselected_response.status_code, 200, unselected_response.data)
+        self.assertEqual(unselected_response.data["data"]["breakfast_total"], Decimal("0"))
+
     def test_admin_booking_detail_includes_rate_plan_object(self):
         booking, _ = create_booking(self.payload())
 
