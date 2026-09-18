@@ -2663,6 +2663,7 @@ class RoomBoardView(APIView):
                 "booking_status": booking.status,
                 "source": booking.source,
                 "source_name": booking.source_name,
+                "guest_market": booking.guest_market,
                 "contact_name": booking.contact_name,
                 "contact_phone": booking.contact_phone,
                 "guest_name": primary_guest.name if primary_guest else booking.contact_name,

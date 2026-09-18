@@ -5542,6 +5542,7 @@ class BookingApiTests(BookingServiceTests):
         future_payload = self.payload()
         future_payload["check_in"] = self.check_in + timedelta(days=2)
         future_payload["check_out"] = self.check_in + timedelta(days=3)
+        future_payload["guest_market"] = RatePlan.GuestMarket.FOREIGN
         future_payload["rooms"][0]["quantity"] = 1
         future_payload["rooms"][0]["adults"] = 2
         future_booking, _ = create_booking(future_payload)
@@ -5635,6 +5636,7 @@ class BookingApiTests(BookingServiceTests):
         )
         next_reservation = available_with_next["next_reservations"][0]
         self.assertEqual(next_reservation["source"], future_booking.source)
+        self.assertEqual(next_reservation["guest_market"], RatePlan.GuestMarket.FOREIGN)
         self.assertEqual(next_reservation["check_in"], future_booking.check_in)
         self.assertEqual(next_reservation["check_out"], future_booking.check_out)
         self.assertEqual(next_reservation["nights"], 1)
