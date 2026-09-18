@@ -99,6 +99,16 @@ def _pluralize_night_label(nights):
     return "Night" if nights == 1 else "Nights"
 
 
+def _invoice_pdf_url(request, booking, invoice, paid_invoice_ids):
+    if invoice.id not in paid_invoice_ids:
+        return None
+    path = (
+        f"/api/v1/public/bookings/{booking.public_token}/"
+        f"invoices/{invoice.id}/pdf/"
+    )
+    return request.build_absolute_uri(path) if request else path
+
+
 def _room_history_actor_type(request=None, booking=None):
     if booking and booking.source == Booking.Source.OTA:
         return PhysicalRoomActionHistory.ActorType.OTA
@@ -1716,7 +1726,10 @@ class OTARoomSelectionView(APIView):
         }
 
     @staticmethod
-    def _payload(hotel, timeline_status="all", physical_room_id=None):
+    def _payload(
+        hotel, timeline_status="all", physical_room_id=None, request=None,
+        include_unselected=False,
+    ):
         today = timezone.localdate()
         # Selection must include every active room so the client can both select and
         # deselect OTA inventory. OTA-only feeds apply their own ota_enabled filter.
@@ -1761,6 +1774,11 @@ class OTARoomSelectionView(APIView):
                 sort_key = (2, -booking.check_out.toordinal(), -booking.check_in.toordinal(), str(booking.id))
             if record_timeline_status in ["active_today", "upcoming"] and assignment.released_at is None:
                 active_booking_counts[assignment.physical_room_id] += 1
+            paid_invoice_ids = {
+                payment.invoice_id
+                for payment in booking.payments.all()
+                if payment.invoice_id and payment.receipt_number
+            }
             invoices = [
                 {
                     "id": str(invoice.id),
@@ -1768,6 +1786,9 @@ class OTARoomSelectionView(APIView):
                     "status": invoice.status,
                     "total": invoice.total,
                     "currency": invoice.currency,
+                    "invoice_pdf_url": _invoice_pdf_url(
+                        request, booking, invoice, paid_invoice_ids,
+                    ),
                 }
                 for invoice in booking.invoices.all()
             ]
@@ -1819,6 +1840,8 @@ class OTARoomSelectionView(APIView):
             group["selected_count"] += int(room.ota_enabled)
             group.setdefault("open_count", 0)
             group["open_count"] += int(room.ota_enabled and room.ota_sale_open)
+            if not include_unselected and not room.ota_enabled:
+                continue
             all_ota_records = records_by_room.get(room.id, [])
             record_summary = {
                 "all": len(all_ota_records),
@@ -1865,7 +1888,8 @@ class OTARoomSelectionView(APIView):
             "selected_room_ids": [room.id for room in rooms if room.ota_enabled],
             "deselected_room_ids": [room.id for room in rooms if not room.ota_enabled],
             "applied_timeline_status": timeline_status,
-            "room_types": list(grouped.values()),
+            "include_unselected": include_unselected,
+            "room_types": [group for group in grouped.values() if group["rooms"]],
         }
 
     def get(self, request):
@@ -1874,6 +1898,8 @@ class OTARoomSelectionView(APIView):
         return success(self._payload(
             self._hotel(request),
             timeline_status=query.validated_data["timeline_status"],
+            request=request,
+            include_unselected=query.validated_data["include_unselected"],
         ))
 
     @transaction.atomic
@@ -1958,7 +1984,7 @@ class OTARoomSelectionView(APIView):
         ])
         for room_type in affected_room_types.values():
             ensure_daily_inventory_for_room_type(room_type)
-        return success(self._payload(hotel))
+        return success(self._payload(hotel, request=request, include_unselected=True))
 
 
 class OTARoomHistoryView(APIView):
@@ -1974,6 +2000,8 @@ class OTARoomHistoryView(APIView):
             hotel,
             timeline_status=timeline_status,
             physical_room_id=physical_room_id,
+            request=request,
+            include_unselected=True,
         )
         room_payload = next((
             room
@@ -2040,6 +2068,11 @@ class OTARecordListView(APIView):
                 None,
             )
             guests = sorted(booking.guests.all(), key=lambda guest: guest.id)
+            paid_invoice_ids = {
+                payment.invoice_id
+                for payment in booking.payments.all()
+                if payment.invoice_id and payment.receipt_number
+            }
             invoices = [
                 {
                     "id": str(invoice.id),
@@ -2047,6 +2080,9 @@ class OTARecordListView(APIView):
                     "status": invoice.status,
                     "total": invoice.total,
                     "currency": invoice.currency,
+                    "invoice_pdf_url": _invoice_pdf_url(
+                        request, booking, invoice, paid_invoice_ids,
+                    ),
                 }
                 for invoice in booking.invoices.all()
             ]
@@ -2122,7 +2158,9 @@ class OTARoomSaleStatusView(APIView):
         action = serializer.validated_data["action"]
         should_open = action == "open"
         if room.ota_sale_open == should_open:
-            return success(OTARoomSelectionView._payload(hotel))
+            return success(OTARoomSelectionView._payload(
+                hotel, request=request, include_unselected=True,
+            ))
 
         if not should_open:
             today = timezone.localdate()
@@ -2204,7 +2242,9 @@ class OTARoomSaleStatusView(APIView):
             },
         )
         ensure_daily_inventory_for_room_type(room.room_type)
-        return success(OTARoomSelectionView._payload(hotel))
+        return success(OTARoomSelectionView._payload(
+            hotel, request=request, include_unselected=True,
+        ))
 
 
 class RoomBoardView(APIView):

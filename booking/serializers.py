@@ -236,6 +236,7 @@ class OTARoomTimelineQuerySerializer(serializers.Serializer):
         choices=["all", "active_today", "upcoming", "past"],
         default="all",
     )
+    include_unselected = serializers.BooleanField(default=False)
 
 
 class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):

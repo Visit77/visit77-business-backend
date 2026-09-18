@@ -3421,6 +3421,29 @@ class BookingApiTests(BookingServiceTests):
             "not_selected",
         )
 
+        selected_only = self.client.get(
+            "/api/v1/admin/ota-rooms/selection/?timeline_status=all",
+            **headers,
+        )
+        self.assertEqual(selected_only.status_code, 200, selected_only.data)
+        self.assertFalse(selected_only.data["data"]["include_unselected"])
+        self.assertEqual(selected_only.data["data"]["total_rooms"], 3)
+        self.assertEqual(selected_only.data["data"]["total_ota_rooms"], 1)
+        self.assertEqual(
+            [room["physical_room_id"] for group in selected_only.data["data"]["room_types"] for room in group["rooms"]],
+            [rooms[0].id],
+        )
+
+        all_rooms = self.client.get(
+            "/api/v1/admin/ota-rooms/selection/?timeline_status=all&include_unselected=true",
+            **headers,
+        )
+        self.assertTrue(all_rooms.data["data"]["include_unselected"])
+        self.assertEqual(
+            len([room for group in all_rooms.data["data"]["room_types"] for room in group["rooms"]]),
+            3,
+        )
+
         availability = self.client.get(
             f"/api/v1/public/hotels/{self.hotel.core_business_id}/availability/",
             {"check_in": self.check_in, "check_out": self.check_out, "adults": 2, "guest_market": "local"},
@@ -3530,6 +3553,9 @@ class BookingApiTests(BookingServiceTests):
             data["rooms"][0]["invoice_url"],
             f"/api/v1/public/bookings/{newer.public_token}/invoices/{payment.invoice_id}/pdf/",
         )
+        self.assertTrue(data["rooms"][0]["invoices"][0]["invoice_pdf_url"].endswith(
+            f"/api/v1/public/bookings/{newer.public_token}/invoices/{payment.invoice_id}/pdf/"
+        ))
         self.assertEqual(
             data["rooms"][0]["receipt_url"],
             f"/api/v1/public/bookings/{newer.public_token}/receipts/{payment.id}/pdf/",
@@ -3639,6 +3665,9 @@ class BookingApiTests(BookingServiceTests):
             ["OTA-CURRENT", "OTA-UPCOMING-NEAR", "OTA-UPCOMING-FAR", "OTA-PAST-NEAR", "OTA-PAST-FAR"],
         )
         current_record = history_data["ota_records"][0]
+        self.assertTrue(current_record["invoices"][0]["invoice_pdf_url"].endswith(
+            f"/api/v1/public/bookings/{current.public_token}/invoices/{current_payment.invoice_id}/pdf/"
+        ))
         self.assertEqual(
             current_record["invoice_url"],
             f"/api/v1/public/bookings/{current.public_token}/invoices/{current_payment.invoice_id}/pdf/",
