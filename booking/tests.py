@@ -3463,7 +3463,12 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(updated.data["data"]["total_rooms"], 3)
         self.assertEqual(updated.data["data"]["total_ota_rooms"], 1)
         self.assertEqual(updated.data["data"]["selected_room_ids"], [rooms[0].id])
+        self.assertFalse(updated.data["data"]["include_unselected"])
         room_rows = updated.data["data"]["room_types"][0]["rooms"]
+        self.assertEqual(
+            [item["physical_room_id"] for item in room_rows],
+            [rooms[0].id],
+        )
         selected_room = next(item for item in room_rows if item["physical_room_id"] == rooms[0].id)
         self.assertTrue(selected_room["is_ota_selected"])
         self.assertEqual(selected_room["room_type_name"], "Double Room")
@@ -3474,10 +3479,7 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(selected_room["area_unit"], "sqft")
         self.assertEqual(selected_room["size_sqft"], 305)
         self.assertEqual(selected_room["room_area_text"], "305 sqft")
-        self.assertEqual(
-            next(item for item in room_rows if item["physical_room_id"] == rooms[1].id)["ota_sale_status"],
-            "not_selected",
-        )
+        self.assertTrue(all(item["is_ota_selected"] for item in room_rows))
 
         selected_only = self.client.get(
             "/api/v1/admin/ota-rooms/selection/?timeline_status=all",

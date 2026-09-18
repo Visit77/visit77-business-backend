@@ -1984,7 +1984,7 @@ class OTARoomSelectionView(APIView):
         ])
         for room_type in affected_room_types.values():
             ensure_daily_inventory_for_room_type(room_type)
-        return success(self._payload(hotel, request=request, include_unselected=True))
+        return success(self._payload(hotel, request=request))
 
 
 class OTARoomHistoryView(APIView):
