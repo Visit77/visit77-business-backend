@@ -498,6 +498,27 @@ class BookingCodeTests(TestCase):
             [["guest@example.com"], ["hotel-bookings@example.com"]],
         )
 
+    @patch("booking.booking_services.email.EmailMultiAlternatives")
+    def test_ota_guest_and_hotel_email_can_run_as_independent_tasks(self, email_class_mock):
+        booking = self.create_booking("OTA-SPLIT-EMAIL")
+        self.hotel.core_snapshot = {
+            "booking_notification_email": "hotel-bookings@example.com",
+        }
+        self.hotel.save(update_fields=["core_snapshot"])
+        Guest.objects.create(
+            booking=booking,
+            name="Email Guest",
+            email="guest@example.com",
+            is_primary=True,
+        )
+
+        self.assertTrue(send_booking_confirmation_email_task(str(booking.id), "guest"))
+        self.assertTrue(send_booking_confirmation_email_task(str(booking.id), "hotel"))
+        self.assertEqual(
+            [call.kwargs["to"] for call in email_class_mock.call_args_list],
+            [["guest@example.com"], ["hotel-bookings@example.com"]],
+        )
+
     @patch("booking.booking_services.sms.send_custom_sms")
     def test_ota_confirmation_also_texts_hotel_verification_contact(self, send_sms_mock):
         booking = self.create_booking("OTA-HOTEL-SMS")
@@ -550,7 +571,10 @@ class BookingCodeTests(TestCase):
     def test_notification_dispatch_queues_email_and_sms_independently(
         self, email_delay, sms_delay,
     ):
-        email_delay.return_value.id = "email-task"
+        email_delay.side_effect = [
+            type("Result", (), {"id": "guest-email-task"})(),
+            type("Result", (), {"id": "hotel-email-task"})(),
+        ]
         sms_delay.side_effect = [
             type("Result", (), {"id": "guest-sms-task"})(),
             type("Result", (), {"id": "hotel-sms-task"})(),
@@ -558,7 +582,10 @@ class BookingCodeTests(TestCase):
 
         result = queue_booking_confirmation_notifications("booking-id")
 
-        email_delay.assert_called_once_with("booking-id")
+        self.assertEqual(
+            email_delay.call_args_list,
+            [call("booking-id", "guest"), call("booking-id", "hotel")],
+        )
         self.assertEqual(
             sms_delay.call_args_list,
             [
@@ -566,4 +593,5 @@ class BookingCodeTests(TestCase):
                 call("booking-id", "hotel"),
             ],
         )
-        self.assertEqual(result["email_task_id"], "email-task")
+        self.assertEqual(result["guest_email_task_id"], "guest-email-task")
+        self.assertEqual(result["hotel_email_task_id"], "hotel-email-task")

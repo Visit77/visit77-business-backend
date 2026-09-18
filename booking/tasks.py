@@ -18,20 +18,28 @@ def _hotel_booking_notification_contact(booking, field):
 
 
 def queue_booking_confirmation_notifications(booking_id):
-    """Publish independent email, guest SMS, and hotel SMS jobs."""
-    email_result = send_booking_confirmation_email_task.delay(booking_id)
+    """Publish independent guest/hotel email and SMS jobs."""
+    guest_email_result = send_booking_confirmation_email_task.delay(
+        booking_id, "guest"
+    )
+    hotel_email_result = send_booking_confirmation_email_task.delay(
+        booking_id, "hotel"
+    )
     guest_sms_result = send_booking_confirmation_sms_task.delay(booking_id, "guest")
     hotel_sms_result = send_booking_confirmation_sms_task.delay(booking_id, "hotel")
     logger.info(
         "Queued booking confirmation notifications for booking %s: "
-        "email_task_id=%s guest_sms_task_id=%s hotel_sms_task_id=%s",
+        "guest_email_task_id=%s hotel_email_task_id=%s "
+        "guest_sms_task_id=%s hotel_sms_task_id=%s",
         booking_id,
-        email_result.id,
+        guest_email_result.id,
+        hotel_email_result.id,
         guest_sms_result.id,
         hotel_sms_result.id,
     )
     return {
-        "email_task_id": email_result.id,
+        "guest_email_task_id": guest_email_result.id,
+        "hotel_email_task_id": hotel_email_result.id,
         "guest_sms_task_id": guest_sms_result.id,
         "hotel_sms_task_id": hotel_sms_result.id,
     }
@@ -66,7 +74,7 @@ def auto_cancel_no_show_reservations_task():
     retry_jitter=True,
     max_retries=3,
 )
-def send_booking_confirmation_email_task(self, booking_id):
+def send_booking_confirmation_email_task(self, booking_id, recipient_type="all"):
     booking = (
         Booking.objects
         .select_related("hotel")
@@ -77,7 +85,13 @@ def send_booking_confirmation_email_task(self, booking_id):
         .get(id=booking_id)
     )
 
-    sent = send_booking_confirmation_email(booking)
+    if recipient_type not in {"all", "guest", "hotel"}:
+        raise ValueError("recipient_type must be all, guest, or hotel.")
+
+    guest_sent = False
+    if recipient_type in {"all", "guest"}:
+        guest_sent = send_booking_confirmation_email(booking)
+
     hotel_sent = False
     hotel_email = _hotel_booking_notification_contact(
         booking, "booking_notification_email"
@@ -90,7 +104,8 @@ def send_booking_confirmation_email_task(self, booking_id):
         },
     }
     if (
-        booking.source == Booking.Source.OTA
+        recipient_type in {"all", "hotel"}
+        and booking.source == Booking.Source.OTA
         and hotel_email
         and hotel_email.lower() not in guest_emails
     ):
@@ -98,13 +113,14 @@ def send_booking_confirmation_email_task(self, booking_id):
             booking, recipient_email=hotel_email
         )
 
-    if not sent and not hotel_sent:
+    if not guest_sent and not hotel_sent:
         logger.info(
-            "Booking confirmation email skipped because booking %s has no recipient email.",
+            "Booking confirmation %s email skipped because booking %s has no recipient email.",
+            recipient_type,
             booking.booking_code,
         )
 
-    return bool(sent or hotel_sent)
+    return bool(guest_sent or hotel_sent)
 
 @shared_task(
     autoretry_for=(Exception,),
