@@ -6072,6 +6072,86 @@ class BookingApiTests(BookingServiceTests):
         self.assertNotIn(current.id, returned_ids)
         self.assertEqual(groups[-1]["rate_plan"]["id"], other_plan.id)
 
+        # Match OTA availability semantics: total occupancy is the capacity
+        # constraint; adult/child subtotals do not require exact matching.
+        self.room_type.max_adults = 2
+        self.room_type.max_children = 2
+        self.room_type.max_occupancy = 4
+        self.room_type.save(update_fields=["max_adults", "max_children", "max_occupancy"])
+        capacity_response = self.client.get(
+            "/api/v1/admin/available-rooms/search/",
+            {
+                "check_in": str(self.check_in),
+                "check_out": str(self.check_out),
+                "adults": 3,
+                "children": 0,
+                "guest_market": "local",
+                "workflow": "reserve",
+                "current_room_id": current.id,
+                "current_rate_plan_id": self.rate_plan.id,
+                "selected_room_ids": f"[{selected.id}]",
+            },
+            **headers,
+        )
+        self.assertEqual(capacity_response.status_code, 200, capacity_response.data)
+        capacity_room_ids = {
+            room["id"]
+            for group in capacity_response.data["data"]["groups"]
+            for room in group["rooms"]
+        }
+        self.assertIn(same_type.id, capacity_room_ids)
+
+    def test_pms_available_room_search_uses_aggregate_room_capacity(self):
+        self.hotel.package = Hotel.Package.PMS
+        self.hotel.save(update_fields=["package"])
+        self.room_type.max_adults = 2
+        self.room_type.max_children = 2
+        self.room_type.max_occupancy = 2
+        self.room_type.save(update_fields=["max_adults", "max_children", "max_occupancy"])
+        rooms = [
+            PhysicalRoom.objects.create(
+                hotel=self.hotel,
+                room_type=self.room_type,
+                room_number=f"CAP-{index}",
+            )
+            for index in range(1, 4)
+        ]
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+        params = {
+            "check_in": str(self.check_in),
+            "check_out": str(self.check_out),
+            "adults": 6,
+            "children": 0,
+            "guest_market": "local",
+            "workflow": "reserve",
+        }
+
+        response = self.client.get(
+            "/api/v1/admin/available-rooms/search/", params, **headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["total_rooms"], 3)
+        self.assertEqual(
+            {
+                room["id"]
+                for group in response.data["data"]["groups"]
+                for room in group["rooms"]
+            },
+            {room.id for room in rooms},
+        )
+
+        params["adults"] = 7
+        insufficient = self.client.get(
+            "/api/v1/admin/available-rooms/search/", params, **headers,
+        )
+        self.assertEqual(insufficient.status_code, 200, insufficient.data)
+        self.assertEqual(insufficient.data["data"]["total_rooms"], 0)
+        self.assertEqual(insufficient.data["data"]["groups"], [])
+
     def test_walk_in_v2_creates_one_booking_with_multiple_physical_rooms(self):
         first_room = PhysicalRoom.objects.create(
             hotel=self.hotel, room_type=self.room_type, room_number="W-MULTI-1",

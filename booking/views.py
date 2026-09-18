@@ -1556,11 +1556,13 @@ class PMSAvailableRoomSearchView(APIView):
             rooms = rooms.filter(status=PhysicalRoom.Status.VACANT)
 
         adults, children = data["adults"], data["children"]
-        rooms = list(rooms.filter(
-            room_type__max_adults__gte=adults,
-            room_type__max_children__gte=children,
-            room_type__max_occupancy__gte=adults + children,
-        ))
+        rooms = list(rooms)
+        available_guest_capacity = sum(
+            max(room.room_type.max_occupancy, 0)
+            for room in rooms
+        )
+        if available_guest_capacity < adults + children:
+            rooms = []
         dates = [check_in + timedelta(days=offset) for offset in range((check_out - check_in).days)]
 
         current_plan = None
