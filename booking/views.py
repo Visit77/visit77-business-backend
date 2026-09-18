@@ -2159,7 +2159,7 @@ class OTARoomSaleStatusView(APIView):
         should_open = action == "open"
         if room.ota_sale_open == should_open:
             return success(OTARoomSelectionView._payload(
-                hotel, request=request, include_unselected=True,
+                hotel, request=request,
             ))
 
         if not should_open:
@@ -2243,7 +2243,7 @@ class OTARoomSaleStatusView(APIView):
         )
         ensure_daily_inventory_for_room_type(room.room_type)
         return success(OTARoomSelectionView._payload(
-            hotel, request=request, include_unselected=True,
+            hotel, request=request,
         ))
 
 
