@@ -2906,6 +2906,64 @@ class BookingApiTests(BookingServiceTests):
             [reserved_booking.reference],
         )
 
+    def test_check_in_form_allows_currently_occupied_room_for_non_overlapping_future_stay(self):
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel, room_type=self.room_type, room_number="303-FUTURE",
+        )
+        occupied_booking = create_walk_in_booking(
+            {
+                "physical_room_id": room.id,
+                "rate_plan_id": self.rate_plan.id,
+                "check_in": self.check_in,
+                "check_out": self.check_out,
+                "contact_name": "Current Guest",
+                "contact_phone": "091111111",
+                "guest_market": "local",
+                "adults": 1,
+                "children": 0,
+                "guests": [{"name": "Current Guest", "is_primary": True}],
+            },
+            core_business_id=self.hotel.core_business_id,
+            check_in_immediately=True,
+        )
+        future_payload = self.payload()
+        future_payload["check_in"] = occupied_booking.check_out + timedelta(days=2)
+        future_payload["check_out"] = future_payload["check_in"] + timedelta(days=1)
+        future_payload["rooms"][0]["quantity"] = 1
+        future_payload["rooms"][0]["adults"] = 1
+        future_payload["rooms"][0]["extra_beds"] = 0
+        ensure_daily_inventory_for_room_type(self.room_type)
+        future_booking, _ = create_booking(future_payload)
+        RoomAssignment.objects.create(
+            booking_room=future_booking.rooms.get(), physical_room=room,
+        )
+
+        response = self.client.patch(
+            f"/api/v1/admin/bookings/{future_booking.id}/check-in-form/",
+            {
+                "adults": 1,
+                "children": 0,
+                "rooms": [{
+                    "core_room_type_id": self.room_type.core_room_type_id,
+                    "rate_plan_id": self.rate_plan.id,
+                    "quantity": 1,
+                    "extra_beds": 0,
+                    "physical_room_ids": [room.id],
+                }],
+            },
+            format="json",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        room.refresh_from_db()
+        self.assertEqual(room.status, PhysicalRoom.Status.OCCUPIED)
+        self.assertEqual(
+            future_booking.rooms.get().assignments.get().physical_room_id,
+            room.id,
+        )
+
     def test_check_in_form_rejects_date_update_overlapping_assigned_room(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-O")
         first = create_admin_reservation({

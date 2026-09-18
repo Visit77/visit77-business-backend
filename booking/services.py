@@ -2756,23 +2756,24 @@ def update_reservation_for_check_in(booking, data, *, replace_payment=False):
         if len(physical_rooms) != len(set(physical_ids)):
             raise ValidationError({"rooms": "Every assigned physical room must be active and match its room type."})
         for physical_room in physical_rooms:
-            already_assigned_to_booking = RoomAssignment.objects.filter(
+            overlapping_assignments = RoomAssignment.objects.filter(
                 physical_room=physical_room,
-                booking_room__booking=booking,
                 released_at__isnull=True,
-            ).exists()
-            if already_assigned_to_booking and physical_room.status == PhysicalRoom.Status.OCCUPIED:
-                checked_in_conflicts = RoomAssignment.objects.filter(
-                    physical_room=physical_room,
-                    released_at__isnull=True,
+                booking_room__booking__status__in=[
+                    Booking.Status.PENDING_PAYMENT,
+                    Booking.Status.CONFIRMED,
+                    Booking.Status.CHECKED_IN,
+                ],
+                booking_room__booking__check_in__lt=replacement.check_out,
+                booking_room__booking__check_out__gt=replacement.check_in,
+            ).exclude(
+                booking_room__booking=booking,
+            ).select_related("booking_room__booking")
+            if overlapping_assignments.exists():
+                checked_in_conflicts = overlapping_assignments.filter(
                     booking_room__booking__status=Booking.Status.CHECKED_IN,
-                ).exclude(booking_room__booking=booking).select_related("booking_room__booking")
-                if not checked_in_conflicts.exists():
-                    # A confirmed reservation must not make the room operationally occupied.
-                    # Repair stale state left by the former walk-in flow.
-                    physical_room.status = PhysicalRoom.Status.VACANT
-                    physical_room.save(update_fields=["status"])
-                else:
+                )
+                if checked_in_conflicts.exists():
                     conflict_bookings = []
                     seen_ids = set()
                     for conflict in checked_in_conflicts:
@@ -2798,16 +2799,19 @@ def update_reservation_for_check_in(booking, data, *, replace_payment=False):
                         ),
                         "conflict_bookings": conflict_bookings,
                     })
-            if physical_room.status != PhysicalRoom.Status.VACANT and not already_assigned_to_booking:
                 raise ValidationError({
-                    "rooms": f"Room {physical_room.room_number} is not vacant and cannot be newly assigned."
+                    "rooms": f"Room {physical_room.room_number} has an overlapping assignment."
                 })
-            if physical_room.status != PhysicalRoom.Status.VACANT:
-                raise ValidationError({"rooms": f"Room {physical_room.room_number} is not vacant."})
-            if _has_overlapping_room_assignment(
-                physical_room, replacement.check_in, replacement.check_out, exclude_booking=booking,
-            ):
-                raise ValidationError({"rooms": f"Room {physical_room.room_number} has an overlapping assignment."})
+            if physical_room.status in {
+                PhysicalRoom.Status.CLEANING,
+                PhysicalRoom.Status.OUT_OF_SERVICE,
+            }:
+                raise ValidationError({
+                    "rooms": (
+                        f"Room {physical_room.room_number} is {physical_room.get_status_display().lower()} "
+                        "and cannot be assigned."
+                    )
+                })
             if _has_overlapping_room_block(physical_room, replacement.check_in, replacement.check_out):
                 raise ValidationError({"rooms": f"Room {physical_room.room_number} is blocked for one or more stay dates."})
             validate_assignment_preferences(replacement_rooms[index], physical_room)
