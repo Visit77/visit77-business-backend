@@ -375,7 +375,10 @@ class BookingCodeTests(TestCase):
         booking = self.create_booking("TEST-CODE-ROLLOVER")
         self.assertEqual(booking.booking_code, "V77H-B00000001")
 
-    @override_settings(BOOKING_FRONTEND_URL="https://booking.example.com")
+    @override_settings(
+        BOOKING_FRONTEND_URL="https://booking.example.com",
+        DEFAULT_FROM_EMAIL="Visit77 Customer Service <no-reply@visit77.com>",
+    )
     @patch("booking.booking_services.email.EmailMultiAlternatives")
     def test_confirmation_email_uses_booking_code(self, email_class_mock):
         booking = self.create_booking("INTERNAL-EMAIL-REFERENCE")
@@ -395,6 +398,10 @@ class BookingCodeTests(TestCase):
 
         send_booking_confirmation_email(booking)
         email_class_mock.assert_called_once()
+        self.assertEqual(
+            email_class_mock.call_args.kwargs["from_email"],
+            "Visit77 Customer Service <no-reply@visit77.com>",
+        )
         email_class_mock.return_value.send.assert_called_once_with(fail_silently=False)
         email_class_mock.return_value.attach_alternative.assert_called_once()
         message = email_class_mock.call_args.kwargs["body"]

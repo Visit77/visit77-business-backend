@@ -198,7 +198,8 @@ EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD")
 EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
 
 DEFAULT_FROM_EMAIL = env(
-    "DEFAULT_FROM_EMAIL",default="Visit77 <booking@visit77.com>",
+    "DEFAULT_FROM_EMAIL",
+    default="Visit77 Customer Service <no-reply@visit77.com>",
 )
 RECEIPT_ISSUER_NAME = env("RECEIPT_ISSUER_NAME", default="Visit77 Co.,Ltd.")
 RECEIPT_ISSUER_ADDRESS = env(
