@@ -1612,6 +1612,22 @@ class BookingServiceTests(TestCase):
 
 @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key", CORE_JWT_SIGNING_KEY="test-core-jwt-key")
 class BookingApiTests(BookingServiceTests):
+    def test_admin_booking_detail_includes_hotel_check_times(self):
+        self.hotel.check_in_time = datetime.strptime("14:30", "%H:%M").time()
+        self.hotel.check_out_time = datetime.strptime("11:00", "%H:%M").time()
+        self.hotel.save(update_fields=["check_in_time", "check_out_time"])
+        booking, _ = create_booking(self.payload())
+
+        response = self.client.get(
+            f"/api/v1/admin/bookings/{booking.id}/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["hotel"]["check_in_time"], "14:30:00")
+        self.assertEqual(response.data["data"]["hotel"]["check_out_time"], "11:00:00")
+
     def test_admin_booking_detail_splits_room_and_breakfast_totals(self):
         self.rate_plan.base_price = Decimal("1000")
         self.rate_plan.default_price = Decimal("1000")
@@ -4826,6 +4842,8 @@ class BookingApiTests(BookingServiceTests):
             "longitude": 96.1951,
             "image": self.hotel.cover_image_url,
             "address": self.hotel.address,
+            "check_in_time": "12:00:00",
+            "check_out_time": "12:00:00",
         })
         self.assertEqual(
             detail.data["data"]["hotel_cancellation_policy"],

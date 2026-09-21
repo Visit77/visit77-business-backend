@@ -1499,6 +1499,12 @@ class BookingSerializer(serializers.ModelSerializer):
             "longitude": snapshot.get("longitude"),
             "image": obj.hotel.cover_image_url,
             "address": obj.hotel.address,
+            "check_in_time": (
+                obj.hotel.check_in_time.isoformat() if obj.hotel.check_in_time else None
+            ),
+            "check_out_time": (
+                obj.hotel.check_out_time.isoformat() if obj.hotel.check_out_time else None
+            ),
         }
 
     def get_hotel_cancellation_policy(self, obj):
