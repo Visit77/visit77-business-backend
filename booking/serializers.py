@@ -1490,6 +1490,7 @@ class BookingSerializer(serializers.ModelSerializer):
         )
 
     def get_hotel(self, obj):
+        print('a')
         snapshot = obj.hotel.core_snapshot or {}
         return {
             "name": obj.hotel.name,
