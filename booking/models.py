@@ -12,6 +12,10 @@ from django.utils import timezone
 from booking.storage import get_private_document_storage
 
 
+def default_invoice_charges():
+    return {"taxes": [{"title": "Tax", "mode": "included", "value": "0"}], "other_charges": []}
+
+
 class Hotel(models.Model):
     """Read-only projection of a Visit77 Core business."""
 
@@ -31,7 +35,7 @@ class Hotel(models.Model):
     base_currency = models.CharField(max_length=3, default="MMK")
     package = models.CharField(max_length=24, choices=Package.choices, default=Package.OTA)
     features = models.JSONField(default=dict, blank=True)
-    ota_invoice_charges = models.JSONField(default=dict, blank=True)
+    invoice_charges = models.JSONField(default=default_invoice_charges, blank=True)
     timezone = models.CharField(max_length=64, default="Asia/Yangon")
     check_in_time = models.TimeField(default=time(12, 0))
     check_out_time = models.TimeField(default=time(12, 0))
@@ -672,7 +676,7 @@ class Booking(models.Model):
     grand_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     amount_paid = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     cancellation_policy_snapshot = models.JSONField(default=dict, blank=True)
-    ota_invoice_charge_snapshot = models.JSONField(default=dict, blank=True)
+    invoice_charge_snapshot = models.JSONField(default=dict, blank=True)
     special_request = models.TextField(blank=True)
     hold_expires_at = models.DateTimeField(null=True, blank=True)
     checked_in_at = models.DateTimeField(null=True, blank=True)

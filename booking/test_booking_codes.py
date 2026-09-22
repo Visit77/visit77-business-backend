@@ -1,7 +1,10 @@
 from datetime import date, datetime, timezone as datetime_timezone
+from copy import deepcopy
 from unittest.mock import call, patch
 
 from django.test import TestCase, override_settings
+from pypdf import PdfReader
+from io import BytesIO
 
 from booking.models import (
     BOOKING_CODES_PER_SERIES,
@@ -26,7 +29,7 @@ from booking.models import (
 )
 from booking.booking_services.email import send_booking_confirmation_email
 from booking.booking_services.sms import normalize_sms_phone_number
-from booking.booking_services.receipt import _contact_values, ensure_receipt_pdf
+from booking.booking_services.receipt import _contact_values, ensure_receipt_pdf, render_receipt_pdf
 from booking.serializers import BookingSerializer, InvoiceSerializer
 from booking.services import record_payment
 from booking.tasks import (
@@ -407,7 +410,8 @@ class BookingCodeTests(TestCase):
             response["Content-Disposition"],
             f'inline; filename="{payment.receipt_number}.pdf"',
         )
-        self.assertTrue(b"".join(response.streaming_content).startswith(b"%PDF"))
+        receipt_bytes = b"".join(response.streaming_content)
+        self.assertTrue(receipt_bytes.startswith(b"%PDF"))
         invoice_url = (
             f"/api/v1/public/bookings/{booking.public_token}/"
             f"invoices/{payment.invoice_id}/pdf/"
@@ -419,7 +423,31 @@ class BookingCodeTests(TestCase):
             invoice_response["Content-Disposition"],
             f'inline; filename="{payment.invoice_number}.pdf"',
         )
-        self.assertTrue(b"".join(invoice_response.streaming_content).startswith(b"%PDF"))
+        invoice_bytes = b"".join(invoice_response.streaming_content)
+        self.assertTrue(invoice_bytes.startswith(b"%PDF"))
+        for pdf_bytes in (receipt_bytes, invoice_bytes):
+            text = "\n".join(page.extract_text() for page in PdfReader(BytesIO(pdf_bytes)).pages)
+            labels = (
+                "Total Room Charge", "Additional Charges", "Total Charges",
+                "Discount", "Adjustment", "Subtotal", "Service Charge",
+                "Tax", "Grand Total", "Amount Paid", "Amount Due",
+            )
+            positions = [text.index(label) for label in labels]
+            self.assertEqual(positions, sorted(positions))
+            self.assertIn("Included", text)
+        adjusted_snapshot = deepcopy(payment.receipt_snapshot)
+        adjusted_snapshot["invoice"]["lines"].append({
+            "description": "Adjustment", "total": "50", "line_type": "adjustment",
+        })
+        adjusted_snapshot["invoice"]["subtotal"] = "1050"
+        adjusted_snapshot["invoice"]["invoice_total"] = "1050"
+        adjusted_text = "\n".join(
+            page.extract_text()
+            for page in PdfReader(BytesIO(render_receipt_pdf(adjusted_snapshot))).pages
+        )
+        self.assertIn("Adjustment\n MMK 50", adjusted_text)
+        self.assertIn("Total Charges\n MMK 1,000", adjusted_text)
+        self.assertIn("Subtotal\n MMK 1,050", adjusted_text)
         payment.refresh_from_db()
         original_name = payment.receipt_pdf.name
         with payment.receipt_pdf.open("rb") as receipt_file:

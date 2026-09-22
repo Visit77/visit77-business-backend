@@ -71,6 +71,33 @@ class BookingServiceTests(TestCase):
         self.assertEqual(booking.grand_total, Decimal("320000"))
         self.assertEqual(list(DailyInventory.objects.values_list("held_rooms", flat=True)), [2, 2])
 
+    def test_pms_booking_uses_shared_invoice_charges(self):
+        self.hotel.invoice_charges = {
+            "taxes": [{"title": "VAT", "mode": "percentage", "value": "5.00"}],
+            "other_charges": [{"title": "Service Charge", "mode": "percentage", "value": "10.00"}],
+        }
+        self.hotel.save(update_fields=["invoice_charges"])
+        payload = {**self.payload(), "source": "pms"}
+        booking, _ = create_booking(payload)
+        invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
+        self.assertEqual(booking.source, Booking.Source.PMS)
+        self.assertEqual(booking.other_charge_total, Decimal("32000"))
+        self.assertEqual(booking.tax_total, Decimal("16000"))
+        self.assertEqual(booking.grand_total, Decimal("368000"))
+        self.assertEqual(invoice.subtotal, Decimal("352000"))
+        self.assertEqual(invoice.total, Decimal("368000"))
+        self.assertEqual(
+            list(invoice.lines.filter(metadata__line_type="invoice_other_charge").values_list("description", "total")),
+            [("Service Charge", Decimal("32000"))],
+        )
+        payment = record_payment(booking, {
+            "invoice_id": invoice.id,
+            "provider": Payment.Provider.CASH,
+            "amount": booking.grand_total,
+            "status": Payment.Status.PAID,
+        }, auto_assign=False)
+        self.assertEqual(payment.receipt_snapshot["invoice"]["tax_charges"][0]["title"], "VAT")
+
     def test_booking_room_serializer_includes_rate_plan_object_from_snapshot(self):
         booking, _ = create_booking(self.payload())
         booking_room = booking.rooms.select_related("rate_plan").get()
@@ -1627,12 +1654,12 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(self.client.put(url, {"code": "ABC12"}, format="json", **headers).status_code, 400)
         self.assertEqual(self.client.get(url, HTTP_X_BOOKING_ADMIN_KEY="test-admin-key").status_code, 403)
 
-    def test_ota_invoice_charge_setup_prices_booking_and_hides_unconfigured_rows(self):
+    def test_invoice_charge_setup_prices_booking_and_hides_unconfigured_rows(self):
         headers = {
             "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
             "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
         }
-        setup_url = "/api/v1/admin/hotels/ota-invoice-charges/"
+        setup_url = "/api/v1/admin/hotels/invoice-charges/"
         configured = self.client.put(setup_url, {
             "taxes": [
                 {"title": "Tax", "mode": "included"},
@@ -1651,7 +1678,7 @@ class BookingApiTests(BookingServiceTests):
         other_headers = {**headers, "HTTP_X_BOOKING_BUSINESS_ID": str(other_hotel.core_business_id)}
         self.assertEqual(
             self.client.get(setup_url, **other_headers).data["data"],
-            {"taxes": [], "other_charges": []},
+            {"taxes": [{"title": "Tax", "mode": "included", "value": "0"}], "other_charges": []},
         )
 
         payload = self.payload()
@@ -1668,18 +1695,18 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(invoice.subtotal, Decimal("357000"))
         self.assertEqual(invoice.total, Decimal("375000"))
         self.assertEqual(
-            list(invoice.lines.filter(metadata__line_type="ota_other_charge").values_list("description", "total")),
+            list(invoice.lines.filter(metadata__line_type="invoice_other_charge").values_list("description", "total")),
             [("Service Charge", Decimal("32000")), ("Resort Fee", Decimal("5000"))],
         )
 
         self.hotel.refresh_from_db()
-        self.hotel.ota_invoice_charges = {"taxes": [], "other_charges": []}
-        self.hotel.save(update_fields=["ota_invoice_charges"])
-        self.assertEqual(booking.ota_invoice_charge_snapshot["taxes"][0]["mode"], "included")
+        self.hotel.invoice_charges = {"taxes": [], "other_charges": []}
+        self.hotel.save(update_fields=["invoice_charges"])
+        self.assertEqual(booking.invoice_charge_snapshot["taxes"][0]["mode"], "included")
         unconfigured_estimate = estimate_booking(payload)
         self.assertEqual(unconfigured_estimate["tax_total"], Decimal("0"))
         self.assertEqual(unconfigured_estimate["other_charge_total"], Decimal("0"))
-        self.assertEqual(unconfigured_estimate["ota_invoice_charges"], {"taxes": [], "other_charges": []})
+        self.assertEqual(unconfigured_estimate["invoice_charges"], {"taxes": [], "other_charges": []})
 
     def test_admin_booking_detail_includes_hotel_check_times(self):
         self.hotel.check_in_time = datetime.strptime("14:30", "%H:%M").time()

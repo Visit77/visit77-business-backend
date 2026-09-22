@@ -177,7 +177,7 @@ def build_receipt_snapshot(payment):
         "invoice": {
             "lines": lines,
             "tax_charges": (
-                (booking.ota_invoice_charge_snapshot or {}).get("taxes", [])
+                (booking.invoice_charge_snapshot or {}).get("taxes", [])
                 if invoice and invoice.invoice_type == invoice.Type.ROOM_BOOKING else []
             ),
             "room_charge_total": str(room_charge),
@@ -357,16 +357,22 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     section("GUEST &amp; HOTEL DETAILS", detail_rows)
 
     amount_rows = []
+    section_ends = []
     room_lines = [line for line in invoice["lines"] if line["line_type"] in {"room", "extra_bed"}]
     service_charge_lines = [
         line for line in invoice["lines"]
-        if line["line_type"] == "ota_other_charge"
+        if line["line_type"] in {"ota_other_charge", "invoice_other_charge"}
         and line["description"].strip().casefold() == "service charge"
+    ]
+    adjustment_lines = [
+        line for line in invoice["lines"]
+        if line["line_type"] == "adjustment"
+        or line["description"].strip().casefold() == "adjustment"
     ]
     additional_lines = [
         line for line in invoice["lines"]
         if line["line_type"] not in {"room", "extra_bed", "service_fee"}
-        and line not in service_charge_lines
+        and line not in service_charge_lines and line not in adjustment_lines
     ]
     if room_lines:
         amount_rows.append(("<b>Room Charges</b>", ""))
@@ -375,32 +381,53 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
             for line in room_lines
         )
         room_total = Decimal(invoice["room_charge_total"]) + Decimal(invoice["extra_bed_total"])
-        amount_rows.append(("<b>Total Room Charge</b>", f"<b>{_money(room_total, currency)}</b>"))
+    else:
+        room_total = Decimal(invoice["room_charge_total"]) + Decimal(invoice["extra_bed_total"])
+    amount_rows.append(("<b>Total Room Charge</b>", f"<b>{_money(room_total, currency)}</b>"))
+    section_ends.append(len(amount_rows))
+    amount_rows.append(("<b>Additional Charges</b>", ""))
     if additional_lines:
-        amount_rows.append(("<b>Additional Charges</b>", ""))
         amount_rows.extend(
             (escape(line["description"]), _money(line["total"], currency))
             for line in additional_lines
         )
+    else:
+        amount_rows.append(("-", "0"))
+    section_ends.append(len(amount_rows) + 1)
     service_charge_total = sum(
         (Decimal(str(line["total"])) for line in service_charge_lines), Decimal("0"),
     )
-    display_subtotal = Decimal(str(invoice["subtotal"])) - service_charge_total
+    adjustment_total = sum(
+        (Decimal(str(line["total"])) for line in adjustment_lines), Decimal("0"),
+    )
+    total_charges = Decimal(str(invoice["subtotal"])) - service_charge_total - adjustment_total
+    discount_total = Decimal(str(invoice["discount_total"]))
+    display_subtotal = total_charges - discount_total + adjustment_total
+    amount_rows.extend([
+        ("<b>Total Charges</b>", f"<b>{_money(total_charges, currency)}</b>"),
+        ("Discount", f"-{_money(discount_total, currency)}" if discount_total else "0"),
+        ("Adjustment", _money(adjustment_total, currency) if adjustment_total else "0"),
+    ])
+    section_ends.append(len(amount_rows) + 1)
     amount_rows.append(("<b>Subtotal</b>", f"<b>{_money(display_subtotal, currency)}</b>"))
     amount_rows.extend(
         (escape(line["description"]), _money(line["total"], currency))
         for line in service_charge_lines
     )
+    if not service_charge_lines:
+        amount_rows.append(("Service Charge", "0"))
     tax_charges = invoice.get("tax_charges") or []
     for charge in tax_charges:
         amount_rows.append((
             escape(charge["title"]),
             "Included" if charge["mode"] == "included" else _money(charge["amount"], currency),
         ))
-    if Decimal(invoice["tax_total"]) and not tax_charges:
-        amount_rows.append(("Tax", _money(invoice["tax_total"], currency)))
-    if Decimal(invoice["discount_total"]):
-        amount_rows.append(("Discount", f"-{_money(invoice['discount_total'], currency)}"))
+    if not tax_charges:
+        amount_rows.append((
+            "Tax",
+            _money(invoice["tax_total"], currency) if Decimal(invoice["tax_total"]) else "Included",
+        ))
+    section_ends.append(len(amount_rows) + 1)
     amount_rows.extend([
         ("<b>Grand Total</b>", f"<b>{_money(invoice['invoice_total'], currency)}</b>"),
         ("<b>Amount Paid</b>", f"<b>{_money(snapshot['amount_paid'], currency)}</b>"),
@@ -414,7 +441,7 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     amount_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), pale), ("GRID", (0, 0), (-1, 0), 0.8, border),
         ("BOX", (0, 0), (-1, -1), 0.8, border), ("LINEBEFORE", (1, 0), (1, -1), 0.8, border),
-        ("LINEABOVE", (0, -2), (-1, -2), 0.8, border), ("LINEABOVE", (0, -1), (-1, -1), 0.8, border),
+        *(("LINEABOVE", (0, row), (-1, row), 0.8, border) for row in section_ends),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("TOPPADDING", (0, 0), (-1, -1), 4),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))

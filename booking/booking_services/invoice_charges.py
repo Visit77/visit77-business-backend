@@ -18,7 +18,7 @@ class ChargeRuleSerializer(serializers.Serializer):
         return attrs
 
 
-class OTAInvoiceChargesSerializer(serializers.Serializer):
+class InvoiceChargesSerializer(serializers.Serializer):
     taxes = ChargeRuleSerializer(many=True, required=False, default=list)
     other_charges = ChargeRuleSerializer(many=True, required=False, default=list)
 
@@ -28,7 +28,7 @@ class OTAInvoiceChargesSerializer(serializers.Serializer):
         return value
 
 
-def calculate_ota_invoice_charges(config, base_subtotal):
+def calculate_invoice_charges(config, base_subtotal):
     """Freeze amounts at booking time; percentages use pre-charge subtotal."""
     base_subtotal = Decimal(str(base_subtotal))
     result = {"taxes": [], "other_charges": []}

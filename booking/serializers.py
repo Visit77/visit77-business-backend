@@ -123,7 +123,7 @@ class HotelSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "core_business_id", "name", "slug", "address", "phone", "cover_image_url",
             "features", "core_snapshot", "access_snapshot", "synced_at",
-            "ota_invoice_charges", "document_code",
+            "invoice_charges", "document_code",
         ]
 
     def validate_base_currency(self, value):
@@ -1422,7 +1422,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "subtotal": money(obj.subtotal),
             "tax_total": money(obj.tax_total),
             "tax_charges": (
-                (booking.ota_invoice_charge_snapshot or {}).get("taxes", [])
+                (booking.invoice_charge_snapshot or {}).get("taxes", [])
                 if obj.invoice_type == Invoice.Type.ROOM_BOOKING else []
             ),
             "discount_total": money(obj.discount_total),
