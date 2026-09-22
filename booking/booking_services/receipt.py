@@ -164,6 +164,8 @@ def build_receipt_snapshot(payment):
             "nights": booking.nights,
             "hotel_name": booking.hotel.name,
             "hotel_address": booking.hotel.address,
+            "hotel_phone": booking.hotel.phone,
+            "hotel_email": ", ".join(_hotel_email(booking.hotel)),
             "rooms": list(grouped_rooms.values()),
         },
         "guest": {
@@ -247,7 +249,7 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     invoice = snapshot["invoice"]
     payment_date = timezone.datetime.fromisoformat(snapshot["payment_date"]).strftime("%d %b %Y")
 
-    story = [Table([["", ""]], colWidths=[159 * mm, 0], rowHeights=[2 * mm], style=[("BACKGROUND", (0, 0), (-1, -1), blue)]), Spacer(1, 6 * mm)]
+    story = []
     issuer_detail_lines = [f"<b>{escape(str(issuer['name']))}</b>"]
     for field_name in ("address", "email", "phone"):
         issuer_detail_lines.extend(
@@ -282,19 +284,50 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
             f"<font color='#3039F5' size='18'><b>{escape(str(brand_label))}</b></font>",
             right,
         )
-    story.append(Table([
-        [Paragraph(issuer_details, small), brand_content],
-    ], colWidths=[105 * mm, 54 * mm]))
-    story.extend([Spacer(1, 3 * mm), Table([[""]], colWidths=[159 * mm], rowHeights=[0.4], style=[("BACKGROUND", (0, 0), (-1, -1), border)]), Spacer(1, 4 * mm)])
-    story.append(Table([
-        [Paragraph(f"<b>{document_title}</b>", title), Paragraph(f"<b>Booking ID:</b> &nbsp; {booking['booking_code']}<br/><b>Payment Date:</b> &nbsp; {payment_date}", small)],
-        [Paragraph(document_number, styles["BodyText"]), ""],
-    ], colWidths=[105 * mm, 54 * mm]))
+    header = Table([[
+        brand_content,
+        Paragraph(escape(document_title), ParagraphStyle(
+            "DocumentHeaderTitle", parent=title, alignment=TA_RIGHT,
+        )),
+    ]], colWidths=[105 * mm, 54 * mm])
+    header.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    story.extend([
+        header,
+        Spacer(1, 2 * mm),
+        Table([[""]], colWidths=[159 * mm], rowHeights=[2 * mm], style=[
+            ("BACKGROUND", (0, 0), (-1, -1), blue),
+        ]),
+        Spacer(1, 3 * mm),
+        Paragraph(issuer_details, small),
+        Spacer(1, 2 * mm),
+        Table([[""]], colWidths=[159 * mm], rowHeights=[0.4], style=[
+            ("BACKGROUND", (0, 0), (-1, -1), border),
+        ]),
+        Spacer(1, 3 * mm),
+        Table([[
+            "",
+            Paragraph(
+                f"<b>{escape(document_title)} ID:</b> &nbsp; {escape(str(document_number))}"
+                f"<br/><b>Booking ID:</b> &nbsp; {escape(str(booking['booking_code']))}"
+                f"<br/><b>Payment Date:</b> &nbsp; {payment_date}",
+                small,
+            ),
+        ]], colWidths=[97 * mm, 62 * mm]),
+    ])
     story.append(Spacer(1, 4 * mm))
 
     def section(title_text, rows, widths=(42 * mm, 117 * mm)):
         data = [[Paragraph(f"<b>{title_text}</b>", center), ""]] + [
-            [Paragraph(str(label), small), Paragraph(str(value or "-"), small)] for label, value in rows
+            [
+                Paragraph(str(label) if label else " ", small),
+                Paragraph(str(value) if value else (" " if not label else "-"), small),
+            ] for label, value in rows
         ]
         table = Table(data, colWidths=list(widths), repeatRows=1)
         table.setStyle(TableStyle([
@@ -306,11 +339,17 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
         ]))
         story.extend([table, Spacer(1, 4 * mm)])
 
-    section("GUEST DETAILS", [("Name", guest["name"]), ("Billing Address", guest["billing_address"]), ("Email Address", guest["email"])])
-    room_rows = [("Hotel Name", booking["hotel_name"]), ("Period", f"{booking['check_in']} - {booking['check_out']} ({booking['nights']} night(s))")]
-    for room in booking["rooms"]:
-        room_rows.extend([("Room Type", room["room_type"]), ("No. of Rooms", room["quantity"]), ("No. of Extra Beds", room["extra_beds"])])
-    section("BOOKING DETAILS", room_rows)
+    detail_rows = [
+        ("Guest Name", guest["name"]),
+        ("Contact Phone", guest.get("phone", "")),
+        ("Email Address", guest["email"]),
+        ("", ""),
+        ("Hotel Name", booking["hotel_name"]),
+        ("Stay Period", f"{booking['check_in']} - {booking['check_out']} ({booking['nights']} night(s))"),
+        ("Contact Phone", booking.get("hotel_phone", "")),
+        ("Email Address", booking.get("hotel_email", "")),
+    ]
+    section("GUEST &amp; HOTEL DETAILS", detail_rows)
 
     amount_rows = []
     room_lines = [line for line in invoice["lines"] if line["line_type"] in {"room", "extra_bed"}]
