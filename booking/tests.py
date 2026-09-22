@@ -1617,12 +1617,15 @@ class BookingApiTests(BookingServiceTests):
             "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
             "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
         }
-        url = f"/api/v1/admin/hotels/{self.hotel.id}/document-code/"
+        url = "/api/v1/admin/hotels/document-code/"
         self.assertEqual(self.client.put(url, {"code": "MAND"}, format="json", **headers).status_code, 200)
         self.assertEqual(self.client.get(url, **headers).data["data"]["code"], "MAND")
-        Hotel.objects.create(core_business_id=999999, name="Second Hotel", document_code="GERD")
+        second = Hotel.objects.create(core_business_id=999999, name="Second Hotel", document_code="GERD")
+        second_headers = {**headers, "HTTP_X_BOOKING_BUSINESS_ID": str(second.core_business_id)}
+        self.assertEqual(self.client.get(url, **second_headers).data["data"]["code"], "GERD")
         self.assertEqual(self.client.put(url, {"code": "GERD"}, format="json", **headers).status_code, 400)
         self.assertEqual(self.client.put(url, {"code": "ABC12"}, format="json", **headers).status_code, 400)
+        self.assertEqual(self.client.get(url, HTTP_X_BOOKING_ADMIN_KEY="test-admin-key").status_code, 403)
 
     def test_ota_invoice_charge_setup_prices_booking_and_hides_unconfigured_rows(self):
         headers = {

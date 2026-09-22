@@ -3165,9 +3165,14 @@ class HotelViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins.L
     filterset_fields = ["core_business_id", "is_active"]
     business_lookup = "core_business_id"
 
-    @action(detail=True, methods=["get", "put"], url_path="document-code")
-    def document_code(self, request, pk=None):
-        hotel = self.get_object()
+    @action(detail=False, methods=["get", "put"], url_path="document-code")
+    def document_code(self, request):
+        core_business_id = getattr(request, "booking_core_business_id", None)
+        if core_business_id is None:
+            raise PermissionDenied("X-Booking-Business-ID is required.")
+        hotel = Hotel.objects.filter(core_business_id=core_business_id).first()
+        if hotel is None:
+            raise NotFound("Hotel not found for X-Booking-Business-ID.")
         if request.method == "GET":
             return success({"code": hotel.document_code})
         code = str(request.data.get("code", "")).strip().upper()
