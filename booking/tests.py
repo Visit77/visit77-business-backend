@@ -1612,6 +1612,18 @@ class BookingServiceTests(TestCase):
 
 @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key", CORE_JWT_SIGNING_KEY="test-core-jwt-key")
 class BookingApiTests(BookingServiceTests):
+    def test_hotel_document_code_setup_rejects_duplicate(self):
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+        url = f"/api/v1/admin/hotels/{self.hotel.id}/document-code/"
+        self.assertEqual(self.client.put(url, {"code": "MAND"}, format="json", **headers).status_code, 200)
+        self.assertEqual(self.client.get(url, **headers).data["data"]["code"], "MAND")
+        Hotel.objects.create(core_business_id=999999, name="Second Hotel", document_code="GERD")
+        self.assertEqual(self.client.put(url, {"code": "GERD"}, format="json", **headers).status_code, 400)
+        self.assertEqual(self.client.put(url, {"code": "ABC12"}, format="json", **headers).status_code, 400)
+
     def test_ota_invoice_charge_setup_prices_booking_and_hides_unconfigured_rows(self):
         headers = {
             "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
@@ -2857,6 +2869,7 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(paid.data["data"]["amount"], 10500.0)
 
         admin_bill = self.client.get(f"/api/v1/admin/bookings/{booking.id}/stay-bill/", **headers)
+        booking.refresh_from_db()
         self.assertEqual(admin_bill.status_code, 200, admin_bill.data)
         self.assertEqual(admin_bill.data["data"]["booking_code"], booking.booking_code)
         self.assertEqual(len(admin_bill.data["data"]["invoices"]), 2)
@@ -3702,6 +3715,7 @@ class BookingApiTests(BookingServiceTests):
             ["OTA-301-NEWER", "OTA-301-OLDER"],
         )
         self.assertEqual([record["room_number"] for record in data["rooms"]], ["301", "301"])
+        newer.refresh_from_db()
         self.assertEqual(data["rooms"][0]["booking_code"], newer.booking_code)
         self.assertEqual(
             [guest["name"] for guest in data["rooms"][0]["guests"]],
@@ -4873,7 +4887,7 @@ class BookingApiTests(BookingServiceTests):
         payload["check_out"] = str(payload["check_out"])
         response = self.client.post("/api/v1/public/bookings/", payload, format="json", HTTP_IDEMPOTENCY_KEY="api-key")
         self.assertEqual(response.status_code, 201, response.data)
-        self.assertTrue(response.data["data"]["booking_code"].startswith("V77H-"))
+        self.assertRegex(response.data["data"]["booking_code"], r"^[A-Z0-9]{6}$")
         self.assertEqual(response.data["data"]["source"], Booking.Source.OTA)
         token = response.data["data"]["public_token"]
         detail = self.client.get(f"/api/v1/public/bookings/{token}/")

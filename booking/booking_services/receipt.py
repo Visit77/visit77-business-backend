@@ -304,7 +304,12 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
             ("BACKGROUND", (0, 0), (-1, -1), blue),
         ]),
         Spacer(1, 3 * mm),
-        Paragraph(issuer_details, small),
+        Table([[Paragraph(issuer_details, small)]], colWidths=[159 * mm], style=[
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]),
         Spacer(1, 2 * mm),
         Table([[""]], colWidths=[159 * mm], rowHeights=[0.4], style=[
             ("BACKGROUND", (0, 0), (-1, -1), border),
@@ -353,7 +358,16 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
 
     amount_rows = []
     room_lines = [line for line in invoice["lines"] if line["line_type"] in {"room", "extra_bed"}]
-    additional_lines = [line for line in invoice["lines"] if line["line_type"] not in {"room", "extra_bed", "service_fee"}]
+    service_charge_lines = [
+        line for line in invoice["lines"]
+        if line["line_type"] == "ota_other_charge"
+        and line["description"].strip().casefold() == "service charge"
+    ]
+    additional_lines = [
+        line for line in invoice["lines"]
+        if line["line_type"] not in {"room", "extra_bed", "service_fee"}
+        and line not in service_charge_lines
+    ]
     if room_lines:
         amount_rows.append(("<b>Room Charges</b>", ""))
         amount_rows.extend(
@@ -368,7 +382,15 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
             (escape(line["description"]), _money(line["total"], currency))
             for line in additional_lines
         )
-    amount_rows.append(("<b>Subtotal</b>", f"<b>{_money(invoice['subtotal'], currency)}</b>"))
+    service_charge_total = sum(
+        (Decimal(str(line["total"])) for line in service_charge_lines), Decimal("0"),
+    )
+    display_subtotal = Decimal(str(invoice["subtotal"])) - service_charge_total
+    amount_rows.append(("<b>Subtotal</b>", f"<b>{_money(display_subtotal, currency)}</b>"))
+    amount_rows.extend(
+        (escape(line["description"]), _money(line["total"], currency))
+        for line in service_charge_lines
+    )
     tax_charges = invoice.get("tax_charges") or []
     for charge in tax_charges:
         amount_rows.append((

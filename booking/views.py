@@ -3165,6 +3165,23 @@ class HotelViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins.L
     filterset_fields = ["core_business_id", "is_active"]
     business_lookup = "core_business_id"
 
+    @action(detail=True, methods=["get", "put"], url_path="document-code")
+    def document_code(self, request, pk=None):
+        hotel = self.get_object()
+        if request.method == "GET":
+            return success({"code": hotel.document_code})
+        code = str(request.data.get("code", "")).strip().upper()
+        if not re.fullmatch(r"[A-Z]{1,4}", code):
+            raise ValidationError({"code": "Use 1 to 4 capital letters (A-Z)."})
+        if code != hotel.document_code:
+            if Hotel.objects.exclude(pk=hotel.pk).filter(document_code=code).exists():
+                raise ValidationError({"code": "This hotel code is already in use."})
+            if Invoice.objects.filter(invoice_number__startswith=f"{code}-INV-").exists() or Payment.objects.filter(receipt_number__startswith=f"{code}-REC-").exists():
+                raise ValidationError({"code": "This code has already been used for documents."})
+            hotel.document_code = code
+            hotel.save(update_fields=["document_code"])
+        return success({"code": hotel.document_code})
+
     @action(detail=True, methods=["get", "put"], url_path="ota-invoice-charges")
     def ota_invoice_charges(self, request, pk=None):
         hotel = self.get_object()

@@ -2260,8 +2260,6 @@ def record_payment(booking, data, auto_assign=True):
         paid_at=timezone.now() if data.get("status", Payment.Status.PAID) == Payment.Status.PAID else None,
     )
     if payment.status == Payment.Status.PAID:
-        from booking.booking_services.receipt import finalize_receipt_snapshot
-        finalize_receipt_snapshot(payment)
         was_pending = booking.status == Booking.Status.PENDING_PAYMENT
         booking.amount_paid += payment.amount
         # A successful full payment or accepted deposit commits the reservation.
@@ -2270,6 +2268,8 @@ def record_payment(booking, data, auto_assign=True):
             booking.status = Booking.Status.CONFIRMED
             booking.hold_expires_at = None
         booking.save(update_fields=["amount_paid", "status", "hold_expires_at", "updated_at"])
+        from booking.booking_services.receipt import finalize_receipt_snapshot
+        finalize_receipt_snapshot(payment)
         if auto_assign and payment.amount > 0 and was_pending and booking.status == Booking.Status.CONFIRMED:
             auto_assign_physical_rooms_for_booking(booking)
     _sync_invoice_status(invoice)

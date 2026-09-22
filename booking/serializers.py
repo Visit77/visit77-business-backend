@@ -123,7 +123,7 @@ class HotelSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "core_business_id", "name", "slug", "address", "phone", "cover_image_url",
             "features", "core_snapshot", "access_snapshot", "synced_at",
-            "ota_invoice_charges",
+            "ota_invoice_charges", "document_code",
         ]
 
     def validate_base_currency(self, value):

@@ -1,9 +1,13 @@
 import uuid
+import secrets
+import string
+from zoneinfo import ZoneInfo
 from datetime import time
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
+from django.utils import timezone
 
 from booking.storage import get_private_document_storage
 
@@ -18,6 +22,7 @@ class Hotel(models.Model):
         OTA_PMS = "ota_pms", "OTA + PMS"
 
     core_business_id = models.PositiveBigIntegerField(unique=True)
+    document_code = models.CharField(max_length=4, unique=True, editable=False)
     name = models.CharField(max_length=255)
     slug = models.SlugField(max_length=255, blank=True)
     address = models.TextField(blank=True)
@@ -38,6 +43,19 @@ class Hotel(models.Model):
 
     def __str__(self):
         return self.name
+
+    def save(self, *args, **kwargs):
+        if not self.document_code:
+            for _ in range(100):
+                candidate = "".join(secrets.choice(string.ascii_uppercase) for _ in range(4))
+                if not Hotel.objects.filter(document_code=candidate).exists():
+                    self.document_code = candidate
+                    break
+            else:
+                raise RuntimeError("Unable to allocate a unique hotel document code.")
+            if kwargs.get("update_fields") is not None:
+                kwargs["update_fields"] = set(kwargs["update_fields"]) | {"document_code"}
+        return super().save(*args, **kwargs)
 
     def has_feature(self, key):
         return bool((self.features or {}).get(key))
@@ -518,6 +536,7 @@ class AddOn(models.Model):
         constraints = [models.UniqueConstraint(fields=["hotel", "code"], name="uniq_add_on_code")]
 
 
+# Kept for existing historical codes and compatibility with old imports.
 BOOKING_CODE_PREFIX = "V77H-"
 BOOKING_CODES_PER_SERIES = 9_999_999
 DOCUMENT_CODES_PER_SERIES = 9_999_999
@@ -554,24 +573,64 @@ def format_receipt_number(sequence_value):
 
 
 class BookingCodeSequence(models.Model):
-    """Singleton counter used to allocate globally unique booking codes safely."""
+    """Legacy counter retained for previously issued booking codes."""
 
     id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
     last_value = models.PositiveBigIntegerField(default=0)
 
 
 class InvoiceNumberSequence(models.Model):
-    """Singleton counter used to allocate globally unique invoice numbers."""
+    """Legacy counter retained for previously issued invoice numbers."""
 
     id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
     last_value = models.PositiveBigIntegerField(default=0)
 
 
 class ReceiptNumberSequence(models.Model):
-    """Singleton counter used to allocate globally unique receipt numbers."""
+    """Legacy counter retained for previously issued receipt numbers."""
 
     id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
     last_value = models.PositiveBigIntegerField(default=0)
+
+
+class HotelDocumentSequence(models.Model):
+    hotel = models.ForeignKey(Hotel, on_delete=models.PROTECT)
+    year = models.PositiveSmallIntegerField()
+    kind = models.CharField(max_length=3, choices=[("INV", "Invoice"), ("REC", "Receipt")])
+    last_value = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["hotel", "year", "kind"], name="uniq_hotel_document_year_kind")]
+
+
+class OTABookingYearSequence(models.Model):
+    year = models.PositiveSmallIntegerField(primary_key=True)
+    last_value = models.PositiveIntegerField(default=0)
+
+
+def _hotel_year(hotel):
+    return timezone.localtime(timezone.now(), ZoneInfo(hotel.timezone)).year
+
+
+def _random_booking_code():
+    alphabet = string.ascii_uppercase + string.digits
+    for _ in range(100):
+        candidate = "".join(secrets.choice(alphabet) for _ in range(6))
+        if not Booking.objects.filter(booking_code=candidate).exists():
+            return candidate
+    raise RuntimeError("Unable to allocate a unique booking code.")
+
+
+def _next_document_number(hotel, kind):
+    year = _hotel_year(hotel)
+    sequence, _ = HotelDocumentSequence.objects.select_for_update().get_or_create(
+        hotel=hotel, year=year, kind=kind,
+    )
+    sequence.last_value += 1
+    if sequence.last_value > 999999:
+        raise ValueError("Hotel document sequence exhausted for this year.")
+    sequence.save(update_fields=["last_value"])
+    return f"{hotel.document_code}-{kind}-{year % 100:02d}-{sequence.last_value:06d}"
 
 
 class Booking(models.Model):
@@ -589,7 +648,7 @@ class Booking(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     reference = models.CharField(max_length=24, unique=True)
-    booking_code = models.CharField(max_length=15, unique=True, editable=False)
+    booking_code = models.CharField(max_length=20, unique=True, editable=False)
     public_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     hotel = models.ForeignKey(Hotel, on_delete=models.PROTECT, related_name="bookings")
     booked_by_core_user_id = models.PositiveBigIntegerField(null=True, blank=True, db_index=True)
@@ -632,14 +691,24 @@ class Booking(models.Model):
         return (self.check_out - self.check_in).days
 
     def save(self, *args, **kwargs):
-        if self.booking_code:
-            return super().save(*args, **kwargs)
-
         with transaction.atomic():
-            sequence, _ = BookingCodeSequence.objects.select_for_update().get_or_create(pk=1)
-            sequence.last_value += 1
-            self.booking_code = format_booking_code(sequence.last_value)
-            sequence.save(update_fields=["last_value"])
+            if not self.booking_code:
+                self.booking_code = _random_booking_code()
+            elif (
+                self.source == self.Source.OTA
+                and self.status == self.Status.CONFIRMED
+                and self.amount_paid > 0
+                and len(self.booking_code) == 6
+            ):
+                year = _hotel_year(self.hotel)
+                sequence, _ = OTABookingYearSequence.objects.select_for_update().get_or_create(year=year)
+                sequence.last_value += 1
+                if sequence.last_value > 999999:
+                    raise ValueError("OTA booking sequence exhausted for this year.")
+                sequence.save(update_fields=["last_value"])
+                self.booking_code = f"V77-HTL-{year % 100:02d}-{sequence.last_value:06d}"
+            if kwargs.get("update_fields") is not None:
+                kwargs["update_fields"] = set(kwargs["update_fields"]) | {"booking_code"}
             return super().save(*args, **kwargs)
 
 
@@ -799,10 +868,7 @@ class Invoice(models.Model):
             return super().save(*args, **kwargs)
 
         with transaction.atomic():
-            sequence, _ = InvoiceNumberSequence.objects.select_for_update().get_or_create(pk=1)
-            sequence.last_value += 1
-            self.invoice_number = format_invoice_number(sequence.last_value)
-            sequence.save(update_fields=["last_value"])
+            self.invoice_number = _next_document_number(self.booking.hotel, "INV")
             if kwargs.get("update_fields") is not None:
                 kwargs["update_fields"] = set(kwargs["update_fields"]) | {"invoice_number"}
             return super().save(*args, **kwargs)
@@ -893,10 +959,7 @@ class Payment(models.Model):
             return super().save(*args, **kwargs)
 
         with transaction.atomic():
-            sequence, _ = ReceiptNumberSequence.objects.select_for_update().get_or_create(pk=1)
-            sequence.last_value += 1
-            self.receipt_number = format_receipt_number(sequence.last_value)
-            sequence.save(update_fields=["last_value"])
+            self.receipt_number = _next_document_number(self.booking.hotel, "REC")
             if kwargs.get("update_fields") is not None:
                 kwargs["update_fields"] = set(kwargs["update_fields"]) | {"receipt_number"}
             return super().save(*args, **kwargs)

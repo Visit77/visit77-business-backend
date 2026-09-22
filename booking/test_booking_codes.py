@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone as datetime_timezone
 from unittest.mock import call, patch
 
 from django.test import TestCase, override_settings
@@ -14,6 +14,8 @@ from booking.models import (
     Invoice,
     InvoiceLine,
     InvoiceNumberSequence,
+    HotelDocumentSequence,
+    OTABookingYearSequence,
     Payment,
     ReceiptNumberSequence,
     RatePlan,
@@ -36,7 +38,14 @@ from booking.tasks import (
 
 class BookingCodeTests(TestCase):
     def setUp(self):
-        self.hotel = Hotel.objects.create(core_business_id=987654321, name="Code Test Hotel")
+        self.hotel = Hotel.objects.create(core_business_id=987654321, name="Code Test Hotel", document_code="MAND")
+
+    def test_default_hotel_document_code_is_unique_four_capital_letters(self):
+        first = Hotel.objects.create(core_business_id=987654323, name="First Default Hotel")
+        second = Hotel.objects.create(core_business_id=987654324, name="Second Default Hotel")
+        self.assertRegex(first.document_code, r"^[A-Z]{4}$")
+        self.assertRegex(second.document_code, r"^[A-Z]{4}$")
+        self.assertNotEqual(first.document_code, second.document_code)
 
     def create_booking(self, reference):
         return Booking.objects.create(
@@ -94,7 +103,7 @@ class BookingCodeTests(TestCase):
     def test_code_is_allocated_and_serialized(self):
         booking = self.create_booking("TEST-CODE-1")
 
-        self.assertEqual(booking.booking_code, "V77H-A00000001")
+        self.assertRegex(booking.booking_code, r"^[A-Z0-9]{6}$")
         self.assertEqual(BookingSerializer(booking).data["booking_code"], booking.booking_code)
 
         invoice = Invoice.objects.create(
@@ -110,8 +119,9 @@ class BookingCodeTests(TestCase):
         first = self.create_booking("TEST-CODE-1")
         second = self.create_booking("TEST-CODE-2")
 
-        self.assertEqual(first.booking_code, "V77H-A00000001")
-        self.assertEqual(second.booking_code, "V77H-A00000002")
+        self.assertRegex(first.booking_code, r"^[A-Z0-9]{6}$")
+        self.assertRegex(second.booking_code, r"^[A-Z0-9]{6}$")
+        self.assertNotEqual(first.booking_code, second.booking_code)
 
     def test_invoice_and_receipt_numbers_increment_independently(self):
         booking = self.create_booking("TEST-DOCUMENT-CODES")
@@ -137,10 +147,72 @@ class BookingCodeTests(TestCase):
             invoice_number=first_invoice.invoice_number,
         )
 
-        self.assertEqual(first_invoice.invoice_number, "V77-INV-A0000001")
-        self.assertEqual(second_invoice.invoice_number, "V77-INV-A0000002")
-        self.assertEqual(first_receipt.receipt_number, "V77-REC-A0000001")
-        self.assertEqual(second_receipt.receipt_number, "V77-REC-A0000002")
+        self.assertEqual(first_invoice.invoice_number, "MAND-INV-26-000001")
+        self.assertEqual(second_invoice.invoice_number, "MAND-INV-26-000002")
+        self.assertEqual(first_receipt.receipt_number, "MAND-REC-26-000001")
+        self.assertEqual(second_receipt.receipt_number, "MAND-REC-26-000002")
+
+    def test_hotel_document_series_are_separate_and_reset_each_year(self):
+        other_hotel = Hotel.objects.create(core_business_id=987654322, name="Other Hotel", document_code="GERD")
+        other_booking = Booking.objects.create(
+            reference="OTHER-HOTEL", hotel=other_hotel,
+            check_in=date(2026, 9, 1), check_out=date(2026, 9, 2),
+            contact_name="Guest", contact_phone="09123456789",
+        )
+        first_booking = self.create_booking("FIRST-HOTEL")
+        with patch("booking.models.timezone.now", return_value=datetime(2026, 12, 31, 12, tzinfo=datetime_timezone.utc)):
+            first_invoice = Invoice.objects.create(booking=first_booking, currency="MMK")
+            other_invoice = Invoice.objects.create(booking=other_booking, currency="MMK")
+            first_receipt = Payment.objects.create(
+                booking=first_booking, invoice=first_invoice, provider=Payment.Provider.CASH,
+                status=Payment.Status.PAID, amount=100, currency="MMK",
+                invoice_number=first_invoice.invoice_number,
+            )
+            other_receipt = Payment.objects.create(
+                booking=other_booking, invoice=other_invoice, provider=Payment.Provider.CASH,
+                status=Payment.Status.PAID, amount=100, currency="MMK",
+                invoice_number=other_invoice.invoice_number,
+            )
+        self.assertEqual(first_invoice.invoice_number, "MAND-INV-26-000001")
+        self.assertEqual(other_invoice.invoice_number, "GERD-INV-26-000001")
+        self.assertEqual(first_receipt.receipt_number, "MAND-REC-26-000001")
+        self.assertEqual(other_receipt.receipt_number, "GERD-REC-26-000001")
+        with patch("booking.models.timezone.now", return_value=datetime(2027, 1, 1, 12, tzinfo=datetime_timezone.utc)):
+            next_invoice = Invoice.objects.create(booking=first_booking, currency="MMK")
+        self.assertEqual(next_invoice.invoice_number, "MAND-INV-27-000001")
+        self.assertEqual(HotelDocumentSequence.objects.count(), 5)
+
+    def test_ota_code_changes_only_after_payment_and_pms_remains_random(self):
+        ota = self.create_booking("OTA-PENDING")
+        pending_code = ota.booking_code
+        self.assertRegex(pending_code, r"^[A-Z0-9]{6}$")
+        ota.status = Booking.Status.CONFIRMED
+        ota.save(update_fields=["status"])
+        self.assertEqual(ota.booking_code, pending_code)
+        ota.amount_paid = 100
+        ota.save(update_fields=["amount_paid"])
+        self.assertEqual(ota.booking_code, "V77-HTL-26-000001")
+        self.assertEqual(OTABookingYearSequence.objects.get(year=2026).last_value, 1)
+        pms = self.create_booking("PMS-CODE")
+        pms.source = Booking.Source.PMS
+        pms.status = Booking.Status.CONFIRMED
+        pms.amount_paid = 100
+        pms.save(update_fields=["source", "status", "amount_paid"])
+        self.assertRegex(pms.booking_code, r"^[A-Z0-9]{6}$")
+
+    def test_ota_booking_sequence_resets_next_year(self):
+        first = self.create_booking("OTA-YEAR-2026")
+        second = self.create_booking("OTA-YEAR-2027")
+        with patch("booking.models.timezone.now", return_value=datetime(2026, 12, 31, 12, tzinfo=datetime_timezone.utc)):
+            first.status = Booking.Status.CONFIRMED
+            first.amount_paid = 1
+            first.save(update_fields=["status", "amount_paid"])
+        with patch("booking.models.timezone.now", return_value=datetime(2027, 1, 1, 12, tzinfo=datetime_timezone.utc)):
+            second.status = Booking.Status.CONFIRMED
+            second.amount_paid = 1
+            second.save(update_fields=["status", "amount_paid"])
+        self.assertEqual(first.booking_code, "V77-HTL-26-000001")
+        self.assertEqual(second.booking_code, "V77-HTL-27-000001")
 
     def test_document_number_series_rolls_over(self):
         self.assertEqual(format_invoice_number(DOCUMENT_CODES_PER_SERIES), "V77-INV-A9999999")
@@ -152,7 +224,7 @@ class BookingCodeTests(TestCase):
             pk=1, defaults={"last_value": DOCUMENT_CODES_PER_SERIES}
         )
         invoice = Invoice.objects.create(booking=booking, currency="MMK")
-        self.assertEqual(invoice.invoice_number, "V77-INV-B0000001")
+        self.assertEqual(invoice.invoice_number, "MAND-INV-26-000001")
 
         ReceiptNumberSequence.objects.update_or_create(
             pk=1, defaults={"last_value": DOCUMENT_CODES_PER_SERIES}
@@ -166,7 +238,7 @@ class BookingCodeTests(TestCase):
             currency="MMK",
             invoice_number=invoice.invoice_number,
         )
-        self.assertEqual(receipt.receipt_number, "V77-REC-B0000001")
+        self.assertEqual(receipt.receipt_number, "MAND-REC-26-000001")
 
     def test_pending_payment_does_not_get_a_receipt_number(self):
         booking = self.create_booking("TEST-PENDING-RECEIPT")
@@ -185,7 +257,7 @@ class BookingCodeTests(TestCase):
         payment.status = Payment.Status.PAID
         payment.save(update_fields=["status"])
         payment.refresh_from_db()
-        self.assertEqual(payment.receipt_number, "V77-REC-A0000001")
+        self.assertEqual(payment.receipt_number, "MAND-REC-26-000001")
 
     def test_pms_payment_also_creates_a_receipt(self):
         self.hotel.address = "1 Hotel Road, Yangon"
@@ -217,8 +289,10 @@ class BookingCodeTests(TestCase):
             "status": Payment.Status.PAID,
         })
 
-        self.assertEqual(payment.receipt_number, "V77-REC-A0000001")
+        self.assertEqual(payment.receipt_number, "MAND-REC-26-000001")
+        booking.refresh_from_db()
         self.assertEqual(payment.receipt_snapshot["booking"]["booking_code"], booking.booking_code)
+        self.assertRegex(booking.booking_code, r"^[A-Z0-9]{6}$")
         self.assertEqual(payment.receipt_snapshot["provider"], Payment.Provider.CASH)
         self.assertEqual(payment.receipt_snapshot["issuer"]["name"], self.hotel.name)
         self.assertEqual(payment.receipt_snapshot["issuer"]["address"], self.hotel.address)
@@ -314,7 +388,9 @@ class BookingCodeTests(TestCase):
             "status": Payment.Status.PAID,
         })
 
+        booking.refresh_from_db()
         self.assertEqual(payment.receipt_snapshot["booking"]["booking_code"], booking.booking_code)
+        self.assertEqual(booking.booking_code, "V77-HTL-26-000001")
         self.assertEqual(payment.receipt_snapshot["amount_paid"], "1000.00")
         self.assertEqual(payment.receipt_snapshot["issuer"]["branding"], "visit77")
         self.assertEqual(payment.receipt_snapshot["issuer"]["footer_text"], "")
@@ -373,7 +449,7 @@ class BookingCodeTests(TestCase):
             pk=1, defaults={"last_value": BOOKING_CODES_PER_SERIES}
         )
         booking = self.create_booking("TEST-CODE-ROLLOVER")
-        self.assertEqual(booking.booking_code, "V77H-B00000001")
+        self.assertRegex(booking.booking_code, r"^[A-Z0-9]{6}$")
 
     @override_settings(
         BOOKING_FRONTEND_URL="https://booking.example.com",
