@@ -1632,7 +1632,7 @@ class BookingApiTests(BookingServiceTests):
             "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
             "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
         }
-        setup_url = f"/api/v1/admin/hotels/{self.hotel.id}/ota-invoice-charges/"
+        setup_url = "/api/v1/admin/hotels/ota-invoice-charges/"
         configured = self.client.put(setup_url, {
             "taxes": [
                 {"title": "Tax", "mode": "included"},
@@ -1646,6 +1646,13 @@ class BookingApiTests(BookingServiceTests):
         }, format="json", **headers)
         self.assertEqual(configured.status_code, 200, configured.data)
         self.assertEqual(self.client.get(setup_url, **headers).data["data"], configured.data["data"])
+        self.assertEqual(self.client.get(setup_url, HTTP_X_BOOKING_ADMIN_KEY="test-admin-key").status_code, 403)
+        other_hotel = Hotel.objects.create(core_business_id=999998, name="Other Charge Hotel")
+        other_headers = {**headers, "HTTP_X_BOOKING_BUSINESS_ID": str(other_hotel.core_business_id)}
+        self.assertEqual(
+            self.client.get(setup_url, **other_headers).data["data"],
+            {"taxes": [], "other_charges": []},
+        )
 
         payload = self.payload()
         estimate = estimate_booking(payload)
