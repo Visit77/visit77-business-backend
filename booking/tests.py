@@ -1612,6 +1612,53 @@ class BookingServiceTests(TestCase):
 
 @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key", CORE_JWT_SIGNING_KEY="test-core-jwt-key")
 class BookingApiTests(BookingServiceTests):
+    def test_ota_invoice_charge_setup_prices_booking_and_hides_unconfigured_rows(self):
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+        setup_url = f"/api/v1/admin/hotels/{self.hotel.id}/ota-invoice-charges/"
+        configured = self.client.put(setup_url, {
+            "taxes": [
+                {"title": "Tax", "mode": "included"},
+                {"title": "VAT", "mode": "percentage", "value": "5.00"},
+                {"title": "Tourism Tax", "mode": "fixed", "value": "2000.00"},
+            ],
+            "other_charges": [
+                {"title": "Service Charge", "mode": "percentage", "value": "10.00"},
+                {"title": "Resort Fee", "mode": "fixed", "value": "5000.00"},
+            ],
+        }, format="json", **headers)
+        self.assertEqual(configured.status_code, 200, configured.data)
+        self.assertEqual(self.client.get(setup_url, **headers).data["data"], configured.data["data"])
+
+        payload = self.payload()
+        estimate = estimate_booking(payload)
+        self.assertEqual(estimate["other_charge_total"], Decimal("37000"))
+        self.assertEqual(estimate["tax_total"], Decimal("18000"))
+        self.assertEqual(estimate["grand_total"], Decimal("375000"))
+
+        booking, _ = create_booking(payload)
+        invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
+        self.assertEqual(booking.other_charge_total, Decimal("37000"))
+        self.assertEqual(booking.tax_total, Decimal("18000"))
+        self.assertEqual(booking.grand_total, Decimal("375000"))
+        self.assertEqual(invoice.subtotal, Decimal("357000"))
+        self.assertEqual(invoice.total, Decimal("375000"))
+        self.assertEqual(
+            list(invoice.lines.filter(metadata__line_type="ota_other_charge").values_list("description", "total")),
+            [("Service Charge", Decimal("32000")), ("Resort Fee", Decimal("5000"))],
+        )
+
+        self.hotel.refresh_from_db()
+        self.hotel.ota_invoice_charges = {"taxes": [], "other_charges": []}
+        self.hotel.save(update_fields=["ota_invoice_charges"])
+        self.assertEqual(booking.ota_invoice_charge_snapshot["taxes"][0]["mode"], "included")
+        unconfigured_estimate = estimate_booking(payload)
+        self.assertEqual(unconfigured_estimate["tax_total"], Decimal("0"))
+        self.assertEqual(unconfigured_estimate["other_charge_total"], Decimal("0"))
+        self.assertEqual(unconfigured_estimate["ota_invoice_charges"], {"taxes": [], "other_charges": []})
+
     def test_admin_booking_detail_includes_hotel_check_times(self):
         self.hotel.check_in_time = datetime.strptime("14:30", "%H:%M").time()
         self.hotel.check_out_time = datetime.strptime("11:00", "%H:%M").time()

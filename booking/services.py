@@ -12,6 +12,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from booking.add_on_templates import validate_configuration_values
+from booking.booking_services.invoice_charges import calculate_ota_invoice_charges, charge_totals
 from booking.models import (
     AddOn,
     Booking,
@@ -1467,6 +1468,19 @@ def estimate_booking(data):
             f"Your room selection cannot accommodate {occupancy} guests. "
             "Please add more rooms or adjust your guest count to continue."
         )
+    charge_snapshot = calculate_ota_invoice_charges(
+        hotel.ota_invoice_charges, grand_total,
+    )
+    other_charge_total, tax_total = charge_totals(charge_snapshot)
+    for category in ("other_charges", "taxes"):
+        for charge in charge_snapshot[category]:
+            if Decimal(charge["amount"]):
+                summary_items.append({
+                    "type": "other_charge" if category == "other_charges" else "tax",
+                    "label": charge["title"],
+                    "amount": Decimal(charge["amount"]),
+                    "formatted_amount": format_money(charge["amount"], hotel.base_currency),
+                })
     return {
         "hotel": {
             "id": hotel.id,
@@ -1496,10 +1510,13 @@ def estimate_booking(data):
         ),
         "room_total": room_total,
         "breakfast_total": breakfast_total,
-        "grand_total": grand_total,
+        "other_charge_total": other_charge_total,
+        "tax_total": tax_total,
+        "ota_invoice_charges": charge_snapshot,
+        "grand_total": grand_total + other_charge_total + tax_total,
         "formatted_room_total": format_money(room_total, hotel.base_currency),
         "formatted_breakfast_total": format_money(breakfast_total, hotel.base_currency),
-        "formatted_grand_total": format_money(grand_total, hotel.base_currency),
+        "formatted_grand_total": format_money(grand_total + other_charge_total + tax_total, hotel.base_currency),
         "can_create_booking": can_create_booking,
         "warning": capacity_warning,
         "warnings": [capacity_warning] if capacity_warning else [],
@@ -1753,9 +1770,24 @@ def create_booking(data, idempotency_key=None):
     booking.currency = hotel.base_currency
     booking.room_total = room_total
     booking.add_on_total = add_on_total
-    booking.grand_total = room_total + add_on_total + booking.tax_total - booking.discount_total
+    if booking.source == Booking.Source.OTA:
+        charge_config = data.get("_ota_invoice_charges", hotel.ota_invoice_charges)
+        booking.ota_invoice_charge_snapshot = calculate_ota_invoice_charges(
+            charge_config, room_total + add_on_total,
+        )
+        booking.other_charge_total, booking.tax_total = charge_totals(
+            booking.ota_invoice_charge_snapshot,
+        )
+    booking.grand_total = (
+        room_total + add_on_total + booking.other_charge_total
+        + booking.tax_total - booking.discount_total
+    )
     booking.cancellation_policy_snapshot = policy_snapshot
-    booking.save(update_fields=["currency", "room_total", "add_on_total", "grand_total", "cancellation_policy_snapshot"])
+    booking.save(update_fields=[
+        "currency", "room_total", "add_on_total", "other_charge_total",
+        "tax_total", "ota_invoice_charge_snapshot", "grand_total",
+        "cancellation_policy_snapshot",
+    ])
     ensure_initial_invoice(booking)
     return booking, True
 
@@ -2036,6 +2068,15 @@ def _booking_charge_lines(booking):
         "unit_price": item.total,
         "metadata": {"booking_add_on_id": item.id, "add_on_id": item.add_on_id, "line_type": "add_on"},
     } for item in booking.add_ons.select_related("add_on").all())
+    for index, charge in enumerate(booking.ota_invoice_charge_snapshot.get("other_charges", [])):
+        amount = Decimal(charge["amount"])
+        if amount:
+            lines.append({
+                "description": charge["title"],
+                "quantity": 1,
+                "unit_price": amount,
+                "metadata": {"line_type": "ota_other_charge", "charge_index": index},
+            })
     return lines
 
 
@@ -2087,6 +2128,7 @@ def _charge_line_key(line):
         "meal_plan": metadata.get("meal_plan_id"),
         "breakfast": metadata.get("meal_plan_id"),
         "add_on": metadata.get("add_on_id"),
+        "ota_other_charge": metadata.get("charge_index"),
     }
     return line_type, identifiers.get(line_type), (
         line.get("description", "") if isinstance(line, dict) else line.description
@@ -2681,6 +2723,14 @@ def update_reservation_for_check_in(booking, data, *, replace_payment=False):
         "add_ons": data.get("add_ons", existing_add_ons),
         "guests": [{"name": data.get("contact_name", booking.contact_name), "is_primary": True}],
     }
+    if booking.source == Booking.Source.OTA:
+        replacement_payload["_ota_invoice_charges"] = {
+            category: [
+                {key: charge[key] for key in ("title", "mode", "value")}
+                for charge in booking.ota_invoice_charge_snapshot.get(category, [])
+            ]
+            for category in ("taxes", "other_charges")
+        }
     for field in ["adults", "children"]:
         if field in data:
             replacement_payload[field] = data[field]
@@ -2728,13 +2778,25 @@ def update_reservation_for_check_in(booking, data, *, replace_payment=False):
         (room.total for room in replacement_rooms),
         Decimal("0"),
     )
-    replacement.tax_total = booking.tax_total
+    if booking.source == Booking.Source.OTA:
+        replacement.ota_invoice_charge_snapshot = calculate_ota_invoice_charges(
+            replacement_payload["_ota_invoice_charges"],
+            replacement.room_total + replacement.add_on_total,
+        )
+        replacement.other_charge_total, replacement.tax_total = charge_totals(
+            replacement.ota_invoice_charge_snapshot,
+        )
+    else:
+        replacement.tax_total = booking.tax_total
     replacement.discount_total = booking.discount_total
     replacement.grand_total = (
         replacement.room_total + replacement.add_on_total
-        + replacement.tax_total - replacement.discount_total
+        + replacement.other_charge_total + replacement.tax_total - replacement.discount_total
     )
-    replacement.save(update_fields=["tax_total", "discount_total", "grand_total", "updated_at"])
+    replacement.save(update_fields=[
+        "other_charge_total", "ota_invoice_charge_snapshot", "tax_total",
+        "discount_total", "grand_total", "updated_at",
+    ])
 
     if not replace_payment and booking.amount_paid > replacement.grand_total:
         raise ValidationError({
@@ -2834,13 +2896,15 @@ def update_reservation_for_check_in(booking, data, *, replace_payment=False):
     for field in [
         "check_in", "check_out", "contact_name", "contact_phone", "contact_email",
         "guest_market", "special_request", "currency", "room_total", "add_on_total",
-        "tax_total", "discount_total", "grand_total", "cancellation_policy_snapshot",
+        "other_charge_total", "ota_invoice_charge_snapshot", "tax_total",
+        "discount_total", "grand_total", "cancellation_policy_snapshot",
     ]:
         setattr(booking, field, getattr(replacement, field))
     booking.save(update_fields=[
         "check_in", "check_out", "contact_name", "contact_phone", "contact_email",
         "guest_market", "special_request", "currency", "room_total", "add_on_total",
-        "tax_total", "discount_total", "grand_total", "cancellation_policy_snapshot", "updated_at",
+        "other_charge_total", "ota_invoice_charge_snapshot", "tax_total",
+        "discount_total", "grand_total", "cancellation_policy_snapshot", "updated_at",
     ])
     sync_booking_charge_invoices(booking)
     # create_booking() creates the replacement's provisional invoice as well.

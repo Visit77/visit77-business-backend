@@ -1,5 +1,6 @@
 from io import BytesIO
 from decimal import Decimal
+from pathlib import Path
 from xml.sax.saxutils import escape
 from urllib.parse import urlparse
 import json
@@ -173,6 +174,10 @@ def build_receipt_snapshot(payment):
         },
         "invoice": {
             "lines": lines,
+            "tax_charges": (
+                (booking.ota_invoice_charge_snapshot or {}).get("taxes", [])
+                if invoice and invoice.invoice_type == invoice.Type.ROOM_BOOKING else []
+            ),
             "room_charge_total": str(room_charge),
             "extra_bed_total": str(extra_bed_charge),
             "additional_charge_total": str(additional_charge),
@@ -257,6 +262,21 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     brand_content = None
     if issuer.get("branding") == "hotel":
         brand_content = _hotel_logo(issuer.get("logo_url"))
+    else:
+        image_dir = Path(__file__).resolve().parents[1] / "static" / "booking" / "images"
+        icon = Image(str(image_dir / "visit77-icon.png"), width=13 * mm, height=12.35 * mm)
+        wordmark = Image(str(image_dir / "visit77-logo.png"), width=39 * mm, height=11.73 * mm)
+        brand_content = Table(
+            [[icon, wordmark]],
+            colWidths=[14 * mm, 40 * mm],
+            style=TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]),
+        )
     if brand_content is None:
         brand_content = Paragraph(
             f"<font color='#3039F5' size='18'><b>{escape(str(brand_label))}</b></font>",
@@ -292,15 +312,39 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
         room_rows.extend([("Room Type", room["room_type"]), ("No. of Rooms", room["quantity"]), ("No. of Extra Beds", room["extra_beds"])])
     section("BOOKING DETAILS", room_rows)
 
-    amount_rows = [
-        ("Total Room Charges", _money(invoice["room_charge_total"], currency)),
-        ("Total Extra Bed Charges", _money(invoice["extra_bed_total"], currency)),
-        ("Additional Charges", _money(invoice["additional_charge_total"], currency)),
-        ("Discount", f"-{_money(invoice['discount_total'], currency)}"),
-        ("Invoice Total", _money(invoice["invoice_total"], currency)),
-        ("Amount Paid", _money(snapshot["amount_paid"], currency)),
-        ("Remaining Balance", _money(snapshot["remaining_balance"], currency)),
-    ]
+    amount_rows = []
+    room_lines = [line for line in invoice["lines"] if line["line_type"] in {"room", "extra_bed"}]
+    additional_lines = [line for line in invoice["lines"] if line["line_type"] not in {"room", "extra_bed", "service_fee"}]
+    if room_lines:
+        amount_rows.append(("<b>Room Charges</b>", ""))
+        amount_rows.extend(
+            (escape(line["description"]), _money(line["total"], currency))
+            for line in room_lines
+        )
+        room_total = Decimal(invoice["room_charge_total"]) + Decimal(invoice["extra_bed_total"])
+        amount_rows.append(("<b>Total Room Charge</b>", f"<b>{_money(room_total, currency)}</b>"))
+    if additional_lines:
+        amount_rows.append(("<b>Additional Charges</b>", ""))
+        amount_rows.extend(
+            (escape(line["description"]), _money(line["total"], currency))
+            for line in additional_lines
+        )
+    amount_rows.append(("<b>Subtotal</b>", f"<b>{_money(invoice['subtotal'], currency)}</b>"))
+    tax_charges = invoice.get("tax_charges") or []
+    for charge in tax_charges:
+        amount_rows.append((
+            escape(charge["title"]),
+            "Included" if charge["mode"] == "included" else _money(charge["amount"], currency),
+        ))
+    if Decimal(invoice["tax_total"]) and not tax_charges:
+        amount_rows.append(("Tax", _money(invoice["tax_total"], currency)))
+    if Decimal(invoice["discount_total"]):
+        amount_rows.append(("Discount", f"-{_money(invoice['discount_total'], currency)}"))
+    amount_rows.extend([
+        ("<b>Grand Total</b>", f"<b>{_money(invoice['invoice_total'], currency)}</b>"),
+        ("<b>Amount Paid</b>", f"<b>{_money(snapshot['amount_paid'], currency)}</b>"),
+        ("<b>Amount Due</b>", f"<b>{_money(snapshot['remaining_balance'], currency)}</b>"),
+    ])
     amount_table = Table(
         [[Paragraph("<b>DESCRIPTION</b>", center), Paragraph("<b>AMOUNT</b>", center)]]
         + [[Paragraph(label, small), Paragraph(amount, right)] for label, amount in amount_rows],

@@ -22,6 +22,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 
 from booking.authentication import CoreJWTAuthentication
+from booking.booking_services.invoice_charges import OTAInvoiceChargesSerializer
 from booking.integrations.core import CoreClient, sync_business_from_core
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, GuestProfile, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
@@ -233,6 +234,7 @@ def _payment_summary(booking):
         "currency": booking.currency,
         "room_total": booking.room_total,
         "add_on_total": booking.add_on_total,
+        "other_charge_total": booking.other_charge_total,
         "tax_total": booking.tax_total,
         "discount_total": booking.discount_total,
         "grand_total": booking.grand_total,
@@ -3162,6 +3164,23 @@ class HotelViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins.L
     serializer_class = HotelSerializer
     filterset_fields = ["core_business_id", "is_active"]
     business_lookup = "core_business_id"
+
+    @action(detail=True, methods=["get", "put"], url_path="ota-invoice-charges")
+    def ota_invoice_charges(self, request, pk=None):
+        hotel = self.get_object()
+        if request.method == "GET":
+            return success(hotel.ota_invoice_charges or {"taxes": [], "other_charges": []})
+        serializer = OTAInvoiceChargesSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        hotel.ota_invoice_charges = {
+            category: [
+                {**rule, "value": str(rule.get("value", Decimal("0")))}
+                for rule in serializer.validated_data[category]
+            ]
+            for category in ("taxes", "other_charges")
+        }
+        hotel.save(update_fields=["ota_invoice_charges"])
+        return success(hotel.ota_invoice_charges)
 
 
 class RoomTypeViewSet(AdminModelViewSet):
