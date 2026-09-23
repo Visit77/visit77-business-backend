@@ -22,6 +22,8 @@ from booking.models import (
     GuestIdentityDocument,
     Hotel,
     Invoice,
+    OTAInvoiceCharge,
+    PMSInvoiceCharge,
     InvoiceLine,
     MealPlan,
     Payment,
@@ -107,6 +109,39 @@ def validate_request_business_scope(serializer, attrs):
         hotel = candidate.rate_plan.room_type.hotel
     if hotel is not None and hotel.core_business_id != core_business_id:
         raise serializers.ValidationError("This object does not belong to the requested business scope.")
+
+
+class InvoiceChargeSerializerBase(serializers.ModelSerializer):
+    hotel = serializers.PrimaryKeyRelatedField(read_only=True)
+
+    def validate(self, attrs):
+        instance = self.instance
+        charge_type = attrs.get("charge_type", getattr(instance, "charge_type", None))
+        mode = attrs.get("mode", getattr(instance, "mode", None))
+        value = attrs.get("value", getattr(instance, "value", Decimal("0")))
+        if mode in {"percentage", "fixed"} and "value" not in attrs and instance is None:
+            raise serializers.ValidationError({"value": "Required for percentage or fixed charges."})
+        if mode == "percentage" and value > 100:
+            raise serializers.ValidationError({"value": "Percentage cannot exceed 100."})
+        if charge_type == "service" and mode == "do_not_show":
+            raise serializers.ValidationError({"mode": "Service charges cannot use do_not_show mode."})
+        if mode in {"included", "do_not_show"}:
+            attrs["value"] = Decimal("0")
+        return attrs
+
+
+class OTAInvoiceChargeSerializer(InvoiceChargeSerializerBase):
+    class Meta:
+        model = OTAInvoiceCharge
+        fields = "__all__"
+        read_only_fields = ["hotel", "created_at", "updated_at"]
+
+
+class PMSInvoiceChargeSerializer(InvoiceChargeSerializerBase):
+    class Meta:
+        model = PMSInvoiceCharge
+        fields = "__all__"
+        read_only_fields = ["hotel", "created_at", "updated_at"]
 
 
 class HotelSerializer(serializers.ModelSerializer):

@@ -66,6 +66,52 @@ class Hotel(models.Model):
         return bool((self.features or {}).get(key))
 
 
+class InvoiceChargeBase(models.Model):
+    class ChargeType(models.TextChoices):
+        TAX = "tax", "Tax"
+        SERVICE = "service", "Service"
+
+    class Mode(models.TextChoices):
+        DO_NOT_SHOW = "do_not_show", "Do not show"
+        INCLUDED = "included", "Included"
+        PERCENTAGE = "percentage", "Percentage"
+        FIXED = "fixed", "Fixed amount"
+
+    hotel = models.ForeignKey(Hotel, on_delete=models.CASCADE)
+    charge_type = models.CharField(max_length=16, choices=ChargeType.choices)
+    title = models.CharField(max_length=100)
+    mode = models.CharField(max_length=20, choices=Mode.choices)
+    value = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    sort_order = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        abstract = True
+
+
+class OTAInvoiceCharge(InvoiceChargeBase):
+    class Meta:
+        ordering = ["charge_type", "sort_order", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["hotel", "charge_type", "title"],
+                name="uniq_ota_invoice_charge_title",
+            ),
+        ]
+
+
+class PMSInvoiceCharge(InvoiceChargeBase):
+    class Meta:
+        ordering = ["charge_type", "sort_order", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["hotel", "charge_type", "title"],
+                name="uniq_pms_invoice_charge_title",
+            ),
+        ]
+
+
 class RoomType(models.Model):
     """Core owns descriptive data; this service owns sellability and inventory."""
 

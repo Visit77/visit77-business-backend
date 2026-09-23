@@ -19,7 +19,9 @@ from booking.views import (
     MealPlanViewSet,
     MyBookingHistoryView,
     OTARevenueView,
+    OTAInvoiceChargeViewSet,
     PMSAvailableRoomSearchView,
+    PMSInvoiceChargeViewSet,
     OTARoomHistoryView,
     OTARecordListView,
     OTARoomSelectionView,
@@ -56,6 +58,8 @@ from booking.views import (
 
 router = DefaultRouter()
 router.register("admin/hotels", HotelViewSet, basename="hotel")
+router.register("admin/ota-invoice-charges", OTAInvoiceChargeViewSet, basename="ota-invoice-charge")
+router.register("admin/pms-invoice-charges", PMSInvoiceChargeViewSet, basename="pms-invoice-charge")
 router.register("admin/room-types", RoomTypeViewSet, basename="room-type")
 router.register("admin/meal-plans", MealPlanViewSet, basename="meal-plan")
 router.register("admin/room-type-meal-plans", RoomTypeMealPlanViewSet, basename="room-type-meal-plan")

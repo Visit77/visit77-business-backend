@@ -2,6 +2,8 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from rest_framework import serializers
 
+from booking.models import OTAInvoiceCharge, PMSInvoiceCharge
+
 
 class ChargeRuleSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=100)
@@ -23,9 +25,61 @@ class InvoiceChargesSerializer(serializers.Serializer):
     service_charges = ChargeRuleSerializer(many=True, required=False, default=list)
 
     def validate_service_charges(self, value):
-        if any(item["mode"] in {"do_not_show", "included"} for item in value):
-            raise serializers.ValidationError("Other charges must use percentage or fixed mode.")
+        if any(item["mode"] == "do_not_show" for item in value):
+            raise serializers.ValidationError("Service charges cannot use do_not_show mode.")
         return value
+
+
+CHARGE_MODEL_CONFIG = {
+    OTAInvoiceCharge: "ota_invoice_charges",
+    PMSInvoiceCharge: "pms_invoice_charges",
+}
+
+
+def config_from_charge_records(queryset):
+    config = {"taxes": [], "service_charges": []}
+    for charge in queryset.order_by("charge_type", "sort_order", "id"):
+        category = "taxes" if charge.charge_type == charge.ChargeType.TAX else "service_charges"
+        config[category].append({
+            "title": charge.title,
+            "mode": charge.mode,
+            "value": str(charge.value),
+        })
+    return config
+
+
+def sync_hotel_charge_config(hotel, model):
+    field_name = CHARGE_MODEL_CONFIG[model]
+    config = config_from_charge_records(model.objects.filter(hotel=hotel))
+    setattr(hotel, field_name, config)
+    hotel.save(update_fields=[field_name])
+    return config
+
+
+def replace_charge_records(hotel, model, config):
+    model.objects.filter(hotel=hotel).delete()
+    records = []
+    for charge_type, category in (("tax", "taxes"), ("service", "service_charges")):
+        for index, rule in enumerate(config.get(category, [])):
+            records.append(model(
+                hotel=hotel,
+                charge_type=charge_type,
+                title=rule["title"],
+                mode=rule["mode"],
+                value=rule.get("value") or Decimal("0"),
+                sort_order=index,
+            ))
+    model.objects.bulk_create(records)
+    return config
+
+
+def ensure_charge_records(hotel, model):
+    queryset = model.objects.filter(hotel=hotel)
+    if queryset.exists():
+        return queryset
+    field_name = CHARGE_MODEL_CONFIG[model]
+    replace_charge_records(hotel, model, getattr(hotel, field_name) or {})
+    return model.objects.filter(hotel=hotel)
 
 
 def calculate_invoice_charges(config, base_subtotal):

@@ -22,9 +22,14 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 
 from booking.authentication import CoreJWTAuthentication
-from booking.booking_services.invoice_charges import InvoiceChargesSerializer
+from booking.booking_services.invoice_charges import (
+    InvoiceChargesSerializer,
+    ensure_charge_records,
+    replace_charge_records,
+    sync_hotel_charge_config,
+)
 from booking.integrations.core import CoreClient, sync_business_from_core
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, GuestProfile, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, GuestProfile, Hotel, Invoice, MealPlan, OTAInvoiceCharge, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, PMSInvoiceCharge, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
 from booking.tasks import queue_booking_confirmation_notifications
 
@@ -55,6 +60,7 @@ from booking.serializers import (
     HotelSerializer,
     InvoiceCreateSerializer,
     InvoiceSerializer,
+    OTAInvoiceChargeSerializer,
     GuestIdentityDocumentSerializer,
     GuestIdentityDocumentUploadSerializer,
     GuestSerializer,
@@ -65,6 +71,7 @@ from booking.serializers import (
     OTARoomTimelineQuerySerializer,
     PaymentCreateSerializer,
     PaymentSerializer,
+    PMSInvoiceChargeSerializer,
     PMSAvailableRoomSearchSerializer,
     PhysicalRoomSerializer,
     PhysicalRoomActionHistorySerializer,
@@ -3158,6 +3165,74 @@ class AdminModelViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, vie
     permission_classes = [HasBookingAdminKey]
 
 
+class InvoiceChargeViewSetBase(AdminModelViewSet):
+    business_lookup = "hotel__core_business_id"
+    charge_model = None
+
+    def _hotel(self):
+        core_business_id = getattr(self.request, "booking_core_business_id", None)
+        if core_business_id is None:
+            raise PermissionDenied("X-Booking-Business-ID is required.")
+        hotel = Hotel.objects.filter(core_business_id=core_business_id).first()
+        if hotel is None:
+            raise NotFound("Hotel not found for X-Booking-Business-ID.")
+        return hotel
+
+    def list(self, request, *args, **kwargs):
+        hotel = self._hotel()
+        queryset = ensure_charge_records(hotel, self.charge_model)
+        serializer = self.get_serializer(queryset, many=True)
+        grouped = {"tax": [], "service": []}
+        for item in serializer.data:
+            grouped[item["charge_type"]].append(item)
+        return success(grouped)
+
+    def _reject_duplicate(self, hotel, attrs, instance=None):
+        charge_type = attrs.get("charge_type", getattr(instance, "charge_type", None))
+        title = attrs.get("title", getattr(instance, "title", None))
+        duplicate = self.charge_model.objects.filter(
+            hotel=hotel,
+            charge_type=charge_type,
+            title=title,
+        )
+        if instance is not None:
+            duplicate = duplicate.exclude(pk=instance.pk)
+        if duplicate.exists():
+            raise ValidationError({"title": "A charge with this title and charge type already exists."})
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        hotel = self._hotel()
+        self._reject_duplicate(hotel, serializer.validated_data)
+        serializer.save(hotel=hotel)
+        sync_hotel_charge_config(hotel, self.charge_model)
+
+    @transaction.atomic
+    def perform_update(self, serializer):
+        hotel = self._hotel()
+        self._reject_duplicate(hotel, serializer.validated_data, serializer.instance)
+        serializer.save()
+        sync_hotel_charge_config(hotel, self.charge_model)
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        hotel = instance.hotel
+        instance.delete()
+        sync_hotel_charge_config(hotel, self.charge_model)
+
+
+class OTAInvoiceChargeViewSet(InvoiceChargeViewSetBase):
+    queryset = OTAInvoiceCharge.objects.select_related("hotel")
+    serializer_class = OTAInvoiceChargeSerializer
+    charge_model = OTAInvoiceCharge
+
+
+class PMSInvoiceChargeViewSet(InvoiceChargeViewSetBase):
+    queryset = PMSInvoiceCharge.objects.select_related("hotel")
+    serializer_class = PMSInvoiceChargeSerializer
+    charge_model = PMSInvoiceCharge
+
+
 class HotelViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.UpdateModelMixin, viewsets.GenericViewSet):
     permission_classes = [HasBookingAdminKey]
     queryset = Hotel.objects.all()
@@ -3203,6 +3278,10 @@ class HotelViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins.L
             ]
             for category in ("taxes", "service_charges")
         }
+        charge_model = (
+            OTAInvoiceCharge if field_name == "ota_invoice_charges" else PMSInvoiceCharge
+        )
+        replace_charge_records(hotel, charge_model, config)
         setattr(hotel, field_name, config)
         hotel.save(update_fields=[field_name])
         return success(config)

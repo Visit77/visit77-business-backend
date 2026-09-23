@@ -1736,6 +1736,53 @@ class BookingApiTests(BookingServiceTests):
             self.client.get("/api/v1/admin/hotels/pms-invoice-charges/", **headers).data["data"],
             {"taxes": [{"title": "Tax", "mode": "included", "value": "0"}], "service_charges": []},
         )
+
+        ota_crud_url = "/api/v1/admin/ota-invoice-charges/"
+        grouped = self.client.get(ota_crud_url, **headers)
+        self.assertEqual(grouped.status_code, 200, grouped.data)
+        self.assertEqual(
+            [item["title"] for item in grouped.data["data"]["tax"]],
+            ["Hidden Tax", "Tax", "VAT", "Tourism Tax"],
+        )
+        self.assertEqual(
+            [item["title"] for item in grouped.data["data"]["service"]],
+            ["Service Charge", "Resort Fee"],
+        )
+        created_charge = self.client.post(ota_crud_url, {
+            "charge_type": "service",
+            "title": "Cleaning Charge",
+            "mode": "fixed",
+            "value": "10000",
+        }, format="json", **headers)
+        self.assertEqual(created_charge.status_code, 201, created_charge.data)
+        charge_id = created_charge.data["data"]["id"]
+        updated_charge = self.client.patch(f"{ota_crud_url}{charge_id}/", {
+            "mode": "percentage",
+            "value": "3",
+        }, format="json", **headers)
+        self.assertEqual(updated_charge.status_code, 200, updated_charge.data)
+        self.hotel.refresh_from_db()
+        cleaning = next(
+            item for item in self.hotel.ota_invoice_charges["service_charges"]
+            if item["title"] == "Cleaning Charge"
+        )
+        self.assertEqual(cleaning["mode"], "percentage")
+        self.assertEqual(cleaning["value"], "3.00")
+        deleted_charge = self.client.delete(f"{ota_crud_url}{charge_id}/", **headers)
+        self.assertEqual(deleted_charge.status_code, 204, deleted_charge.data)
+        self.hotel.refresh_from_db()
+        self.assertNotIn(
+            "Cleaning Charge",
+            [item["title"] for item in self.hotel.ota_invoice_charges["service_charges"]],
+        )
+
+        pms_grouped = self.client.get("/api/v1/admin/pms-invoice-charges/", **headers)
+        self.assertEqual(pms_grouped.status_code, 200, pms_grouped.data)
+        self.assertEqual(
+            [item["title"] for item in pms_grouped.data["data"]["tax"]],
+            ["Tax"],
+        )
+        self.assertEqual(pms_grouped.data["data"]["service"], [])
         self.assertEqual(self.client.get(setup_url, HTTP_X_BOOKING_ADMIN_KEY="test-admin-key").status_code, 403)
         other_hotel = Hotel.objects.create(core_business_id=999998, name="Other Charge Hotel")
         other_headers = {**headers, "HTTP_X_BOOKING_BUSINESS_ID": str(other_hotel.core_business_id)}
