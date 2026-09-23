@@ -1692,8 +1692,25 @@ class BookingApiTests(BookingServiceTests):
             contact_name="PMS Guest",
             contact_phone="091111111",
         )
-        locked = self.client.put(url, {"code": "NEWC"}, format="json", **second_headers)
-        self.assertEqual(locked.status_code, 400, locked.data)
+        changed = self.client.put(url, {"code": "NEWC"}, format="json", **second_headers)
+        self.assertEqual(changed.status_code, 200, changed.data)
+        self.assertEqual(changed.data["data"]["code"], "NEWC")
+        self.assertTrue(
+            Booking.objects.filter(
+                hotel=second,
+                reservation_code="GERD-RES-26-000001",
+            ).exists()
+        )
+        next_reservation = Booking.objects.create(
+            reference="PMS-DOCUMENT-CODE-AFTER-CHANGE",
+            hotel=second,
+            source=Booking.Source.PMS,
+            check_in=self.check_in,
+            check_out=self.check_out,
+            contact_name="Next PMS Guest",
+            contact_phone="092222222",
+        )
+        self.assertEqual(next_reservation.reservation_code, "NEWC-RES-26-000002")
 
     def test_invoice_charge_setup_prices_booking_and_hides_unconfigured_rows(self):
         headers = {

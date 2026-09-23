@@ -638,7 +638,10 @@ def _next_document_number(hotel, kind):
     if sequence.last_value > 999999:
         raise ValueError("Hotel document sequence exhausted for this year.")
     sequence.save(update_fields=["last_value"])
-    return f"{hotel.document_code}-{kind}-{year % 100:02d}-{sequence.last_value:06d}"
+    # The related Hotel instance may have been cached before an admin changed
+    # its document code. Always format new documents with the current DB value.
+    document_code = Hotel.objects.only("document_code").get(pk=hotel.pk).document_code
+    return f"{document_code}-{kind}-{year % 100:02d}-{sequence.last_value:06d}"
 
 
 class Booking(models.Model):

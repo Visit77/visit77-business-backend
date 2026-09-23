@@ -3186,12 +3186,6 @@ class HotelViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins.L
         if code != hotel.document_code:
             if Hotel.objects.exclude(pk=hotel.pk).filter(document_code=code).exists():
                 raise ValidationError({"code": "This hotel code is already in use."})
-            if (
-                Invoice.objects.filter(booking__hotel=hotel).exists()
-                or Payment.objects.filter(booking__hotel=hotel, receipt_number__isnull=False).exists()
-                or Booking.objects.filter(hotel=hotel, reservation_code__isnull=False).exists()
-            ):
-                raise ValidationError({"code": "This code has already been used for documents."})
             hotel.document_code = code
             hotel.save(update_fields=["document_code"])
         return success({"code": hotel.document_code})
