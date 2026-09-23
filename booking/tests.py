@@ -1,6 +1,7 @@
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from io import StringIO
+import json
 import uuid
 from unittest.mock import patch
 
@@ -12,7 +13,7 @@ from rest_framework.test import APIClient
 from rest_framework.exceptions import ValidationError
 from rest_framework_simplejwt.backends import TokenBackend
 
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, MealPlan, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, MealPlan, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import CoreIntegrationError, sync_business_from_core
 from booking.serializers import BookingRoomSerializer, InvoiceSerializer, PublicHotelSerializer
 from booking.services import auto_assign_physical_rooms_for_booking, auto_cancel_no_show_reservations, availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, estimate_booking, record_payment, refund_payment, refund_quote, sync_guest_profile
@@ -20,7 +21,11 @@ from booking.services import auto_assign_physical_rooms_for_booking, auto_cancel
 
 class BookingServiceTests(TestCase):
     def setUp(self):
-        self.hotel = Hotel.objects.create(core_business_id=77, name="Boston Properties")
+        self.hotel = Hotel.objects.create(
+            core_business_id=77,
+            name="Boston Properties",
+            package=Hotel.Package.OTA_PMS,
+        )
         self.room_type = RoomType.objects.create(
             hotel=self.hotel,
             core_room_type_id=301,
@@ -63,6 +68,123 @@ class BookingServiceTests(TestCase):
                 "extra_beds": 1,
             }],
         }
+
+    def test_ota_only_availability_uses_room_type_count_without_physical_rooms(self):
+        self.hotel.package = Hotel.Package.OTA
+        self.hotel.save(update_fields=["package"])
+        self.room_type.default_inventory = 4
+        self.room_type.save(update_fields=["default_inventory"])
+        ensure_daily_inventory_for_room_type(
+            self.room_type,
+            start_date=self.check_in,
+            days=1,
+        )
+
+        available = availability_for_hotel(
+            self.hotel, self.check_in, self.check_out, adults=2,
+        )
+
+        self.assertEqual(available[0]["available_rooms"], 4)
+        self.assertFalse(PhysicalRoom.objects.filter(room_type=self.room_type).exists())
+
+    def test_ota_only_confirmed_booking_does_not_assign_physical_rooms(self):
+        self.hotel.package = Hotel.Package.OTA
+        self.hotel.save(update_fields=["package"])
+        booking, _ = create_booking(self.payload())
+        booking.status = Booking.Status.CONFIRMED
+        booking.save(update_fields=["status"])
+
+        assignments = auto_assign_physical_rooms_for_booking(booking)
+
+        self.assertEqual(assignments, [])
+        self.assertFalse(RoomAssignment.objects.filter(booking_room__booking=booking).exists())
+
+    @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
+    def test_ota_only_inventory_endpoint_uses_room_type_counts_and_has_no_assignments(self):
+        self.hotel.package = Hotel.Package.OTA
+        self.hotel.save(update_fields=["package"])
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        updated = self.client.put(
+            "/api/v1/admin/ota-rooms/selection/",
+            json.dumps({
+                "room_types": [{"room_type_id": self.room_type.id, "total_rooms": 7}],
+            }),
+            content_type="application/json",
+            **headers,
+        )
+
+        self.assertEqual(updated.status_code, 200, updated.data)
+        self.room_type.refresh_from_db()
+        self.assertEqual(self.room_type.default_inventory, 7)
+        payload = updated.data["data"]
+        self.assertEqual(payload["inventory_mode"], "room_type_count")
+        self.assertFalse(payload["assignment_required"])
+        self.assertEqual(payload["room_types"][0]["total_rooms"], 7)
+        self.assertEqual(payload["room_types"][0]["physical_rooms"], [])
+
+        booking, _ = create_booking(self.payload())
+        listed = self.client.get("/api/v1/admin/ota-rooms/selection/", **headers)
+        self.assertEqual(listed.status_code, 200, listed.data)
+        records = listed.data["data"]["room_types"][0]["ota_records"]
+        self.assertEqual(records[0]["booking_id"], str(booking.id))
+        self.assertIsNone(records[0]["assignment_id"])
+        self.assertEqual(records[0]["physical_room_ids"], [])
+        self.assertEqual(records[0]["room_numbers"], [])
+
+    @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
+    def test_ota_only_scheduled_closure_keeps_booking_record_and_can_be_deleted(self):
+        self.hotel.package = Hotel.Package.OTA
+        self.hotel.save(update_fields=["package"])
+        self.room_type.default_inventory = 3
+        self.room_type.save(update_fields=["default_inventory"])
+        ensure_daily_inventory_for_room_type(
+            self.room_type,
+            start_date=self.check_in,
+            days=1,
+        )
+        booking, _ = create_booking(self.payload())
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        created = self.client.post(
+            "/api/v1/admin/ota-inventory-closures/",
+            json.dumps({
+                "room_type": self.room_type.id,
+                "start_date": str(self.check_in),
+                "end_date": str(self.check_out - timedelta(days=1)),
+                "rooms_to_close": 2,
+                "close_all": False,
+            }),
+            content_type="application/json",
+            **headers,
+        )
+
+        self.assertEqual(created.status_code, 201, created.data)
+        inventory = DailyInventory.objects.get(
+            room_type=self.room_type,
+            stay_date=self.check_in,
+        )
+        self.assertEqual(inventory.held_rooms, 2)
+        self.assertEqual(inventory.closed_rooms, 2)
+        self.assertEqual(inventory.available_rooms, 0)
+        self.assertTrue(Booking.objects.filter(pk=booking.pk).exists())
+
+        closure_id = created.data["data"]["id"]
+        deleted = self.client.delete(
+            f"/api/v1/admin/ota-inventory-closures/{closure_id}/",
+            **headers,
+        )
+        self.assertEqual(deleted.status_code, 204, deleted.data)
+        inventory.refresh_from_db()
+        self.assertEqual(inventory.closed_rooms, 0)
+        self.assertEqual(inventory.available_rooms, 1)
+        self.assertFalse(OTAInventoryClosure.objects.filter(pk=closure_id).exists())
 
     def test_create_booking_holds_each_night_and_calculates_total(self):
         booking, created = create_booking(self.payload(), "checkout-1")
@@ -1641,6 +1763,8 @@ class BookingServiceTests(TestCase):
 
     @override_settings(BOOKING_INVENTORY_WINDOW_DAYS=2)
     def test_daily_inventory_auto_seed_adjusts_with_physical_room_count(self):
+        self.hotel.package = Hotel.Package.OTA_PMS
+        self.hotel.save(update_fields=["package"])
         PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="801")
         room_802 = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="802")
 
@@ -3728,6 +3852,8 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(booking_room.meal_plan_snapshots[0]["meal_plan_id"], standalone_plan.id)
 
     def test_ota_room_selection_controls_public_availability(self):
+        self.hotel.package = Hotel.Package.OTA_PMS
+        self.hotel.save(update_fields=["package"])
         self.room_type.core_snapshot = {
             **self.room_type.core_snapshot,
             "room_standard": {"id": 4, "name": "Double Room"},

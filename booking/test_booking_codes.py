@@ -328,6 +328,10 @@ class BookingCodeTests(TestCase):
         self.assertEqual(payment.receipt_number, "MAND-REC-26-000001")
         booking.refresh_from_db()
         self.assertEqual(payment.receipt_snapshot["booking"]["booking_code"], booking.booking_code)
+        self.assertEqual(
+            payment.receipt_snapshot["booking"]["reservation_code"],
+            booking.reservation_code,
+        )
         self.assertRegex(booking.booking_code, r"^[A-Z0-9]{6}$")
         self.assertEqual(payment.receipt_snapshot["provider"], Payment.Provider.CASH)
         self.assertEqual(payment.receipt_snapshot["issuer"]["name"], self.hotel.name)
@@ -357,6 +361,14 @@ class BookingCodeTests(TestCase):
             self.assertIn("Adjustment", pdf_text)
             self.assertIn(self.hotel.name, pdf_text)
             self.assertIn("Powered by Visit77", pdf_text)
+            self.assertIn("Reservation ID", pdf_text)
+            self.assertIn(booking.reservation_code, pdf_text)
+            self.assertNotIn("Booking ID", pdf_text)
+            if render is render_invoice_pdf:
+                self.assertIn("Payment Status", pdf_text)
+                self.assertNotIn("Amount Due", pdf_text)
+            else:
+                self.assertIn("Amount Due", pdf_text)
 
     def test_receipt_groups_same_room_type_and_sums_quantity(self):
         booking = self.create_booking("TEST-GROUPED-ROOM-RECEIPT")

@@ -176,6 +176,7 @@ def build_receipt_snapshot(payment):
             "id": str(booking.id),
             "source": booking.source,
             "booking_code": booking.booking_code,
+            "reservation_code": booking.reservation_code,
             "check_in": booking.check_in.isoformat(),
             "check_out": booking.check_out.isoformat(),
             "nights": booking.nights,
@@ -323,9 +324,19 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
             f"<font color='#3039F5' size='18'><b>{escape(str(brand_label))}</b></font>",
             right,
         )
+    document_heading = escape(document_title)
+    if is_pms and issuer.get("footer_text"):
+        document_heading = (
+            f"<font size='7' color='#3039F5'>{escape(issuer['footer_text'])}</font>"
+            f"<br/><b>{document_heading}</b>"
+        )
+    identifier_label = "Reservation ID" if is_pms else "Booking ID"
+    identifier_value = booking.get("booking_code")
+    if is_pms:
+        identifier_value = booking.get("reservation_code") or identifier_value
     header = Table([[
         brand_content,
-        Paragraph(escape(document_title), ParagraphStyle(
+        Paragraph(document_heading, ParagraphStyle(
             "DocumentHeaderTitle", parent=title, alignment=TA_RIGHT,
         )),
     ]], colWidths=[105 * mm, 54 * mm])
@@ -358,7 +369,7 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
             "",
             Paragraph(
                 f"<b>{escape(document_title)} ID:</b> &nbsp; {escape(str(document_number))}"
-                f"<br/><b>Booking ID:</b> &nbsp; {escape(str(booking['booking_code']))}"
+                f"<br/><b>{identifier_label}:</b> &nbsp; {escape(str(identifier_value))}"
                 f"<br/><b>Payment Date:</b> &nbsp; {payment_date}",
                 small,
             ),
@@ -481,11 +492,27 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     ):
         amount_rows.append(("-", "0"))
     section_ends.append(len(amount_rows) + 1)
-    amount_rows.extend([
+    amount_rows.append(
         ("<b>Grand Total</b>", f"<b>{_money(invoice['invoice_total'], currency)}</b>"),
-        ("<b>Amount Paid</b>", f"<b>{_money(snapshot['amount_paid'], currency)}</b>"),
-        ("<b>Amount Due</b>", f"<b>{_money(snapshot['remaining_balance'], currency)}</b>"),
-    ])
+    )
+    if is_pms and document_title == "Invoice":
+        invoice_total = Decimal(str(invoice["invoice_total"]))
+        remaining_balance = Decimal(str(snapshot["remaining_balance"]))
+        paid_total = max(invoice_total - remaining_balance, Decimal("0"))
+        payment_status = (
+            "Paid" if remaining_balance == 0
+            else "Partially Paid" if paid_total > 0
+            else "Unpaid"
+        )
+        amount_rows.extend([
+            ("<b>Amount Paid</b>", f"<b>{_money(paid_total, currency)}</b>"),
+            ("<b>Payment Status</b>", f"<b>{payment_status}</b>"),
+        ])
+    else:
+        amount_rows.extend([
+            ("<b>Amount Paid</b>", f"<b>{_money(snapshot['amount_paid'], currency)}</b>"),
+            ("<b>Amount Due</b>", f"<b>{_money(snapshot['remaining_balance'], currency)}</b>"),
+        ])
     amount_table = Table(
         [[Paragraph("<b>DESCRIPTION</b>", center), Paragraph("<b>AMOUNT</b>", center)]]
         + [[Paragraph(label, small), Paragraph(amount, right)] for label, amount in amount_rows],
@@ -503,8 +530,6 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     def footer(canvas, document):
         canvas.saveState()
         canvas.setFont("Helvetica", 8)
-        if issuer.get("footer_text"):
-            canvas.drawString(18 * mm, 10 * mm, issuer["footer_text"])
         canvas.drawRightString(A4[0] - 18 * mm, 10 * mm, f"Page {document.page} of {document.page}")
         canvas.restoreState()
 

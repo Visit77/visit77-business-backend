@@ -447,7 +447,11 @@ def sync_business_from_core(core_business_id: int, client=None, *, preserve_acce
     inventory_created = 0
     inventory_updated = 0
     for room_type in synced_room_types:
-        active_rooms = active_sellable_room_count(room_type)
+        active_rooms = (
+            room_type.default_inventory
+            if hotel.package == Hotel.Package.OTA
+            else active_sellable_room_count(room_type)
+        )
         result = ensure_daily_inventory_for_room_type(room_type, total_rooms=active_rooms)
         inventory_created += result["created"]
         inventory_updated += result["updated"]

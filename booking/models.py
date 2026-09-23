@@ -368,6 +368,7 @@ class DailyInventory(models.Model):
     total_rooms = models.PositiveSmallIntegerField()
     held_rooms = models.PositiveSmallIntegerField(default=0)
     reserved_rooms = models.PositiveSmallIntegerField(default=0)
+    closed_rooms = models.PositiveSmallIntegerField(default=0)
     stop_sell = models.BooleanField(default=False)
 
     class Meta:
@@ -379,7 +380,35 @@ class DailyInventory(models.Model):
     def available_rooms(self):
         if self.stop_sell:
             return 0
-        return max(self.total_rooms - self.held_rooms - self.reserved_rooms, 0)
+        return max(
+            self.total_rooms - self.held_rooms - self.reserved_rooms - self.closed_rooms,
+            0,
+        )
+
+
+class OTAInventoryClosure(models.Model):
+    room_type = models.ForeignKey(
+        RoomType,
+        on_delete=models.CASCADE,
+        related_name="ota_inventory_closures",
+    )
+    start_date = models.DateField()
+    end_date = models.DateField()
+    close_all = models.BooleanField(default=False)
+    rooms_to_close = models.PositiveSmallIntegerField(default=0)
+    note = models.CharField(max_length=500, blank=True)
+    created_by_core_user_id = models.PositiveBigIntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["start_date", "end_date", "id"]
+        indexes = [
+            models.Index(
+                fields=["room_type", "start_date", "end_date"],
+                name="booking_ota_close_dates_idx",
+            ),
+        ]
 
 
 class DailyRate(models.Model):

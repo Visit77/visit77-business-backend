@@ -23,6 +23,7 @@ from booking.models import (
     Hotel,
     Invoice,
     OTAInvoiceCharge,
+    OTAInventoryClosure,
     PMSInvoiceCharge,
     InvoiceLine,
     MealPlan,
@@ -560,6 +561,8 @@ class RoomTypeSerializer(serializers.ModelSerializer):
         ))
 
     def get_rooms(self, obj):
+        if obj.hotel.package == Hotel.Package.OTA:
+            return []
         room_type_snapshot = obj.core_snapshot or {}
         room_list = []
         for room in self._rooms(obj):
@@ -608,9 +611,13 @@ class RoomTypeSerializer(serializers.ModelSerializer):
         return room_list
 
     def get_total_room_count(self, obj):
+        if obj.hotel.package == Hotel.Package.OTA:
+            return obj.default_inventory
         return len(self._rooms(obj))
 
     def get_ota_enabled_room_count(self, obj):
+        if obj.hotel.package == Hotel.Package.OTA:
+            return obj.default_inventory
         return sum(1 for room in self._rooms(obj) if room.ota_enabled)
 
     class Meta:
@@ -741,6 +748,56 @@ class OTARoomSelectionUpdateSerializer(serializers.Serializer):
             })
         if not selected and not deselected:
             raise serializers.ValidationError("At least one selected or deselected room ID is required.")
+        return attrs
+
+
+class OTAInventoryRoomTypeSerializer(serializers.Serializer):
+    room_type_id = serializers.IntegerField(min_value=1)
+    total_rooms = serializers.IntegerField(min_value=0, max_value=32767)
+
+
+class OTAInventoryUpdateSerializer(serializers.Serializer):
+    room_types = OTAInventoryRoomTypeSerializer(many=True, allow_empty=False)
+
+    def validate_room_types(self, value):
+        room_type_ids = [item["room_type_id"] for item in value]
+        if len(room_type_ids) != len(set(room_type_ids)):
+            raise serializers.ValidationError("Duplicate room type IDs are not allowed.")
+        return value
+
+
+class OTAInventoryClosureSerializer(serializers.ModelSerializer):
+    room_type_name = serializers.CharField(source="room_type.name", read_only=True)
+    core_room_type_id = serializers.IntegerField(
+        source="room_type.core_room_type_id", read_only=True,
+    )
+
+    class Meta:
+        model = OTAInventoryClosure
+        fields = "__all__"
+        read_only_fields = ["created_by_core_user_id", "created_at", "updated_at"]
+
+    def validate(self, attrs):
+        validate_request_business_scope(self, attrs)
+        room_type = attrs.get("room_type", getattr(self.instance, "room_type", None))
+        start_date = attrs.get("start_date", getattr(self.instance, "start_date", None))
+        end_date = attrs.get("end_date", getattr(self.instance, "end_date", None))
+        close_all = attrs.get("close_all", getattr(self.instance, "close_all", False))
+        rooms_to_close = attrs.get(
+            "rooms_to_close", getattr(self.instance, "rooms_to_close", 0),
+        )
+        if room_type and room_type.hotel.package != Hotel.Package.OTA:
+            raise serializers.ValidationError(
+                "Scheduled room-count closures are only available for OTA Only hotels."
+            )
+        if start_date and end_date and end_date < start_date:
+            raise serializers.ValidationError({"end_date": "Must be on or after start_date."})
+        if not close_all and rooms_to_close <= 0:
+            raise serializers.ValidationError({
+                "rooms_to_close": "Enter at least one room or set close_all to true.",
+            })
+        if close_all:
+            attrs["rooms_to_close"] = 0
         return attrs
 
 
