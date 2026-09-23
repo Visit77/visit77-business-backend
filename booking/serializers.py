@@ -1206,7 +1206,15 @@ class BookingRoomSerializer(serializers.ModelSerializer):
     @staticmethod
     def get_preference_details(obj):
         """Return resolved preference labels and pricing for display clients."""
-        return (obj.preference_snapshot or {}).get("selected") or {}
+        snapshot = obj.preference_snapshot or {}
+        details = dict(snapshot.get("selected") or {})
+        preference_standard = (snapshot.get("requested") or {}).get("preference_standard")
+        if preference_standard and "preference_standard" not in details:
+            details["preference_standard"] = {
+                "value": preference_standard,
+                "label": preference_standard.replace("_", " ").title(),
+            }
+        return details
 
     @staticmethod
     def get_rate_plan(obj):

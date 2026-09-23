@@ -1751,6 +1751,7 @@ class BookingApiTests(BookingServiceTests):
         booking_room = booking.rooms.get()
         booking_room.preference_snapshot = {
             "requested": {
+                "preference_standard": "large_bed",
                 "core_bed_type_id": 12,
                 "smoking_type": "non_smoking",
                 "core_custom_option_value_ids": [31, 32],
@@ -1779,10 +1780,15 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(
             room_data["preferences"],
             {
+                "preference_standard": "large_bed",
                 "core_bed_type_id": 12,
                 "smoking_type": "non_smoking",
                 "core_custom_option_value_ids": [31, 32],
             },
+        )
+        self.assertEqual(
+            room_data["preference_details"]["preference_standard"],
+            {"value": "large_bed", "label": "Large Bed"},
         )
         self.assertEqual(room_data["preference_details"]["bed"]["name"], "King Bed")
         self.assertEqual(

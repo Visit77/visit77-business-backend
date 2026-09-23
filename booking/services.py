@@ -634,6 +634,13 @@ def resolve_room_preferences(room_type, preferences, nights, quantity):
     constraints = {}
     option_total = Decimal("0")
 
+    preference_standard = preferences.get("preference_standard")
+    if preference_standard:
+        selected["preference_standard"] = {
+            "value": preference_standard,
+            "label": preference_standard.replace("_", " ").title(),
+        }
+
     def select_option(kind, flag_name, option_list_name, relation_name, submitted_id):
         nonlocal option_total
         if submitted_id in [None, ""]:
