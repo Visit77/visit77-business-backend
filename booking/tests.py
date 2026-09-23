@@ -2905,6 +2905,8 @@ class BookingApiTests(BookingServiceTests):
                 "rooms[0][rate_plan_id]": str(self.rate_plan.id),
                 "rooms[0][extra_beds]": "0",
                 "rooms[0][breakfast_selected]": "false",
+                "room[0][preferences][preference_standard]": "twin_bed",
+                "room[0][preferences][smoking_type]": "non_smoking",
                 "rooms[1][physical_room_id]": str(second_room.id),
                 "rooms[1][rate_plan_id]": str(self.rate_plan.id),
                 "rooms[1][extra_beds]": "0",
@@ -2926,6 +2928,11 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(booking.rooms.count(), 2)
         self.assertEqual(sum(booking.rooms.values_list("adults", flat=True)), 4)
         self.assertEqual(sum(booking.rooms.values_list("children", flat=True)), 0)
+        first_booking_room = booking.rooms.get(assignments__physical_room=first_room)
+        self.assertEqual(
+            first_booking_room.preference_snapshot["requested"],
+            {"preference_standard": "twin_bed", "smoking_type": "non_smoking"},
+        )
         self.assertEqual(
             set(RoomAssignment.objects.filter(booking_room__booking=booking).values_list(
                 "physical_room_id", flat=True,

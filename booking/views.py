@@ -4057,6 +4057,10 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
             room_field_pattern = re.compile(
                 r"^rooms?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
             )
+            room_preference_field_pattern = re.compile(
+                r"^rooms?\[(\d+)\]\[(?:['\"])?preferences(?:['\"])?\]"
+                r"\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+            )
             add_on_field_pattern = re.compile(
                 r"^add_ons?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
             )
@@ -4073,6 +4077,12 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
                             identity_photos[index] = request.FILES[key]
                         continue
                     nested_guests.setdefault(index, {})[field] = value
+                    continue
+                room_preference_match = room_preference_field_pattern.match(key)
+                if room_preference_match:
+                    index = int(room_preference_match.group(1))
+                    field = room_preference_match.group(2)
+                    nested_rooms.setdefault(index, {}).setdefault("preferences", {})[field] = value
                     continue
                 room_match = room_field_pattern.match(key)
                 if room_match:
