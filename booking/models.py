@@ -601,7 +601,10 @@ class ReceiptNumberSequence(models.Model):
 class HotelDocumentSequence(models.Model):
     hotel = models.ForeignKey(Hotel, on_delete=models.PROTECT)
     year = models.PositiveSmallIntegerField()
-    kind = models.CharField(max_length=3, choices=[("INV", "Invoice"), ("REC", "Receipt")])
+    kind = models.CharField(
+        max_length=3,
+        choices=[("INV", "Invoice"), ("REC", "Receipt"), ("RES", "Reservation")],
+    )
     last_value = models.PositiveIntegerField(default=0)
 
     class Meta:
@@ -654,6 +657,13 @@ class Booking(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     reference = models.CharField(max_length=24, unique=True)
     booking_code = models.CharField(max_length=20, unique=True, editable=False)
+    reservation_code = models.CharField(
+        max_length=24,
+        unique=True,
+        null=True,
+        blank=True,
+        editable=False,
+    )
     public_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     hotel = models.ForeignKey(Hotel, on_delete=models.PROTECT, related_name="bookings")
     booked_by_core_user_id = models.PositiveBigIntegerField(null=True, blank=True, db_index=True)
@@ -697,6 +707,8 @@ class Booking(models.Model):
 
     def save(self, *args, **kwargs):
         with transaction.atomic():
+            if self.source == self.Source.PMS and not self.reservation_code:
+                self.reservation_code = _next_document_number(self.hotel, "RES")
             if not self.booking_code:
                 self.booking_code = _random_booking_code()
             elif (
@@ -713,7 +725,9 @@ class Booking(models.Model):
                 sequence.save(update_fields=["last_value"])
                 self.booking_code = f"V77-HTL-{year % 100:02d}-{sequence.last_value:06d}"
             if kwargs.get("update_fields") is not None:
-                kwargs["update_fields"] = set(kwargs["update_fields"]) | {"booking_code"}
+                kwargs["update_fields"] = set(kwargs["update_fields"]) | {
+                    "booking_code", "reservation_code",
+                }
             return super().save(*args, **kwargs)
 
 

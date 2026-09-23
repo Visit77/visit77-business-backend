@@ -1683,6 +1683,18 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(self.client.put(url, {"code": "ABC12"}, format="json", **headers).status_code, 400)
         self.assertEqual(self.client.get(url, HTTP_X_BOOKING_ADMIN_KEY="test-admin-key").status_code, 403)
 
+        Booking.objects.create(
+            reference="PMS-DOCUMENT-CODE-LOCK",
+            hotel=second,
+            source=Booking.Source.PMS,
+            check_in=self.check_in,
+            check_out=self.check_out,
+            contact_name="PMS Guest",
+            contact_phone="091111111",
+        )
+        locked = self.client.put(url, {"code": "NEWC"}, format="json", **second_headers)
+        self.assertEqual(locked.status_code, 400, locked.data)
+
     def test_invoice_charge_setup_prices_booking_and_hides_unconfigured_rows(self):
         headers = {
             "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",

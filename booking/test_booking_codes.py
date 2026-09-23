@@ -155,6 +155,35 @@ class BookingCodeTests(TestCase):
         self.assertEqual(first_receipt.receipt_number, "MAND-REC-26-000001")
         self.assertEqual(second_receipt.receipt_number, "MAND-REC-26-000002")
 
+    def test_pms_reservation_numbers_use_an_independent_hotel_year_series(self):
+        first = Booking.objects.create(
+            reference="PMS-RESERVATION-1",
+            hotel=self.hotel,
+            source=Booking.Source.PMS,
+            check_in=date(2026, 9, 1),
+            check_out=date(2026, 9, 2),
+            contact_name="First Guest",
+            contact_phone="091111111",
+        )
+        second = Booking.objects.create(
+            reference="PMS-RESERVATION-2",
+            hotel=self.hotel,
+            source=Booking.Source.PMS,
+            check_in=date(2026, 9, 2),
+            check_out=date(2026, 9, 3),
+            contact_name="Second Guest",
+            contact_phone="092222222",
+        )
+        ota = self.create_booking("OTA-WITHOUT-RESERVATION-CODE")
+
+        self.assertEqual(first.reservation_code, "MAND-RES-26-000001")
+        self.assertEqual(second.reservation_code, "MAND-RES-26-000002")
+        self.assertIsNone(ota.reservation_code)
+        self.assertEqual(
+            BookingSerializer(first).data["reservation_code"],
+            "MAND-RES-26-000001",
+        )
+
     def test_hotel_document_series_are_separate_and_reset_each_year(self):
         other_hotel = Hotel.objects.create(core_business_id=987654322, name="Other Hotel", document_code="GERD")
         other_booking = Booking.objects.create(
@@ -263,9 +292,13 @@ class BookingCodeTests(TestCase):
         self.assertEqual(payment.receipt_number, "MAND-REC-26-000001")
 
     def test_pms_payment_also_creates_a_receipt(self):
-        self.hotel.address = "1 Hotel Road, Yangon"
-        self.hotel.phone = "09123456789"
-        self.hotel.core_snapshot = {"contact_email": "hotel@example.com"}
+        self.hotel.address = "Stale local address"
+        self.hotel.phone = "Stale local phone"
+        self.hotel.core_snapshot = {
+            "address_info": "1 Hotel Road, Yangon",
+            "phone": ["09123456789", "019876543"],
+            "email": ["hotel@example.com", "frontdesk@example.com"],
+        }
         self.hotel.save(update_fields=["address", "phone", "core_snapshot"])
         booking = self.create_booking("TEST-PMS-RECEIPT")
         booking.source = Booking.Source.PMS
@@ -298,9 +331,18 @@ class BookingCodeTests(TestCase):
         self.assertRegex(booking.booking_code, r"^[A-Z0-9]{6}$")
         self.assertEqual(payment.receipt_snapshot["provider"], Payment.Provider.CASH)
         self.assertEqual(payment.receipt_snapshot["issuer"]["name"], self.hotel.name)
-        self.assertEqual(payment.receipt_snapshot["issuer"]["address"], self.hotel.address)
-        self.assertEqual(payment.receipt_snapshot["issuer"]["phone"], self.hotel.phone)
-        self.assertEqual(payment.receipt_snapshot["issuer"]["email"], ["hotel@example.com"])
+        self.assertEqual(payment.receipt_snapshot["issuer"]["address"], "1 Hotel Road, Yangon")
+        self.assertEqual(payment.receipt_snapshot["issuer"]["phone"], "09123456789, 019876543")
+        self.assertEqual(
+            payment.receipt_snapshot["issuer"]["email"],
+            "hotel@example.com, frontdesk@example.com",
+        )
+        self.assertEqual(payment.receipt_snapshot["booking"]["hotel_address"], "1 Hotel Road, Yangon")
+        self.assertEqual(payment.receipt_snapshot["booking"]["hotel_phone"], "09123456789, 019876543")
+        self.assertEqual(
+            payment.receipt_snapshot["booking"]["hotel_email"],
+            "hotel@example.com, frontdesk@example.com",
+        )
         self.assertEqual(payment.receipt_snapshot["issuer"]["branding"], "hotel")
         self.assertEqual(
             payment.receipt_snapshot["issuer"]["footer_text"],

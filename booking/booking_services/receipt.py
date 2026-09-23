@@ -26,15 +26,31 @@ def _money(value, currency):
     return f"{currency} {amount:,.2f}" if amount % 1 else f"{currency} {int(amount):,}"
 
 
+def _hotel_address(hotel):
+    snapshot = hotel.core_snapshot or {}
+    value = (
+        snapshot.get("address_info")
+        or snapshot.get("address")
+        or hotel.address
+    )
+    return ", ".join(_contact_values(value))
+
+
+def _hotel_phone(hotel):
+    snapshot = hotel.core_snapshot or {}
+    value = snapshot.get("phone") or snapshot.get("phone_no") or hotel.phone
+    return ", ".join(_contact_values(value))
+
+
 def _hotel_email(hotel):
     snapshot = hotel.core_snapshot or {}
     value = (
-        snapshot.get("contact_email")
-        or snapshot.get("email")
+        snapshot.get("email")
+        or snapshot.get("contact_email")
         or snapshot.get("booking_notification_email")
         or ""
     )
-    return _contact_values(value)
+    return ", ".join(_contact_values(value))
 
 
 def _contact_values(value):
@@ -164,9 +180,9 @@ def build_receipt_snapshot(payment):
             "check_out": booking.check_out.isoformat(),
             "nights": booking.nights,
             "hotel_name": booking.hotel.name,
-            "hotel_address": booking.hotel.address,
-            "hotel_phone": booking.hotel.phone,
-            "hotel_email": ", ".join(_hotel_email(booking.hotel)),
+            "hotel_address": _hotel_address(booking.hotel),
+            "hotel_phone": _hotel_phone(booking.hotel),
+            "hotel_email": _hotel_email(booking.hotel),
             "rooms": list(grouped_rooms.values()),
         },
         "guest": {
@@ -196,7 +212,7 @@ def build_receipt_snapshot(payment):
                 else getattr(settings, "RECEIPT_ISSUER_NAME", "Visit77 Co.,Ltd.")
             ),
             "address": (
-                booking.hotel.address
+                _hotel_address(booking.hotel)
                 if is_pms
                 else getattr(
                     settings,
@@ -210,7 +226,7 @@ def build_receipt_snapshot(payment):
                 else getattr(settings, "RECEIPT_ISSUER_EMAIL", settings.DEFAULT_FROM_EMAIL)
             ),
             "phone": (
-                booking.hotel.phone
+                _hotel_phone(booking.hotel)
                 if is_pms
                 else getattr(settings, "RECEIPT_ISSUER_PHONE", "(+95) 988 577 0011")
             ),
