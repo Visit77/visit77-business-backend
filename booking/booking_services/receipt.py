@@ -18,7 +18,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from booking.models import Payment
+from booking.models import Invoice, Payment
 
 
 def _money(value, currency):
@@ -158,6 +158,7 @@ def build_receipt_snapshot(payment):
         "remaining_balance": str(remaining),
         "booking": {
             "id": str(booking.id),
+            "source": booking.source,
             "booking_code": booking.booking_code,
             "check_in": booking.check_in.isoformat(),
             "check_out": booking.check_out.isoformat(),
@@ -176,10 +177,10 @@ def build_receipt_snapshot(payment):
         },
         "invoice": {
             "lines": lines,
-            "tax_charges": (
-                (booking.invoice_charge_snapshot or {}).get("taxes", [])
-                if invoice and invoice.invoice_type == invoice.Type.ROOM_BOOKING else []
+            "charge_scope": invoice.charge_scope if invoice else (
+                Invoice.ChargeScope.OTA if booking.source == booking.Source.OTA else Invoice.ChargeScope.PMS
             ),
+            "tax_charges": (invoice.charge_snapshot or {}).get("taxes", []) if invoice else [],
             "room_charge_total": str(room_charge),
             "extra_bed_total": str(extra_bed_charge),
             "additional_charge_total": str(additional_charge),
@@ -215,7 +216,7 @@ def build_receipt_snapshot(payment):
             ),
             "logo_url": booking.hotel.cover_image_url if is_pms else "",
             "branding": "hotel" if is_pms else "visit77",
-            "footer_text": "VISIT 77 PMS SYSTEM" if is_pms else "",
+            "footer_text": "Powered by Visit77" if is_pms else "",
         },
     }
 
@@ -247,10 +248,14 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     booking = snapshot["booking"]
     guest = snapshot["guest"]
     invoice = snapshot["invoice"]
+    is_pms = invoice.get("charge_scope", booking.get("source", "pms")) == "pms"
     payment_date = timezone.datetime.fromisoformat(snapshot["payment_date"]).strftime("%d %b %Y")
 
     story = []
-    issuer_detail_lines = [f"<b>{escape(str(issuer['name']))}</b>"]
+    issuer_detail_lines = (
+        [] if issuer.get("branding") == "hotel"
+        else [f"<b>{escape(str(issuer['name']))}</b>"]
+    )
     for field_name in ("address", "email", "phone"):
         issuer_detail_lines.extend(
             escape(item) for item in _contact_values(issuer.get(field_name))
@@ -263,7 +268,25 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     )
     brand_content = None
     if issuer.get("branding") == "hotel":
-        brand_content = _hotel_logo(issuer.get("logo_url"))
+        hotel_logo = _hotel_logo(issuer.get("logo_url"))
+        hotel_name = Paragraph(
+            f"<font color='#3039F5' size='18'><b>{escape(str(brand_label))}</b></font>",
+            small,
+        )
+        if hotel_logo is not None:
+            brand_content = Table(
+                [[hotel_logo, hotel_name]],
+                colWidths=[43 * mm, 61 * mm],
+                style=TableStyle([
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ]),
+            )
+        else:
+            brand_content = hotel_name
     else:
         image_dir = Path(__file__).resolve().parents[1] / "static" / "booking" / "images"
         icon = Image(str(image_dir / "visit77-icon.png"), width=13 * mm, height=12.35 * mm)
@@ -361,8 +384,11 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     room_lines = [line for line in invoice["lines"] if line["line_type"] in {"room", "extra_bed"}]
     service_charge_lines = [
         line for line in invoice["lines"]
-        if line["line_type"] in {"ota_other_charge", "invoice_other_charge"}
-        and line["description"].strip().casefold() == "service charge"
+        if line["line_type"] == "invoice_service_charge"
+        or (
+            line["line_type"] in {"ota_other_charge", "invoice_other_charge"}
+            and line["description"].strip().casefold() == "service charge"
+        )
     ]
     adjustment_lines = [
         line for line in invoice["lines"]
@@ -400,33 +426,44 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     adjustment_total = sum(
         (Decimal(str(line["total"])) for line in adjustment_lines), Decimal("0"),
     )
-    total_charges = Decimal(str(invoice["subtotal"])) - service_charge_total - adjustment_total
     discount_total = Decimal(str(invoice["discount_total"]))
-    display_subtotal = total_charges - discount_total + adjustment_total
-    amount_rows.extend([
-        ("<b>Total Charges</b>", f"<b>{_money(total_charges, currency)}</b>"),
-        ("Discount", f"-{_money(discount_total, currency)}" if discount_total else "0"),
-        ("Adjustment", _money(adjustment_total, currency) if adjustment_total else "0"),
-    ])
+    if is_pms:
+        total_charges = Decimal(str(invoice["subtotal"])) - service_charge_total - adjustment_total
+        display_subtotal = total_charges - discount_total + adjustment_total
+        amount_rows.extend([
+            ("<b>Total Charges</b>", f"<b>{_money(total_charges, currency)}</b>"),
+            ("Discount", f"-{_money(discount_total, currency)}" if discount_total else "0"),
+            ("Adjustment", _money(adjustment_total, currency) if adjustment_total else "0"),
+        ])
+    else:
+        # OTA documents have no Total Charges/discount/adjustment section.
+        display_subtotal = Decimal(str(invoice["subtotal"])) - service_charge_total - discount_total
+        section_ends.pop()
     section_ends.append(len(amount_rows) + 1)
     amount_rows.append(("<b>Subtotal</b>", f"<b>{_money(display_subtotal, currency)}</b>"))
     amount_rows.extend(
         (escape(line["description"]), _money(line["total"], currency))
         for line in service_charge_lines
     )
-    if not service_charge_lines:
+    if is_pms and not service_charge_lines:
         amount_rows.append(("Service Charge", "0"))
     tax_charges = invoice.get("tax_charges") or []
     for charge in tax_charges:
+        if charge["mode"] == "do_not_show":
+            continue
         amount_rows.append((
             escape(charge["title"]),
             "Included" if charge["mode"] == "included" else _money(charge["amount"], currency),
         ))
-    if not tax_charges:
+    if is_pms and not tax_charges:
         amount_rows.append((
             "Tax",
             _money(invoice["tax_total"], currency) if Decimal(invoice["tax_total"]) else "Included",
         ))
+    if not is_pms and not service_charge_lines and not any(
+        charge["mode"] != "do_not_show" for charge in tax_charges
+    ):
+        amount_rows.append(("-", "0"))
     section_ends.append(len(amount_rows) + 1)
     amount_rows.extend([
         ("<b>Grand Total</b>", f"<b>{_money(invoice['invoice_total'], currency)}</b>"),

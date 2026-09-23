@@ -123,7 +123,7 @@ class HotelSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "core_business_id", "name", "slug", "address", "phone", "cover_image_url",
             "features", "core_snapshot", "access_snapshot", "synced_at",
-            "invoice_charges", "document_code",
+            "ota_invoice_charges", "pms_invoice_charges", "document_code",
         ]
 
     def validate_base_currency(self, value):
@@ -1195,6 +1195,18 @@ class BookingRoomSerializer(serializers.ModelSerializer):
     meal_plans = serializers.SerializerMethodField()
     meal_plan_ids = serializers.SerializerMethodField()
     extra_bed_count = serializers.IntegerField(source="extra_beds", read_only=True)
+    preferences = serializers.SerializerMethodField()
+    preference_details = serializers.SerializerMethodField()
+
+    @staticmethod
+    def get_preferences(obj):
+        """Return the supported preference values submitted for this room."""
+        return (obj.preference_snapshot or {}).get("requested") or {}
+
+    @staticmethod
+    def get_preference_details(obj):
+        """Return resolved preference labels and pricing for display clients."""
+        return (obj.preference_snapshot or {}).get("selected") or {}
 
     @staticmethod
     def get_rate_plan(obj):
@@ -1389,7 +1401,10 @@ class InvoiceSerializer(serializers.ModelSerializer):
             line_totals[line_type] = line_totals.get(line_type, Decimal("0")) + line.total
         room_charge_total = line_totals.get("room", Decimal("0")) + line_totals.get("extra_bed", Decimal("0"))
         additional_charge_total = sum(
-            (amount for line_type, amount in line_totals.items() if line_type not in {"room", "extra_bed", "service_fee"}),
+            (
+                amount for line_type, amount in line_totals.items()
+                if line_type not in {"room", "extra_bed", "service_fee", "invoice_service_charge"}
+            ),
             Decimal("0"),
         )
         deposit_amount = sum(
@@ -1418,13 +1433,13 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "additional_charge_total": money(additional_charge_total),
             "charge_groups": self.get_charge_groups(obj),
             "charges_total": money(room_charge_total + additional_charge_total),
-            "service_fee_total": money(line_totals.get("service_fee", Decimal("0"))),
+            "service_fee_total": money(
+                line_totals.get("service_fee", Decimal("0"))
+                + line_totals.get("invoice_service_charge", Decimal("0"))
+            ),
             "subtotal": money(obj.subtotal),
             "tax_total": money(obj.tax_total),
-            "tax_charges": (
-                (booking.invoice_charge_snapshot or {}).get("taxes", [])
-                if obj.invoice_type == Invoice.Type.ROOM_BOOKING else []
-            ),
+            "tax_charges": (obj.charge_snapshot or {}).get("taxes", []),
             "discount_total": money(obj.discount_total),
             "grand_total": money(obj.total),
             "deposit_amount": money(deposit_amount),
@@ -1447,7 +1462,6 @@ class InvoiceLineCreateSerializer(serializers.Serializer):
 class InvoiceCreateSerializer(serializers.Serializer):
     invoice_type = serializers.ChoiceField(choices=Invoice.Type.choices)
     lines = InvoiceLineCreateSerializer(many=True, allow_empty=False)
-    tax_total = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0"), default=Decimal("0"))
     discount_total = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0"), default=Decimal("0"))
     note = serializers.CharField(required=False, allow_blank=True, default="")
 

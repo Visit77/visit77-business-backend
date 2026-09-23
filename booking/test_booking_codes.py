@@ -29,7 +29,7 @@ from booking.models import (
 )
 from booking.booking_services.email import send_booking_confirmation_email
 from booking.booking_services.sms import normalize_sms_phone_number
-from booking.booking_services.receipt import _contact_values, ensure_receipt_pdf, render_receipt_pdf
+from booking.booking_services.receipt import _contact_values, ensure_receipt_pdf, render_receipt_pdf, render_invoice_pdf
 from booking.serializers import BookingSerializer, InvoiceSerializer
 from booking.services import record_payment
 from booking.tasks import (
@@ -304,8 +304,17 @@ class BookingCodeTests(TestCase):
         self.assertEqual(payment.receipt_snapshot["issuer"]["branding"], "hotel")
         self.assertEqual(
             payment.receipt_snapshot["issuer"]["footer_text"],
-            "VISIT 77 PMS SYSTEM",
+            "Powered by Visit77",
         )
+        for render in (render_receipt_pdf, render_invoice_pdf):
+            pdf_text = "\n".join(
+                page.extract_text()
+                for page in PdfReader(BytesIO(render(payment.receipt_snapshot))).pages
+            )
+            self.assertIn("Discount", pdf_text)
+            self.assertIn("Adjustment", pdf_text)
+            self.assertIn(self.hotel.name, pdf_text)
+            self.assertIn("Powered by Visit77", pdf_text)
 
     def test_receipt_groups_same_room_type_and_sums_quantity(self):
         booking = self.create_booking("TEST-GROUPED-ROOM-RECEIPT")
@@ -372,6 +381,7 @@ class BookingCodeTests(TestCase):
         )
         invoice = Invoice.objects.create(
             booking=booking,
+            charge_scope=Invoice.ChargeScope.OTA,
             currency="MMK",
             subtotal=1000,
             total=1000,
@@ -428,26 +438,35 @@ class BookingCodeTests(TestCase):
         for pdf_bytes in (receipt_bytes, invoice_bytes):
             text = "\n".join(page.extract_text() for page in PdfReader(BytesIO(pdf_bytes)).pages)
             labels = (
-                "Total Room Charge", "Additional Charges", "Total Charges",
-                "Discount", "Adjustment", "Subtotal", "Service Charge",
-                "Tax", "Grand Total", "Amount Paid", "Amount Due",
+                "Total Room Charge", "Additional Charges", "Subtotal",
+                "Grand Total", "Amount Paid", "Amount Due",
             )
             positions = [text.index(label) for label in labels]
             self.assertEqual(positions, sorted(positions))
-            self.assertIn("Included", text)
+            self.assertNotIn("Service Charge", text)
+            self.assertNotIn("\nTax\n", text)
+            self.assertNotIn("Discount", text)
+            self.assertNotIn("Adjustment", text)
         adjusted_snapshot = deepcopy(payment.receipt_snapshot)
         adjusted_snapshot["invoice"]["lines"].append({
             "description": "Adjustment", "total": "50", "line_type": "adjustment",
         })
         adjusted_snapshot["invoice"]["subtotal"] = "1050"
-        adjusted_snapshot["invoice"]["invoice_total"] = "1050"
+        adjusted_snapshot["invoice"]["discount_total"] = "100"
+        adjusted_snapshot["invoice"]["invoice_total"] = "950"
+        adjusted_snapshot["invoice"]["tax_charges"] = [
+            {"title": "Hidden Tax", "mode": "do_not_show", "amount": "0"},
+        ]
         adjusted_text = "\n".join(
             page.extract_text()
             for page in PdfReader(BytesIO(render_receipt_pdf(adjusted_snapshot))).pages
         )
-        self.assertIn("Adjustment\n MMK 50", adjusted_text)
-        self.assertIn("Total Charges\n MMK 1,000", adjusted_text)
-        self.assertIn("Subtotal\n MMK 1,050", adjusted_text)
+        self.assertNotIn("Adjustment", adjusted_text)
+        self.assertNotIn("Discount", adjusted_text)
+        self.assertNotIn("Hidden Tax", adjusted_text)
+        self.assertNotIn("\nTax\n", adjusted_text)
+        self.assertNotIn("Total Charges", adjusted_text)
+        self.assertIn("Subtotal\n MMK 950", adjusted_text)
         payment.refresh_from_db()
         original_name = payment.receipt_pdf.name
         with payment.receipt_pdf.open("rb") as receipt_file:

@@ -13,7 +13,7 @@ from booking.storage import get_private_document_storage
 
 
 def default_invoice_charges():
-    return {"taxes": [{"title": "Tax", "mode": "included", "value": "0"}], "other_charges": []}
+    return {"taxes": [{"title": "Tax", "mode": "included", "value": "0"}], "service_charges": []}
 
 
 class Hotel(models.Model):
@@ -35,7 +35,8 @@ class Hotel(models.Model):
     base_currency = models.CharField(max_length=3, default="MMK")
     package = models.CharField(max_length=24, choices=Package.choices, default=Package.OTA)
     features = models.JSONField(default=dict, blank=True)
-    invoice_charges = models.JSONField(default=default_invoice_charges, blank=True)
+    ota_invoice_charges = models.JSONField(default=default_invoice_charges, blank=True)
+    pms_invoice_charges = models.JSONField(default=default_invoice_charges, blank=True)
     timezone = models.CharField(max_length=64, default="Asia/Yangon")
     check_in_time = models.TimeField(default=time(12, 0))
     check_out_time = models.TimeField(default=time(12, 0))
@@ -670,7 +671,7 @@ class Booking(models.Model):
     currency = models.CharField(max_length=3, default="MMK")
     room_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     add_on_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
-    other_charge_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    service_charge_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     tax_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     discount_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     grand_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
@@ -835,6 +836,10 @@ class RoomAssignment(models.Model):
 
 
 class Invoice(models.Model):
+    class ChargeScope(models.TextChoices):
+        OTA = "ota", "OTA"
+        PMS = "pms", "PMS"
+
     class Type(models.TextChoices):
         ROOM_BOOKING = "room_booking", "Room booking"
         STAY_EXTENSION = "stay_extension", "Stay extension"
@@ -852,6 +857,8 @@ class Invoice(models.Model):
     booking = models.ForeignKey(Booking, on_delete=models.PROTECT, related_name="invoices")
     invoice_number = models.CharField(max_length=32, unique=True, blank=True, editable=False)
     invoice_type = models.CharField(max_length=24, choices=Type.choices, default=Type.OTHER)
+    charge_scope = models.CharField(max_length=8, choices=ChargeScope.choices, default=ChargeScope.PMS)
+    charge_snapshot = models.JSONField(default=dict, blank=True)
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.OPEN)
     currency = models.CharField(max_length=3)
     subtotal = models.DecimalField(max_digits=14, decimal_places=2, default=0)

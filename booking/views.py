@@ -234,7 +234,7 @@ def _payment_summary(booking):
         "currency": booking.currency,
         "room_total": booking.room_total,
         "add_on_total": booking.add_on_total,
-        "other_charge_total": booking.other_charge_total,
+        "service_charge_total": booking.service_charge_total,
         "tax_total": booking.tax_total,
         "discount_total": booking.discount_total,
         "grand_total": booking.grand_total,
@@ -3192,22 +3192,30 @@ class HotelViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins.L
             hotel.save(update_fields=["document_code"])
         return success({"code": hotel.document_code})
 
-    @action(detail=False, methods=["get", "put"], url_path="invoice-charges")
-    def invoice_charges(self, request):
+    def _invoice_charges(self, request, field_name):
         hotel = self._hotel_from_business_header(request)
         if request.method == "GET":
-            return success(hotel.invoice_charges)
+            return success(getattr(hotel, field_name))
         serializer = InvoiceChargesSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        hotel.invoice_charges = {
+        config = {
             category: [
                 {**rule, "value": str(rule.get("value", Decimal("0")))}
                 for rule in serializer.validated_data[category]
             ]
-            for category in ("taxes", "other_charges")
+            for category in ("taxes", "service_charges")
         }
-        hotel.save(update_fields=["invoice_charges"])
-        return success(hotel.invoice_charges)
+        setattr(hotel, field_name, config)
+        hotel.save(update_fields=[field_name])
+        return success(config)
+
+    @action(detail=False, methods=["get", "put"], url_path="ota-invoice-charges")
+    def ota_invoice_charges(self, request):
+        return self._invoice_charges(request, "ota_invoice_charges")
+
+    @action(detail=False, methods=["get", "put"], url_path="pms-invoice-charges")
+    def pms_invoice_charges(self, request):
+        return self._invoice_charges(request, "pms_invoice_charges")
 
 
 class RoomTypeViewSet(AdminModelViewSet):
@@ -4017,10 +4025,11 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
             booking,
             data["invoice_type"],
             data["lines"],
-            tax_total=data["tax_total"],
             discount_total=data["discount_total"],
             note=data["note"],
             add_to_booking_total=True,
+            charge_scope=Invoice.ChargeScope.PMS,
+            apply_config=True,
         )
         return success(
             InvoiceSerializer(invoice).data,
