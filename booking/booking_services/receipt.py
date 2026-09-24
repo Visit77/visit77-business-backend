@@ -16,6 +16,7 @@ from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
+from reportlab.lib.utils import ImageReader
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from booking.models import Invoice, Payment
@@ -99,7 +100,13 @@ def _hotel_logo(logo_url):
         content = response.content
         if not content or len(content) > 2 * 1024 * 1024:
             return None
-        return Image(BytesIO(content), width=40 * mm, height=15 * mm, kind="proportional")
+        image_width, image_height = ImageReader(BytesIO(content)).getSize()
+        scale = min((40 * mm) / image_width, (15 * mm) / image_height)
+        return Image(
+            BytesIO(content),
+            width=image_width * scale,
+            height=image_height * scale,
+        )
     except (httpx.HTTPError, OSError, ValueError):
         return None
 
@@ -332,9 +339,10 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
             small,
         )
         if hotel_logo is not None:
+            logo_column_width = hotel_logo.drawWidth + (3 * mm)
             brand_content = Table(
                 [[hotel_logo, hotel_name]],
-                colWidths=[43 * mm, 61 * mm],
+                colWidths=[logo_column_width, (104 * mm) - logo_column_width],
                 style=TableStyle([
                     ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                     ("LEFTPADDING", (0, 0), (-1, -1), 0),
