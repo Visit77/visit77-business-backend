@@ -97,6 +97,17 @@ def build_booking_confirmation_context(booking, primary_guest):
             ):
                 service_charge_total += line.total
     extra_bed_total = line_totals.get("extra_bed", Decimal("0"))
+    room_charge_total = line_totals.get("room", Decimal("0"))
+    additional_charge_total = (
+        max(
+            invoice.subtotal
+            - room_charge_total
+            - extra_bed_total
+            - service_charge_total,
+            Decimal("0"),
+        )
+        if invoice else booking.add_on_total
+    )
     room_details = " • ".join(
         f"{room.room_type.name} x {room.quantity}" for room in rooms
     ) or "-"
@@ -147,9 +158,12 @@ def build_booking_confirmation_context(booking, primary_guest):
         "guest_name": primary_guest.name or booking.contact_name,
         "meal_info": ", ".join(meals) if meals else "No meal selected",
         "special_requests": booking.special_request or "None",
-        "subtotal": _email_money(
-            max(invoice.subtotal - extra_bed_total - service_charge_total, Decimal("0"))
-            if invoice else booking.room_total,
+        "room_charge": _email_money(
+            room_charge_total if invoice else booking.room_total,
+            booking.currency,
+        ),
+        "additional_charges": _email_money(
+            additional_charge_total,
             booking.currency,
         ),
         "extra_bed": _email_money(extra_bed_total, booking.currency),

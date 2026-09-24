@@ -677,7 +677,8 @@ class BookingCodeTests(TestCase):
             booking,
             booking.guests.get(is_primary=True),
         )
-        self.assertEqual(context["subtotal"], "MMK 1,000")
+        self.assertEqual(context["room_charge"], "MMK 1,000")
+        self.assertEqual(context["additional_charges"], "MMK 0")
         self.assertEqual(context["extra_bed"], "MMK 0")
         self.assertEqual(context["service_charges"], "MMK 50")
         self.assertEqual(context["taxes"], "MMK 70")
@@ -692,7 +693,8 @@ class BookingCodeTests(TestCase):
             self.assertTrue(attachment[1].startswith(b"%PDF"))
             self.assertEqual(attachment[2], "application/pdf")
             html_message = email_class.return_value.attach_alternative.call_args.args[0]
-            self.assertIn("Room &amp; Additional Charges", html_message)
+            self.assertIn("Room Charge", html_message)
+            self.assertIn("Additional Charges", html_message)
             self.assertIn("Service Charges", html_message)
             self.assertIn("Taxes", html_message)
 
