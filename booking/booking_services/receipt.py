@@ -427,7 +427,14 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
                 ("TOPPADDING", (0, 0), (-1, -1), 2),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
             ])),
-        ]], colWidths=[84 * mm, 75 * mm]),
+            "",
+        ]], colWidths=[82 * mm, 75 * mm, 2 * mm], style=TableStyle([
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ])),
     ])
     story.append(Spacer(1, 4 * mm))
 
