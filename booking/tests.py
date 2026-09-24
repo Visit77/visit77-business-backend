@@ -1515,7 +1515,16 @@ class BookingServiceTests(TestCase):
                             "walk_in_booking": True,
                         },
                     },
-                    "business": {"id": core_business_id, "name": "Seed Hotel", "status": True},
+                    "business": {
+                        "id": core_business_id,
+                        "name": "Seed Hotel",
+                        "status": True,
+                        "address": "Merchant Address, Yangon",
+                        "phone": "+959222222222",
+                        "email": "merchant-contact@example.com",
+                        "latitude": "16.866100",
+                        "longitude": "96.195100",
+                    },
                     "meal_plans": [
                         {
                             "id": 501,
@@ -1619,6 +1628,11 @@ class BookingServiceTests(TestCase):
         sync_business_from_core(99, client=client)
         hotel = Hotel.objects.get(core_business_id=99)
         self.assertEqual(hotel.package, Hotel.Package.OTA_PMS)
+        self.assertEqual(hotel.address, "Merchant Address, Yangon")
+        self.assertEqual(hotel.phone, "+959222222222")
+        self.assertEqual(hotel.core_snapshot["email"], "merchant-contact@example.com")
+        self.assertEqual(hotel.core_snapshot["latitude"], "16.866100")
+        self.assertEqual(hotel.core_snapshot["longitude"], "96.195100")
         self.assertTrue(hotel.has_feature("online_booking"))
         self.assertTrue(hotel.has_feature("room_assignment"))
         package = hotel.meal_plans.get(core_meal_plan_id=502)

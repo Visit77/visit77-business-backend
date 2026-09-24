@@ -106,13 +106,9 @@ def build_booking_confirmation_context(booking, primary_guest):
             meals.append("Breakfast")
     meals = list(dict.fromkeys(meals))
     hotel_snapshot = booking.hotel.core_snapshot or {}
-    hotel_emails = (
-        _contact_values(hotel_snapshot.get("email"))
-        or _contact_values(hotel_snapshot.get("contact_email"))
-        or _contact_values(
-            getattr(settings, "RECEIPT_ISSUER_EMAIL", settings.DEFAULT_FROM_EMAIL)
-        )
-    )
+    # Core projects the active Merchant Verification contact into these fields.
+    # Do not mix in legacy business/main-branch or Visit77 issuer contacts.
+    hotel_emails = _contact_values(hotel_snapshot.get("email"))
     hotel_image = booking.hotel.cover_image_url or hotel_snapshot.get("cover_image_url") or ""
     booking_url = f"{settings.BOOKING_FRONTEND_URL.rstrip('/')}/bookings/{booking.public_token}"
     policy = _booking_cancellation_policy(booking.cancellation_policy_snapshot)

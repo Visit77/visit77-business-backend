@@ -690,8 +690,7 @@ class BookingCodeTests(TestCase):
         booking = self.create_booking("INTERNAL-EMAIL-REFERENCE")
         self.hotel.phone = '["012312", "123123"]'
         self.hotel.core_snapshot = {
-            "email": '[""]',
-            "contact_email": '["hotel@example.com", "frontdesk@example.com"]',
+            "email": '["hotel@example.com", "frontdesk@example.com"]',
         }
         self.hotel.save(update_fields=["phone", "core_snapshot"])
         self.add_confirmation_rooms(booking)

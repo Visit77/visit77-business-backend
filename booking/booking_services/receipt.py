@@ -44,12 +44,10 @@ def _hotel_phone(hotel):
 
 def _hotel_email(hotel):
     snapshot = hotel.core_snapshot or {}
-    value = (
-        snapshot.get("email")
-        or snapshot.get("contact_email")
-        or snapshot.get("booking_notification_email")
-        or ""
-    )
+    # The synced `email` field is the active Merchant Verification business
+    # contact. Booking-notification contacts are delivery recipients, not
+    # document hotel information.
+    value = snapshot.get("email") or ""
     return ", ".join(_contact_values(value))
 
 
