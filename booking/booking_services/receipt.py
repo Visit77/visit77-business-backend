@@ -411,9 +411,9 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
         Table([[
             "",
             Table([
-                [Paragraph(f"<b>{escape(document_title)} ID</b>", small), ":", Paragraph(escape(str(document_number)), small)],
-                [Paragraph(f"<b>{identifier_label}</b>", small), ":", Paragraph(escape(str(identifier_value)), small)],
-                [Paragraph("<b>Payment Date</b>", small), ":", Paragraph(payment_date, small)],
+                [Paragraph(f"<b>{escape(document_title)} ID</b>", right), ":", Paragraph(escape(str(document_number)), right)],
+                [Paragraph(f"<b>{identifier_label}</b>", right), ":", Paragraph(escape(str(identifier_value)), right)],
+                [Paragraph("<b>Payment Date</b>", right), ":", Paragraph(payment_date, right)],
             ], colWidths=[28 * mm, 3 * mm, 44 * mm], style=TableStyle([
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 0),
