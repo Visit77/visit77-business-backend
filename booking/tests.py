@@ -1880,6 +1880,14 @@ class BookingApiTests(BookingServiceTests):
         }, format="json", **headers)
         self.assertEqual(created_charge.status_code, 201, created_charge.data)
         charge_id = created_charge.data["data"]["id"]
+        duplicate_name = self.client.post(ota_crud_url, {
+            "charge_type": "tax",
+            "title": "  cleaning charge  ",
+            "mode": "fixed",
+            "value": "500",
+        }, format="json", **headers)
+        self.assertEqual(duplicate_name.status_code, 400, duplicate_name.data)
+        self.assertIn("already exists", str(duplicate_name.data).lower())
         updated_charge = self.client.patch(f"{ota_crud_url}{charge_id}/", {
             "mode": "percentage",
             "value": "3",

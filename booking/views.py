@@ -3390,17 +3390,15 @@ class InvoiceChargeViewSetBase(AdminModelViewSet):
         return success(grouped)
 
     def _reject_duplicate(self, hotel, attrs, instance=None):
-        charge_type = attrs.get("charge_type", getattr(instance, "charge_type", None))
-        title = attrs.get("title", getattr(instance, "title", None))
+        title = str(attrs.get("title", getattr(instance, "title", ""))).strip()
         duplicate = self.charge_model.objects.filter(
             hotel=hotel,
-            charge_type=charge_type,
-            title=title,
+            title__iexact=title,
         )
         if instance is not None:
             duplicate = duplicate.exclude(pk=instance.pk)
         if duplicate.exists():
-            raise ValidationError({"title": "A charge with this title and charge type already exists."})
+            raise ValidationError({"title": "A charge with this name already exists."})
 
     @transaction.atomic
     def perform_create(self, serializer):

@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import models, transaction
+from django.db.models.functions import Lower
 from django.utils import timezone
 
 from booking.storage import get_private_document_storage
@@ -95,8 +96,8 @@ class OTAInvoiceCharge(InvoiceChargeBase):
         ordering = ["charge_type", "sort_order", "id"]
         constraints = [
             models.UniqueConstraint(
-                fields=["hotel", "charge_type", "title"],
-                name="uniq_ota_invoice_charge_title",
+                Lower("title"), "hotel",
+                name="uniq_ota_invoice_charge_name_ci",
             ),
         ]
 
@@ -106,8 +107,8 @@ class PMSInvoiceCharge(InvoiceChargeBase):
         ordering = ["charge_type", "sort_order", "id"]
         constraints = [
             models.UniqueConstraint(
-                fields=["hotel", "charge_type", "title"],
-                name="uniq_pms_invoice_charge_title",
+                Lower("title"), "hotel",
+                name="uniq_pms_invoice_charge_name_ci",
             ),
         ]
 

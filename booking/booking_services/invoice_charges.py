@@ -19,6 +19,12 @@ class ChargeRuleSerializer(serializers.Serializer):
             raise serializers.ValidationError({"value": "Percentage cannot exceed 100."})
         return attrs
 
+    def validate_title(self, value):
+        title = value.strip()
+        if not title:
+            raise serializers.ValidationError("Name cannot be blank.")
+        return title
+
 
 class InvoiceChargesSerializer(serializers.Serializer):
     taxes = ChargeRuleSerializer(many=True, required=False, default=list)
@@ -28,6 +34,18 @@ class InvoiceChargesSerializer(serializers.Serializer):
         if any(item["mode"] == "do_not_show" for item in value):
             raise serializers.ValidationError("Service charges cannot use do_not_show mode.")
         return value
+
+    def validate(self, attrs):
+        seen = set()
+        for category in ("taxes", "service_charges"):
+            for rule in attrs.get(category, []):
+                normalized = rule["title"].casefold()
+                if normalized in seen:
+                    raise serializers.ValidationError({
+                        "name": f'Charge name "{rule["title"]}" must be unique.',
+                    })
+                seen.add(normalized)
+        return attrs
 
 
 CHARGE_MODEL_CONFIG = {
@@ -59,12 +77,18 @@ def sync_hotel_charge_config(hotel, model):
 def replace_charge_records(hotel, model, config):
     model.objects.filter(hotel=hotel).delete()
     records = []
+    seen = set()
     for charge_type, category in (("tax", "taxes"), ("service", "service_charges")):
         for index, rule in enumerate(config.get(category, [])):
+            title = str(rule["title"]).strip()
+            normalized = title.casefold()
+            if not title or normalized in seen:
+                continue
+            seen.add(normalized)
             records.append(model(
                 hotel=hotel,
                 charge_type=charge_type,
-                title=rule["title"],
+                title=title,
                 mode=rule["mode"],
                 value=rule.get("value") or Decimal("0"),
                 sort_order=index,
@@ -86,8 +110,14 @@ def calculate_invoice_charges(config, base_subtotal):
     """Freeze amounts at booking time; percentages use pre-charge subtotal."""
     base_subtotal = Decimal(str(base_subtotal))
     result = {"taxes": [], "service_charges": []}
+    seen_names = set()
     for category in ("service_charges", "taxes"):
         for rule in (config or {}).get(category, []):
+            title = str(rule["title"]).strip()
+            normalized = title.casefold()
+            if not title or normalized in seen_names:
+                continue
+            seen_names.add(normalized)
             mode = rule["mode"]
             value = Decimal(str(rule.get("value") or 0))
             amount = (
@@ -96,7 +126,7 @@ def calculate_invoice_charges(config, base_subtotal):
                 if mode == "percentage" else value
             )
             result[category].append({
-                "title": rule["title"], "mode": mode,
+                "title": title, "mode": mode,
                 "value": str(value), "amount": str(amount),
             })
     return result

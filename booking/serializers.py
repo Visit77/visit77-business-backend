@@ -115,6 +115,12 @@ def validate_request_business_scope(serializer, attrs):
 class InvoiceChargeSerializerBase(serializers.ModelSerializer):
     hotel = serializers.PrimaryKeyRelatedField(read_only=True)
 
+    def validate_title(self, value):
+        title = value.strip()
+        if not title:
+            raise serializers.ValidationError("Name cannot be blank.")
+        return title
+
     def validate(self, attrs):
         instance = self.instance
         charge_type = attrs.get("charge_type", getattr(instance, "charge_type", None))
