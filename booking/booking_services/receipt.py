@@ -27,6 +27,14 @@ def _money(value, currency):
     return f"{currency} {amount:,.2f}" if amount % 1 else f"{currency} {int(amount):,}"
 
 
+def _percentage_label(value):
+    """Format configured percentages without unnecessary trailing zeroes."""
+    try:
+        return format(Decimal(str(value or 0)), "f").rstrip("0").rstrip(".") or "0"
+    except Exception:
+        return str(value or 0)
+
+
 def _hotel_address(hotel):
     snapshot = hotel.core_snapshot or {}
     value = (
@@ -311,11 +319,24 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
 
     story = []
     if issuer.get("branding") == "hotel":
-        issuer_detail_lines = []
-        for field_name in ("address", "email", "phone"):
-            issuer_detail_lines.extend(
-                escape(item) for item in _contact_values(issuer.get(field_name))
+        issuer_detail_lines = [
+            escape(item) for item in _contact_values(issuer.get("address"))
+        ]
+        issuer_emails = ", ".join(
+            escape(item) for item in _contact_values(issuer.get("email"))
+        )
+        issuer_phones = ", ".join(
+            escape(item) for item in _contact_values(issuer.get("phone"))
+        )
+        contact_parts = []
+        if issuer_emails:
+            contact_parts.append(
+                f"<u><font color='#0066CC'>{issuer_emails}</font></u>"
             )
+        if issuer_phones:
+            contact_parts.append(issuer_phones)
+        if contact_parts:
+            issuer_detail_lines.append(", ".join(contact_parts))
     else:
         issuer_detail_lines = [
             f"<b>{escape(str(issuer['name']))}</b>",
@@ -344,11 +365,12 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
                 [[hotel_logo, hotel_name]],
                 colWidths=[logo_column_width, (104 * mm) - logo_column_width],
                 style=TableStyle([
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
                     ("LEFTPADDING", (0, 0), (-1, -1), 0),
                     ("RIGHTPADDING", (0, 0), (-1, -1), 2),
                     ("TOPPADDING", (0, 0), (-1, -1), 0),
                     ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (1, 0), (1, 0), 2 * mm),
                 ]),
             )
         else:
@@ -356,16 +378,22 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     else:
         image_dir = Path(__file__).resolve().parents[1] / "static" / "booking" / "images"
         icon = Image(str(image_dir / "visit77-icon.png"), width=13 * mm, height=12.35 * mm)
-        wordmark = Image(str(image_dir / "visit77-logo.png"), width=39 * mm, height=11.73 * mm)
+        wordmark = Paragraph(
+            "<font color='#101FFF' size='18'><b>Visit</b></font>"
+            "<font color='#11BFB8' size='18'><b>77</b></font>",
+            small,
+        )
         brand_content = Table(
             [[icon, wordmark]],
-            colWidths=[14 * mm, 40 * mm],
+            colWidths=[15 * mm, 34 * mm],
             style=TableStyle([
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 0),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 0),
                 ("TOPPADDING", (0, 0), (-1, -1), 0),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (1, 0), (1, 0), 2 * mm),
+                ("BOTTOMPADDING", (0, 1), (0, 1), 1 * mm),
             ]),
         )
     if brand_content is None:
@@ -373,11 +401,28 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
             f"<font color='#3039F5' size='18'><b>{escape(str(brand_label))}</b></font>",
             right,
         )
-    document_heading = escape(document_title)
+    document_heading = Paragraph(
+        f"<b>{escape(document_title)}</b>",
+        ParagraphStyle("DocumentHeaderTitle", parent=title, alignment=TA_RIGHT, leading=18),
+    )
     if is_pms and issuer.get("footer_text"):
-        document_heading = (
-            f"<font size='7' color='#3039F5'>{escape(issuer['footer_text'])}</font>"
-            f"<br/><b>{document_heading}</b>"
+        document_heading = Table(
+            [
+                [Paragraph(
+                    f"<font size='7' color='#3039F5'>{escape(issuer['footer_text'])}</font>",
+                    right,
+                )],
+                [document_heading],
+            ],
+            colWidths=[54 * mm],
+            style=TableStyle([
+                ("ALIGN", (0, 0), (-1, -1), "RIGHT"),
+                ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]),
         )
     identifier_label = "Reservation ID" if is_pms else "Booking ID"
     identifier_value = booking.get("booking_code")
@@ -385,9 +430,7 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
         identifier_value = booking.get("reservation_code") or identifier_value
     header = Table([[
         brand_content,
-        Paragraph(document_heading, ParagraphStyle(
-            "DocumentHeaderTitle", parent=title, alignment=TA_RIGHT,
-        )),
+        document_heading,
     ]], colWidths=[105 * mm, 54 * mm])
     header.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
@@ -395,10 +438,11 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
         ("RIGHTPADDING", (0, 0), (-1, -1), 0),
         ("TOPPADDING", (0, 0), (-1, -1), 0),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        *([("BOTTOMPADDING", (1, 0), (1, 0), 1 * mm)] if not is_pms else []),
     ]))
     story.extend([
         header,
-        Spacer(1, 2 * mm),
+        Spacer(1, 1.5 * mm),
         Table([[""]], colWidths=[159 * mm], rowHeights=[2 * mm], style=[
             ("BACKGROUND", (0, 0), (-1, -1), blue),
         ]),
@@ -539,10 +583,12 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
             if isinstance(charge_index, int) and 0 <= charge_index < len(service_charge_rules)
             else next((item for item in service_charge_rules if item.get("title") == line["description"]), {})
         )
-        mode_suffix = {
-            "percentage": " (%)",
-            "fixed": " (fixed amount)",
-        }.get(rule.get("mode"), "")
+        mode_suffix = (
+            f" ({_percentage_label(rule.get('value'))}%)"
+            if rule.get("mode") == "percentage"
+            else " (fixed amount)" if rule.get("mode") == "fixed"
+            else ""
+        )
         amount_rows.append((
             f"{escape(line['description'])}{mode_suffix}",
             _money(line["total"], currency),
@@ -553,10 +599,12 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     for charge in tax_charges:
         if charge["mode"] == "do_not_show":
             continue
-        mode_suffix = {
-            "percentage": " (%)",
-            "fixed": " (fixed amount)",
-        }.get(charge["mode"], "")
+        mode_suffix = (
+            f" ({_percentage_label(charge.get('value'))}%)"
+            if charge["mode"] == "percentage"
+            else " (fixed amount)" if charge["mode"] == "fixed"
+            else ""
+        )
         amount_rows.append((
             f"{escape(charge['title'])}{mode_suffix}",
             "Included" if charge["mode"] == "included" else _money(charge["amount"], currency),

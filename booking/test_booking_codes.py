@@ -646,9 +646,9 @@ class BookingCodeTests(TestCase):
             page.extract_text()
             for page in PdfReader(BytesIO(render_receipt_pdf(charge_snapshot))).pages
         )
-        self.assertIn("Service Charge (%)", charge_text)
+        self.assertIn("Service Charge (5%)", charge_text)
         self.assertIn("Cleaning Fee (fixed amount)", charge_text)
-        self.assertIn("VAT (%)", charge_text)
+        self.assertIn("VAT (7%)", charge_text)
         self.assertIn("Tourism Tax (fixed amount)", charge_text)
         payment.refresh_from_db()
         original_name = payment.receipt_pdf.name
