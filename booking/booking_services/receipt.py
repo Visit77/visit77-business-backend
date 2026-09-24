@@ -106,13 +106,8 @@ def _hotel_logo(logo_url):
         return None
 
 
-def build_receipt_snapshot(payment):
-    """Capture immutable financial and booking data used by the receipt."""
-    payment = Payment.objects.select_related("booking__hotel", "invoice").prefetch_related(
-        "booking__guests", "booking__rooms__room_type", "invoice__lines", "invoice__receipts",
-    ).get(pk=payment.pk)
-    booking = payment.booking
-    invoice = payment.invoice
+def _build_document_snapshot(*, booking, invoice, payment=None):
+    """Build the shared immutable data used to render invoices and receipts."""
     is_pms = booking.source == booking.Source.PMS
     primary_guest = next(
         (guest for guest in booking.guests.all() if guest.is_primary),
@@ -137,6 +132,7 @@ def build_receipt_snapshot(payment):
                 "unit_price": str(line.unit_price),
                 "total": str(line.total),
                 "line_type": line_type,
+                "metadata": line.metadata or {},
             })
     paid_before = Decimal("0")
     if invoice:
@@ -144,12 +140,14 @@ def build_receipt_snapshot(payment):
             (
                 item.amount - item.refunded_amount
                 for item in invoice.receipts.all()
-                if item.pk != payment.pk
+                if (payment is None or item.pk != payment.pk)
                 and item.status in {Payment.Status.PAID, Payment.Status.PARTIALLY_REFUNDED}
             ),
             Decimal("0"),
         )
-    remaining = max((invoice.total if invoice else booking.grand_total) - paid_before - payment.amount, Decimal("0"))
+    payment_amount = payment.amount if payment is not None else paid_before
+    amount_applied = paid_before + payment_amount if payment is not None else paid_before
+    remaining = max((invoice.total if invoice else booking.grand_total) - amount_applied, Decimal("0"))
     grouped_rooms = {}
     for room in booking.rooms.all():
         room_key = room.room_type_id
@@ -163,14 +161,17 @@ def build_receipt_snapshot(payment):
         grouped_rooms[room_key]["extra_beds"] += room.extra_beds
     return {
         "version": 2,
-        "receipt_number": payment.receipt_number,
+        "receipt_number": payment.receipt_number if payment is not None else "",
         "invoice_number": invoice.invoice_number if invoice else payment.invoice_number,
-        "payment_date": (payment.paid_at or payment.created_at or timezone.now()).isoformat(),
-        "provider": payment.provider,
-        "provider_reference": payment.provider_reference,
-        "currency": payment.currency,
-        "amount_paid": str(payment.amount),
-        "refunded_amount": str(payment.refunded_amount),
+        "payment_date": (
+            (payment.paid_at or payment.created_at)
+            if payment is not None else invoice.issued_at
+        ).isoformat(),
+        "provider": payment.provider if payment is not None else "",
+        "provider_reference": payment.provider_reference if payment is not None else "",
+        "currency": payment.currency if payment is not None else invoice.currency,
+        "amount_paid": str(payment_amount),
+        "refunded_amount": str(payment.refunded_amount if payment is not None else Decimal("0")),
         "remaining_balance": str(remaining),
         "booking": {
             "id": str(booking.id),
@@ -197,6 +198,7 @@ def build_receipt_snapshot(payment):
             "charge_scope": invoice.charge_scope if invoice else (
                 Invoice.ChargeScope.OTA if booking.source == booking.Source.OTA else Invoice.ChargeScope.PMS
             ),
+            "service_charges": (invoice.charge_snapshot or {}).get("service_charges", []) if invoice else [],
             "tax_charges": (invoice.charge_snapshot or {}).get("taxes", []) if invoice else [],
             "room_charge_total": str(room_charge),
             "extra_bed_total": str(extra_bed_charge),
@@ -210,7 +212,7 @@ def build_receipt_snapshot(payment):
             "name": (
                 booking.hotel.name
                 if is_pms
-                else getattr(settings, "RECEIPT_ISSUER_NAME", "Visit77 Co.,Ltd.")
+                else getattr(settings, "RECEIPT_ISSUER_NAME", "Visit 77 Company Limited")
             ),
             "address": (
                 _hotel_address(booking.hotel)
@@ -218,7 +220,7 @@ def build_receipt_snapshot(payment):
                 else getattr(
                     settings,
                     "RECEIPT_ISSUER_ADDRESS",
-                    "10-06, Panchan Tower, Bargayar St., Sanchaung Tsp., Yangon, Myanmar.",
+                    "#10-06, Panchan Tower, Bargayar Street, San Chaung Tsp., Yangon, Myanmar. 11111",
                 )
             ),
             "email": (
@@ -236,6 +238,29 @@ def build_receipt_snapshot(payment):
             "footer_text": "Powered by Visit77" if is_pms else "",
         },
     }
+
+
+def build_receipt_snapshot(payment):
+    """Capture immutable financial and booking data used by the receipt."""
+    payment = Payment.objects.select_related("booking__hotel", "invoice").prefetch_related(
+        "booking__guests", "booking__rooms__room_type", "invoice__lines", "invoice__receipts",
+    ).get(pk=payment.pk)
+    return _build_document_snapshot(
+        booking=payment.booking,
+        invoice=payment.invoice,
+        payment=payment,
+    )
+
+
+def build_invoice_snapshot(invoice):
+    """Build an invoice snapshot even when the invoice has no payment yet."""
+    invoice = Invoice.objects.select_related("booking__hotel").prefetch_related(
+        "booking__guests", "booking__rooms__room_type", "lines", "receipts",
+    ).get(pk=invoice.pk)
+    return _build_document_snapshot(
+        booking=invoice.booking,
+        invoice=invoice,
+    )
 
 
 def finalize_receipt_snapshot(payment):
@@ -266,17 +291,35 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     guest = snapshot["guest"]
     invoice = snapshot["invoice"]
     is_pms = invoice.get("charge_scope", booking.get("source", "pms")) == "pms"
+    if not is_pms:
+        # OTA documents always use the approved Visit77 legal/company details,
+        # including when rendering an older immutable payment snapshot.
+        issuer = {
+            **issuer,
+            "name": "Visit 77 Company Limited",
+            "address": "#10-06, Panchan Tower, Bargayar Street, San Chaung Tsp., Yangon, Myanmar. 11111",
+            "email": "contact.myanmar@visit77.com",
+            "phone": "(+95) 988 577 0011",
+            "branding": "visit77",
+        }
     payment_date = timezone.datetime.fromisoformat(snapshot["payment_date"]).strftime("%d %b %Y")
 
     story = []
-    issuer_detail_lines = (
-        [] if issuer.get("branding") == "hotel"
-        else [f"<b>{escape(str(issuer['name']))}</b>"]
-    )
-    for field_name in ("address", "email", "phone"):
-        issuer_detail_lines.extend(
-            escape(item) for item in _contact_values(issuer.get(field_name))
-        )
+    if issuer.get("branding") == "hotel":
+        issuer_detail_lines = []
+        for field_name in ("address", "email", "phone"):
+            issuer_detail_lines.extend(
+                escape(item) for item in _contact_values(issuer.get(field_name))
+            )
+    else:
+        issuer_detail_lines = [
+            f"<b>{escape(str(issuer['name']))}</b>",
+            escape(str(issuer.get("address") or "")),
+            (
+                f"<u><font color='#0066CC'>{escape(str(issuer.get('email') or ''))}</font></u>, "
+                f"{escape(str(issuer.get('phone') or ''))}"
+            ),
+        ]
     issuer_details = "<br/>".join(issuer_detail_lines)
     brand_label = (
         issuer["name"]
@@ -367,13 +410,18 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
         Spacer(1, 3 * mm),
         Table([[
             "",
-            Paragraph(
-                f"<b>{escape(document_title)} ID:</b> &nbsp; {escape(str(document_number))}"
-                f"<br/><b>{identifier_label}:</b> &nbsp; {escape(str(identifier_value))}"
-                f"<br/><b>Payment Date:</b> &nbsp; {payment_date}",
-                small,
-            ),
-        ]], colWidths=[97 * mm, 62 * mm]),
+            Table([
+                [Paragraph(f"<b>{escape(document_title)} ID</b>", small), ":", Paragraph(escape(str(document_number)), small)],
+                [Paragraph(f"<b>{identifier_label}</b>", small), ":", Paragraph(escape(str(identifier_value)), small)],
+                [Paragraph("<b>Payment Date</b>", small), ":", Paragraph(payment_date, small)],
+            ], colWidths=[28 * mm, 3 * mm, 44 * mm], style=TableStyle([
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 1),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ])),
+        ]], colWidths=[84 * mm, 75 * mm]),
     ])
     story.append(Spacer(1, 4 * mm))
 
@@ -407,6 +455,7 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     section("GUEST &amp; HOTEL DETAILS", detail_rows)
 
     amount_rows = []
+    centered_label_rows = set()
     section_ends = []
     room_lines = [line for line in invoice["lines"] if line["line_type"] in {"room", "extra_bed"}]
     service_charge_lines = [
@@ -468,18 +517,35 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
         section_ends.pop()
     section_ends.append(len(amount_rows) + 1)
     amount_rows.append(("<b>Subtotal</b>", f"<b>{_money(display_subtotal, currency)}</b>"))
-    amount_rows.extend(
-        (escape(line["description"]), _money(line["total"], currency))
-        for line in service_charge_lines
-    )
+    service_charge_rules = invoice.get("service_charges") or []
+    for line in service_charge_lines:
+        metadata = line.get("metadata") or {}
+        charge_index = metadata.get("charge_index")
+        rule = (
+            service_charge_rules[charge_index]
+            if isinstance(charge_index, int) and 0 <= charge_index < len(service_charge_rules)
+            else next((item for item in service_charge_rules if item.get("title") == line["description"]), {})
+        )
+        mode_suffix = {
+            "percentage": " (%)",
+            "fixed": " (fixed amount)",
+        }.get(rule.get("mode"), "")
+        amount_rows.append((
+            f"{escape(line['description'])}{mode_suffix}",
+            _money(line["total"], currency),
+        ))
     if is_pms and not service_charge_lines:
         amount_rows.append(("Service Charge", "0"))
     tax_charges = invoice.get("tax_charges") or []
     for charge in tax_charges:
         if charge["mode"] == "do_not_show":
             continue
+        mode_suffix = {
+            "percentage": " (%)",
+            "fixed": " (fixed amount)",
+        }.get(charge["mode"], "")
         amount_rows.append((
-            escape(charge["title"]),
+            f"{escape(charge['title'])}{mode_suffix}",
             "Included" if charge["mode"] == "included" else _money(charge["amount"], currency),
         ))
     if is_pms and not tax_charges:
@@ -492,6 +558,7 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     ):
         amount_rows.append(("-", "0"))
     section_ends.append(len(amount_rows) + 1)
+    centered_label_rows.add(len(amount_rows))
     amount_rows.append(
         ("<b>Grand Total</b>", f"<b>{_money(invoice['invoice_total'], currency)}</b>"),
     )
@@ -504,18 +571,28 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
             else "Partially Paid" if paid_total > 0
             else "Unpaid"
         )
-        amount_rows.extend([
+        for row in (
             ("<b>Amount Paid</b>", f"<b>{_money(paid_total, currency)}</b>"),
             ("<b>Payment Status</b>", f"<b>{payment_status}</b>"),
-        ])
+        ):
+            centered_label_rows.add(len(amount_rows))
+            amount_rows.append(row)
     else:
-        amount_rows.extend([
+        for row in (
             ("<b>Amount Paid</b>", f"<b>{_money(snapshot['amount_paid'], currency)}</b>"),
             ("<b>Amount Due</b>", f"<b>{_money(snapshot['remaining_balance'], currency)}</b>"),
-        ])
+        ):
+            centered_label_rows.add(len(amount_rows))
+            amount_rows.append(row)
     amount_table = Table(
         [[Paragraph("<b>DESCRIPTION</b>", center), Paragraph("<b>AMOUNT</b>", center)]]
-        + [[Paragraph(label, small), Paragraph(amount, right)] for label, amount in amount_rows],
+        + [
+            [
+                Paragraph(label, center if index in centered_label_rows else small),
+                Paragraph(amount, right),
+            ]
+            for index, (label, amount) in enumerate(amount_rows)
+        ],
         colWidths=[114 * mm, 45 * mm], repeatRows=1,
     )
     amount_table.setStyle(TableStyle([

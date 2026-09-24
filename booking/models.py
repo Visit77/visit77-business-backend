@@ -692,6 +692,23 @@ class OTABookingYearSequence(models.Model):
     last_value = models.PositiveIntegerField(default=0)
 
 
+class OTADocumentYearSequence(models.Model):
+    year = models.PositiveSmallIntegerField()
+    kind = models.CharField(
+        max_length=3,
+        choices=[("INV", "Invoice"), ("REC", "Receipt")],
+    )
+    last_value = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["year", "kind"],
+                name="uniq_ota_document_year_kind",
+            ),
+        ]
+
+
 def _hotel_year(hotel):
     return timezone.localtime(timezone.now(), ZoneInfo(hotel.timezone)).year
 
@@ -718,6 +735,19 @@ def _next_document_number(hotel, kind):
     # its document code. Always format new documents with the current DB value.
     document_code = Hotel.objects.only("document_code").get(pk=hotel.pk).document_code
     return f"{document_code}-{kind}-{year % 100:02d}-{sequence.last_value:06d}"
+
+
+def _next_ota_document_number(hotel, kind):
+    year = _hotel_year(hotel)
+    sequence, _ = OTADocumentYearSequence.objects.select_for_update().get_or_create(
+        year=year,
+        kind=kind,
+    )
+    sequence.last_value += 1
+    if sequence.last_value > 999999:
+        raise ValueError("OTA document sequence exhausted for this year.")
+    sequence.save(update_fields=["last_value"])
+    return f"V77-{kind}-{year % 100:02d}-{sequence.last_value:06d}"
 
 
 class Booking(models.Model):
@@ -972,7 +1002,11 @@ class Invoice(models.Model):
             return super().save(*args, **kwargs)
 
         with transaction.atomic():
-            self.invoice_number = _next_document_number(self.booking.hotel, "INV")
+            self.invoice_number = (
+                _next_ota_document_number(self.booking.hotel, "INV")
+                if self.booking.source == Booking.Source.OTA
+                else _next_document_number(self.booking.hotel, "INV")
+            )
             if kwargs.get("update_fields") is not None:
                 kwargs["update_fields"] = set(kwargs["update_fields"]) | {"invoice_number"}
             return super().save(*args, **kwargs)
@@ -1063,7 +1097,11 @@ class Payment(models.Model):
             return super().save(*args, **kwargs)
 
         with transaction.atomic():
-            self.receipt_number = _next_document_number(self.booking.hotel, "REC")
+            self.receipt_number = (
+                _next_ota_document_number(self.booking.hotel, "REC")
+                if self.booking.source == Booking.Source.OTA
+                else _next_document_number(self.booking.hotel, "REC")
+            )
             if kwargs.get("update_fields") is not None:
                 kwargs["update_fields"] = set(kwargs["update_fields"]) | {"receipt_number"}
             return super().save(*args, **kwargs)

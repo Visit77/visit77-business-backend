@@ -1,5 +1,6 @@
 from datetime import date, datetime, timezone as datetime_timezone
 from copy import deepcopy
+from decimal import Decimal
 from unittest.mock import call, patch
 
 from django.test import TestCase, override_settings
@@ -19,6 +20,7 @@ from booking.models import (
     InvoiceNumberSequence,
     HotelDocumentSequence,
     OTABookingYearSequence,
+    OTADocumentYearSequence,
     Payment,
     ReceiptNumberSequence,
     RatePlan,
@@ -29,7 +31,13 @@ from booking.models import (
 )
 from booking.booking_services.email import send_booking_confirmation_email
 from booking.booking_services.sms import normalize_sms_phone_number
-from booking.booking_services.receipt import _contact_values, ensure_receipt_pdf, render_receipt_pdf, render_invoice_pdf
+from booking.booking_services.receipt import (
+    _contact_values,
+    build_invoice_snapshot,
+    ensure_receipt_pdf,
+    render_invoice_pdf,
+    render_receipt_pdf,
+)
 from booking.serializers import BookingSerializer, InvoiceSerializer
 from booking.services import record_payment
 from booking.tasks import (
@@ -118,6 +126,32 @@ class BookingCodeTests(TestCase):
         self.assertEqual(invoice_data["booking_code"], booking.booking_code)
         self.assertEqual(invoice_data["invoice_details"]["booking_code"], booking.booking_code)
 
+    def test_unpaid_invoice_has_pdf_url_and_can_be_rendered(self):
+        booking = self.create_booking("TEST-UNPAID-INVOICE-PDF")
+        invoice = Invoice.objects.create(
+            booking=booking,
+            currency="MMK",
+            subtotal=Decimal("1000"),
+            total=Decimal("1000"),
+        )
+        InvoiceLine.objects.create(
+            invoice=invoice,
+            description="Room charge",
+            quantity=1,
+            unit_price=Decimal("1000"),
+            total=Decimal("1000"),
+            metadata={"line_type": "room"},
+        )
+
+        data = InvoiceSerializer(invoice).data
+        self.assertTrue(data["invoice_pdf_url"].endswith(
+            f"/public/bookings/{booking.public_token}/invoices/{invoice.id}/pdf/"
+        ))
+        snapshot = build_invoice_snapshot(invoice)
+        self.assertEqual(snapshot["amount_paid"], "0")
+        self.assertEqual(snapshot["remaining_balance"], "1000.00")
+        self.assertTrue(render_invoice_pdf(snapshot).startswith(b"%PDF"))
+
     def test_codes_increment(self):
         first = self.create_booking("TEST-CODE-1")
         second = self.create_booking("TEST-CODE-2")
@@ -128,6 +162,8 @@ class BookingCodeTests(TestCase):
 
     def test_invoice_and_receipt_numbers_increment_independently(self):
         booking = self.create_booking("TEST-DOCUMENT-CODES")
+        booking.source = Booking.Source.PMS
+        booking.save(update_fields=["source"])
         first_invoice = Invoice.objects.create(booking=booking, currency="MMK")
         second_invoice = Invoice.objects.create(booking=booking, currency="MMK")
 
@@ -188,10 +224,13 @@ class BookingCodeTests(TestCase):
         other_hotel = Hotel.objects.create(core_business_id=987654322, name="Other Hotel", document_code="GERD")
         other_booking = Booking.objects.create(
             reference="OTHER-HOTEL", hotel=other_hotel,
+            source=Booking.Source.PMS,
             check_in=date(2026, 9, 1), check_out=date(2026, 9, 2),
             contact_name="Guest", contact_phone="09123456789",
         )
         first_booking = self.create_booking("FIRST-HOTEL")
+        first_booking.source = Booking.Source.PMS
+        first_booking.save(update_fields=["source"])
         with patch("booking.models.timezone.now", return_value=datetime(2026, 12, 31, 12, tzinfo=datetime_timezone.utc)):
             first_invoice = Invoice.objects.create(booking=first_booking, currency="MMK")
             other_invoice = Invoice.objects.create(booking=other_booking, currency="MMK")
@@ -212,7 +251,7 @@ class BookingCodeTests(TestCase):
         with patch("booking.models.timezone.now", return_value=datetime(2027, 1, 1, 12, tzinfo=datetime_timezone.utc)):
             next_invoice = Invoice.objects.create(booking=first_booking, currency="MMK")
         self.assertEqual(next_invoice.invoice_number, "MAND-INV-27-000001")
-        self.assertEqual(HotelDocumentSequence.objects.count(), 5)
+        self.assertEqual(HotelDocumentSequence.objects.count(), 7)
 
     def test_ota_code_changes_only_after_payment_and_pms_remains_random(self):
         ota = self.create_booking("OTA-PENDING")
@@ -252,6 +291,8 @@ class BookingCodeTests(TestCase):
         self.assertEqual(format_receipt_number(DOCUMENT_CODES_PER_SERIES + 1), "V77-REC-B0000001")
 
         booking = self.create_booking("TEST-DOCUMENT-ROLLOVER")
+        booking.source = Booking.Source.PMS
+        booking.save(update_fields=["source"])
         InvoiceNumberSequence.objects.update_or_create(
             pk=1, defaults={"last_value": DOCUMENT_CODES_PER_SERIES}
         )
@@ -272,6 +313,57 @@ class BookingCodeTests(TestCase):
         )
         self.assertEqual(receipt.receipt_number, "MAND-REC-26-000001")
 
+    def test_ota_invoice_and_receipt_always_use_visit77_year_series(self):
+        other_hotel = Hotel.objects.create(
+            core_business_id=987654322,
+            name="Other Hotel",
+            document_code="GERD",
+        )
+        first_booking = self.create_booking("OTA-DOCUMENT-FIRST")
+        other_booking = Booking.objects.create(
+            reference="OTA-DOCUMENT-OTHER",
+            hotel=other_hotel,
+            source=Booking.Source.OTA,
+            check_in=date(2026, 9, 1),
+            check_out=date(2026, 9, 2),
+            contact_name="Guest",
+            contact_phone="09123456789",
+        )
+
+        first_invoice = Invoice.objects.create(booking=first_booking, currency="MMK")
+        second_invoice = Invoice.objects.create(booking=other_booking, currency="MMK")
+        first_receipt = Payment.objects.create(
+            booking=first_booking,
+            invoice=first_invoice,
+            provider=Payment.Provider.CASH,
+            status=Payment.Status.PAID,
+            amount=100,
+            currency="MMK",
+            invoice_number=first_invoice.invoice_number,
+        )
+        second_receipt = Payment.objects.create(
+            booking=other_booking,
+            invoice=second_invoice,
+            provider=Payment.Provider.CASH,
+            status=Payment.Status.PAID,
+            amount=100,
+            currency="MMK",
+            invoice_number=second_invoice.invoice_number,
+        )
+
+        self.assertEqual(first_invoice.invoice_number, "V77-INV-26-000001")
+        self.assertEqual(second_invoice.invoice_number, "V77-INV-26-000002")
+        self.assertEqual(first_receipt.receipt_number, "V77-REC-26-000001")
+        self.assertEqual(second_receipt.receipt_number, "V77-REC-26-000002")
+        self.assertEqual(
+            OTADocumentYearSequence.objects.get(year=2026, kind="INV").last_value,
+            2,
+        )
+        self.assertEqual(
+            OTADocumentYearSequence.objects.get(year=2026, kind="REC").last_value,
+            2,
+        )
+
     def test_pending_payment_does_not_get_a_receipt_number(self):
         booking = self.create_booking("TEST-PENDING-RECEIPT")
         invoice = Invoice.objects.create(booking=booking, currency="MMK")
@@ -289,7 +381,7 @@ class BookingCodeTests(TestCase):
         payment.status = Payment.Status.PAID
         payment.save(update_fields=["status"])
         payment.refresh_from_db()
-        self.assertEqual(payment.receipt_number, "MAND-REC-26-000001")
+        self.assertEqual(payment.receipt_number, "V77-REC-26-000001")
 
     def test_pms_payment_also_creates_a_receipt(self):
         self.hotel.address = "Stale local address"
@@ -491,6 +583,11 @@ class BookingCodeTests(TestCase):
         self.assertTrue(invoice_bytes.startswith(b"%PDF"))
         for pdf_bytes in (receipt_bytes, invoice_bytes):
             text = "\n".join(page.extract_text() for page in PdfReader(BytesIO(pdf_bytes)).pages)
+            self.assertIn("Visit 77 Company Limited", text)
+            self.assertIn(
+                "contact.myanmar@visit77.com, (+95) 988 577 0011",
+                text,
+            )
             labels = (
                 "Total Room Charge", "Additional Charges", "Subtotal",
                 "Grand Total", "Amount Paid", "Amount Due",
@@ -521,6 +618,38 @@ class BookingCodeTests(TestCase):
         self.assertNotIn("\nTax\n", adjusted_text)
         self.assertNotIn("Total Charges", adjusted_text)
         self.assertIn("Subtotal\n MMK 950", adjusted_text)
+
+        charge_snapshot = deepcopy(payment.receipt_snapshot)
+        charge_snapshot["invoice"]["lines"].extend([
+            {
+                "description": "Service Charge",
+                "total": "50",
+                "line_type": "invoice_service_charge",
+                "metadata": {"charge_index": 0},
+            },
+            {
+                "description": "Cleaning Fee",
+                "total": "25",
+                "line_type": "invoice_service_charge",
+                "metadata": {"charge_index": 1},
+            },
+        ])
+        charge_snapshot["invoice"]["service_charges"] = [
+            {"title": "Service Charge", "mode": "percentage", "value": "5", "amount": "50"},
+            {"title": "Cleaning Fee", "mode": "fixed", "value": "25", "amount": "25"},
+        ]
+        charge_snapshot["invoice"]["tax_charges"] = [
+            {"title": "VAT", "mode": "percentage", "value": "7", "amount": "70"},
+            {"title": "Tourism Tax", "mode": "fixed", "value": "5", "amount": "5"},
+        ]
+        charge_text = "\n".join(
+            page.extract_text()
+            for page in PdfReader(BytesIO(render_receipt_pdf(charge_snapshot))).pages
+        )
+        self.assertIn("Service Charge (%)", charge_text)
+        self.assertIn("Cleaning Fee (fixed amount)", charge_text)
+        self.assertIn("VAT (%)", charge_text)
+        self.assertIn("Tourism Tax (fixed amount)", charge_text)
         payment.refresh_from_db()
         original_name = payment.receipt_pdf.name
         with payment.receipt_pdf.open("rb") as receipt_file:

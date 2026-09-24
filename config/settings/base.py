@@ -201,10 +201,10 @@ DEFAULT_FROM_EMAIL = env(
     "DEFAULT_FROM_EMAIL",
     default="Visit77 Customer Service <no-reply@visit77.com>",
 )
-RECEIPT_ISSUER_NAME = env("RECEIPT_ISSUER_NAME", default="Visit77 Co.,Ltd.")
+RECEIPT_ISSUER_NAME = env("RECEIPT_ISSUER_NAME", default="Visit 77 Company Limited")
 RECEIPT_ISSUER_ADDRESS = env(
     "RECEIPT_ISSUER_ADDRESS",
-    default="10-06, Panchan Tower, Bargayar St., Sanchaung Tsp., Yangon, Myanmar.",
+    default="#10-06, Panchan Tower, Bargayar Street, San Chaung Tsp., Yangon, Myanmar. 11111",
 )
 RECEIPT_ISSUER_EMAIL = env("RECEIPT_ISSUER_EMAIL", default="contact.myanmar@visit77.com")
 RECEIPT_ISSUER_PHONE = env("RECEIPT_ISSUER_PHONE", default="(+95) 988 577 0011")

@@ -110,8 +110,6 @@ def _pluralize_night_label(nights):
 
 
 def _invoice_pdf_url(request, booking, invoice, paid_invoice_ids):
-    if invoice.id not in paid_invoice_ids:
-        return None
     path = (
         f"/api/v1/public/bookings/{booking.public_token}/"
         f"invoices/{invoice.id}/pdf/"
@@ -725,20 +723,19 @@ class PublicInvoicePDFView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, public_token, invoice_id):
-        payment = Payment.objects.filter(
-            invoice_id=invoice_id,
+        invoice = Invoice.objects.filter(
+            id=invoice_id,
             booking__public_token=public_token,
-            receipt_number__isnull=False,
-        ).order_by("-paid_at", "-created_at").first()
-        if not payment:
-            raise NotFound("Paid invoice not found.")
-        from booking.booking_services.receipt import finalize_receipt_snapshot, render_invoice_pdf
-        payment = finalize_receipt_snapshot(payment)
+        ).first()
+        if not invoice:
+            raise NotFound("Invoice not found.")
+        from booking.booking_services.receipt import build_invoice_snapshot, render_invoice_pdf
+        snapshot = build_invoice_snapshot(invoice)
         return FileResponse(
-            BytesIO(render_invoice_pdf(payment.receipt_snapshot)),
+            BytesIO(render_invoice_pdf(snapshot)),
             content_type="application/pdf",
             as_attachment=False,
-            filename=f"{payment.invoice_number}.pdf",
+            filename=f"{invoice.invoice_number}.pdf",
         )
 
 

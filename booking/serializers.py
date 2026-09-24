@@ -1460,8 +1460,6 @@ class InvoiceSerializer(serializers.ModelSerializer):
         }
 
     def get_invoice_pdf_url(self, obj):
-        if not any(payment.receipt_number for payment in obj.receipts.all()):
-            return None
         path = (
             f"/api/v1/public/bookings/{obj.booking.public_token}/"
             f"invoices/{obj.id}/pdf/"
