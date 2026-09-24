@@ -29,7 +29,7 @@ from booking.models import (
     format_invoice_number,
     format_receipt_number,
 )
-from booking.booking_services.email import send_booking_confirmation_email
+from booking.booking_services.email import build_booking_confirmation_context, send_booking_confirmation_email
 from booking.booking_services.sms import normalize_sms_phone_number
 from booking.booking_services.receipt import (
     _contact_values,
@@ -661,6 +661,27 @@ class BookingCodeTests(TestCase):
         self.assertEqual(payment.receipt_pdf.name, original_name)
         self.assertEqual(payment.receipt_snapshot["guest"]["name"], "Receipt Guest")
 
+        InvoiceLine.objects.create(
+            invoice=invoice,
+            description="Service Charge",
+            quantity=1,
+            unit_price=50,
+            total=50,
+            metadata={"line_type": "invoice_service_charge", "charge_index": 0},
+        )
+        invoice.subtotal = Decimal("1050")
+        invoice.tax_total = Decimal("70")
+        invoice.total = Decimal("1120")
+        invoice.save(update_fields=["subtotal", "tax_total", "total"])
+        context = build_booking_confirmation_context(
+            booking,
+            booking.guests.get(is_primary=True),
+        )
+        self.assertEqual(context["subtotal"], "MMK 1,000")
+        self.assertEqual(context["extra_bed"], "MMK 0")
+        self.assertEqual(context["service_charges"], "MMK 50")
+        self.assertEqual(context["taxes"], "MMK 70")
+
         with patch("booking.booking_services.email.EmailMultiAlternatives") as email_class:
             self.assertTrue(send_booking_confirmation_email(booking))
             self.assertEqual(email_class.return_value.attach.call_count, 2)
@@ -670,6 +691,10 @@ class BookingCodeTests(TestCase):
             self.assertEqual(attachment[0], f"{payment.receipt_number}.pdf")
             self.assertTrue(attachment[1].startswith(b"%PDF"))
             self.assertEqual(attachment[2], "application/pdf")
+            html_message = email_class.return_value.attach_alternative.call_args.args[0]
+            self.assertIn("Room &amp; Additional Charges", html_message)
+            self.assertIn("Service Charges", html_message)
+            self.assertIn("Taxes", html_message)
 
     def test_series_rolls_over_at_ten_million(self):
         self.assertEqual(format_booking_code(BOOKING_CODES_PER_SERIES), "V77H-A09999999")

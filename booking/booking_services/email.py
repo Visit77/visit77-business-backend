@@ -86,10 +86,16 @@ def build_booking_confirmation_context(booking, primary_guest):
     rooms = list(booking.rooms.select_related("room_type").all())
     invoice = booking.invoices.prefetch_related("lines").order_by("issued_at", "id").first()
     line_totals = {}
+    service_charge_total = Decimal("0")
     if invoice:
         for line in invoice.lines.all():
             line_type = (line.metadata or {}).get("line_type", "other")
             line_totals[line_type] = line_totals.get(line_type, Decimal("0")) + line.total
+            if line_type == "invoice_service_charge" or (
+                line_type in {"ota_other_charge", "invoice_other_charge"}
+                and line.description.strip().casefold() == "service charge"
+            ):
+                service_charge_total += line.total
     extra_bed_total = line_totals.get("extra_bed", Decimal("0"))
     room_details = " • ".join(
         f"{room.room_type.name} x {room.quantity}" for room in rooms
@@ -142,10 +148,15 @@ def build_booking_confirmation_context(booking, primary_guest):
         "meal_info": ", ".join(meals) if meals else "No meal selected",
         "special_requests": booking.special_request or "None",
         "subtotal": _email_money(
-            (invoice.subtotal - extra_bed_total) if invoice else booking.room_total,
+            max(invoice.subtotal - extra_bed_total - service_charge_total, Decimal("0"))
+            if invoice else booking.room_total,
             booking.currency,
         ),
         "extra_bed": _email_money(extra_bed_total, booking.currency),
+        "service_charges": _email_money(
+            service_charge_total if invoice else booking.service_charge_total,
+            booking.currency,
+        ),
         "taxes": _email_money(invoice.tax_total if invoice else booking.tax_total, booking.currency),
         "discount": _email_money(invoice.discount_total if invoice else booking.discount_total, booking.currency),
         "total_price": _email_money(invoice.total if invoice else booking.grand_total, booking.currency),
