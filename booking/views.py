@@ -96,7 +96,7 @@ from booking.serializers import (
     DEFAULT_CANCELLATION_POLICY,
     normalize_cancellation_policy,
 )
-from booking.services import availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, deprovision_hotel, ensure_daily_inventory_for_room_type, estimate_booking, format_money, record_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, release_checked_in_room_inventory, replace_booking_payment_snapshot, sync_guest_profile, update_reservation_for_check_in, validate_assignment_preferences
+from booking.services import apply_check_in_invoice_adjustments, availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, deprovision_hotel, ensure_daily_inventory_for_room_type, estimate_booking, format_money, record_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, release_checked_in_room_inventory, replace_booking_payment_snapshot, sync_guest_profile, update_reservation_for_check_in, validate_assignment_preferences
 from config.response_formatter import success
 
 import logging
@@ -3381,9 +3381,14 @@ class InvoiceChargeViewSetBase(AdminModelViewSet):
         hotel = self._hotel()
         queryset = ensure_charge_records(hotel, self.charge_model)
         serializer = self.get_serializer(queryset, many=True)
-        grouped = {"tax": [], "service": []}
+        grouped = {
+            "service_charge": [],
+            "other_charge": [],
+            "tax": [],
+            "other_tax": [],
+        }
         for item in serializer.data:
-            grouped[item["charge_type"]].append(item)
+            grouped[item["charge_kind"]].append(item)
         return success(grouped)
 
     def _reject_duplicate(self, hotel, attrs, instance=None):
@@ -3501,17 +3506,24 @@ class HotelViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins.L
 
     def _invoice_charges(self, request, field_name):
         hotel = self._hotel_from_business_header(request)
-        if request.method == "GET":
-            return success(getattr(hotel, field_name))
-        serializer = InvoiceChargesSerializer(data=request.data)
+        serializer = InvoiceChargesSerializer(data=(
+            getattr(hotel, field_name) if request.method == "GET" else request.data
+        ))
         serializer.is_valid(raise_exception=True)
         config = {
             category: [
-                {**rule, "value": str(rule.get("value", Decimal("0")))}
+                {
+                    **rule,
+                    "value": str(
+                        Decimal(rule.get("value", Decimal("0"))).quantize(Decimal("0.01"))
+                    ),
+                }
                 for rule in serializer.validated_data[category]
             ]
             for category in ("taxes", "service_charges")
         }
+        if request.method == "GET":
+            return success(config)
         charge_model = (
             OTAInvoiceCharge if field_name == "ota_invoice_charges" else PMSInvoiceCharge
         )
@@ -4355,12 +4367,14 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
         booking = Booking.objects.select_for_update().get(pk=self.get_object().pk)
         if booking.status not in [Booking.Status.CONFIRMED, Booking.Status.PENDING_PAYMENT]:
             raise ValidationError("Only pending or confirmed reservations can use the check-in form.")
+        updated_invoice = None
         if request.method == "PATCH":
             request_data = request.data.dict() if hasattr(request.data, "dict") else request.data.copy()
             nested_guests = {}
             nested_rooms = {}
             nested_add_ons = {}
             nested_payment = {}
+            nested_invoice_adjustments = {"charges": {}, "taxes": {}}
             identity_photos = {}
             guest_field_pattern = re.compile(
                 r"^guests?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
@@ -4377,6 +4391,14 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
             )
             payment_field_pattern = re.compile(
                 r"^payment\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+            )
+            invoice_amount_field_pattern = re.compile(
+                r"^invoice_adjustments\[(charges|taxes)\]\[(\d+)\]"
+                r"\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+            )
+            invoice_rule_field_pattern = re.compile(
+                r"^invoice_adjustments\[(discount|adjustment)\]"
+                r"\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
             )
             for key, value in request.data.items():
                 match = guest_field_pattern.match(key)
@@ -4422,6 +4444,19 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
                 payment_match = payment_field_pattern.match(key)
                 if payment_match:
                     nested_payment[payment_match.group(1)] = value
+                    continue
+                invoice_amount_match = invoice_amount_field_pattern.match(key)
+                if invoice_amount_match:
+                    category = invoice_amount_match.group(1)
+                    index = int(invoice_amount_match.group(2))
+                    field = invoice_amount_match.group(3)
+                    nested_invoice_adjustments[category].setdefault(index, {})[field] = value
+                    continue
+                invoice_rule_match = invoice_rule_field_pattern.match(key)
+                if invoice_rule_match:
+                    category = invoice_rule_match.group(1)
+                    field = invoice_rule_match.group(2)
+                    nested_invoice_adjustments.setdefault(category, {})[field] = value
             if nested_guests:
                 indexes = sorted(nested_guests)
                 if indexes != list(range(len(indexes))):
@@ -4477,6 +4512,35 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
                     request_data["payment"] = json.loads(request_data["payment"])
                 except (TypeError, ValueError):
                     raise ValidationError({"payment": "Must be valid JSON when using multipart/form-data."})
+            has_nested_invoice_adjustments = any(
+                nested_invoice_adjustments.get(category)
+                for category in ("charges", "taxes", "discount", "adjustment")
+            )
+            if has_nested_invoice_adjustments:
+                normalized_adjustments = {}
+                for category in ("charges", "taxes"):
+                    indexed = nested_invoice_adjustments[category]
+                    indexes = sorted(indexed)
+                    if indexes != list(range(len(indexes))):
+                        raise ValidationError({
+                            f"invoice_adjustments.{category}": (
+                                f"{category.title()} indexes must start at 0 and be consecutive."
+                            )
+                        })
+                    normalized_adjustments[category] = [indexed[index] for index in indexes]
+                for category in ("discount", "adjustment"):
+                    if nested_invoice_adjustments.get(category):
+                        normalized_adjustments[category] = nested_invoice_adjustments[category]
+                request_data["invoice_adjustments"] = normalized_adjustments
+            elif isinstance(request_data.get("invoice_adjustments"), str):
+                try:
+                    request_data["invoice_adjustments"] = json.loads(
+                        request_data["invoice_adjustments"]
+                    )
+                except (TypeError, ValueError):
+                    raise ValidationError({
+                        "invoice_adjustments": "Must be valid JSON when using multipart/form-data."
+                    })
             serializer = CheckInFormUpdateSerializer(
                 data=request_data, partial=True, context={"booking": booking},
             )
@@ -4484,12 +4548,32 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
             data = serializer.validated_data
             guest_updates = data.pop("guests", [])
             payment_data = data.pop("payment", None)
+            invoice_adjustments_supplied = "invoice_adjustments" in data
+            invoice_adjustments = data.pop("invoice_adjustments", None)
+            previous_editable_invoice = booking.invoices.filter(
+                charge_scope=Invoice.ChargeScope.PMS,
+                status__in=[Invoice.Status.OPEN, Invoice.Status.PARTIALLY_PAID],
+            ).order_by("issued_at", "id").first()
+            previous_manual_adjustments = (
+                ((previous_editable_invoice.charge_snapshot or {}).get("manual_adjustments") or {}).get("input")
+                if previous_editable_invoice else None
+            )
             data.pop("workflow", None)
             booking = update_reservation_for_check_in(
                 booking,
                 data,
                 replace_payment=payment_data is not None,
             )
+            if invoice_adjustments_supplied or previous_manual_adjustments is not None:
+                updated_invoice = apply_check_in_invoice_adjustments(
+                    booking,
+                    invoice_adjustments if invoice_adjustments_supplied else previous_manual_adjustments,
+                )
+            else:
+                updated_invoice = booking.invoices.filter(
+                    charge_scope=Invoice.ChargeScope.PMS,
+                    status__in=[Invoice.Status.OPEN, Invoice.Status.PARTIALLY_PAID],
+                ).order_by("issued_at", "id").first()
             existing_guests = list(booking.guests.order_by("id"))
             for guest_index, guest_data in enumerate(guest_updates):
                 guest_id = guest_data.pop("id", None)
@@ -4532,11 +4616,17 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
                 # payment snapshot. Rebuild it after repricing instead of
                 # combining it with payments captured during reservation.
                 replace_booking_payment_snapshot(booking, payment_data)
+                if updated_invoice:
+                    updated_invoice.refresh_from_db()
         booking = self.get_queryset().prefetch_related("guests__identity_documents").get(pk=booking.pk)
         return success({
             "booking": BookingSerializer(booking, context={"request": request}).data,
             "verification": _check_in_readiness(booking),
             "payment_summary": _payment_summary(booking),
+            "invoice": (
+                InvoiceSerializer(updated_invoice, context={"request": request}).data
+                if updated_invoice else None
+            ),
         })
 
     @action(detail=True, methods=["post"], url_path="guest-identity-document")

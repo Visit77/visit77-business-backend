@@ -1,6 +1,6 @@
 from collections import defaultdict
 from datetime import datetime, time, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 import re
 
 from django.conf import settings
@@ -12,7 +12,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 from booking.add_on_templates import validate_configuration_values
-from booking.booking_services.invoice_charges import calculate_invoice_charges, charge_totals
+from booking.booking_services.invoice_charges import (
+    booking_charge_dimensions,
+    calculate_invoice_charges,
+    charge_totals,
+)
 from booking.models import (
     AddOn,
     Booking,
@@ -1533,7 +1537,13 @@ def estimate_booking(data):
         if str(data.get("source", Booking.Source.OTA)).lower() == Booking.Source.PMS
         else hotel.ota_invoice_charges
     )
-    charge_snapshot = calculate_invoice_charges(charge_config, grand_total)
+    charge_snapshot = calculate_invoice_charges(
+        charge_config,
+        grand_total,
+        nights=len(dates),
+        guest_count=occupancy,
+        room_count=selected_room_count,
+    )
     service_charge_total, tax_total = charge_totals(charge_snapshot)
     for category in ("service_charges", "taxes"):
         for charge in charge_snapshot[category]:
@@ -1838,7 +1848,11 @@ def create_booking(data, idempotency_key=None):
         if booking.source == Booking.Source.OTA else hotel.pms_invoice_charges
     ))
     booking.invoice_charge_snapshot = calculate_invoice_charges(
-        charge_config, room_total + add_on_total,
+        charge_config,
+        room_total + add_on_total,
+        nights=len(dates),
+        guest_count=occupancy,
+        room_count=sum(room.quantity for room in created_booking_rooms),
     )
     booking.service_charge_total, booking.tax_total = charge_totals(
         booking.invoice_charge_snapshot,
@@ -1934,7 +1948,9 @@ def create_invoice(
             booking.hotel.ota_invoice_charges
             if charge_scope == Invoice.ChargeScope.OTA else booking.hotel.pms_invoice_charges
         )
-        charge_snapshot = calculate_invoice_charges(config, subtotal)
+        charge_snapshot = calculate_invoice_charges(
+            config, subtotal, **booking_charge_dimensions(booking),
+        )
         service_total, tax_total = charge_totals(charge_snapshot)
         for index, charge in enumerate(charge_snapshot.get("service_charges", [])):
             amount = Decimal(charge["amount"])
@@ -2255,7 +2271,9 @@ def _replace_invoice_lines(
             if invoice.charge_scope == Invoice.ChargeScope.OTA
             else invoice.booking.hotel.pms_invoice_charges
         )
-        charge_snapshot = calculate_invoice_charges(config, subtotal)
+        charge_snapshot = calculate_invoice_charges(
+            config, subtotal, **booking_charge_dimensions(invoice.booking),
+        )
         service_total, tax_total = charge_totals(charge_snapshot)
         lines = list(lines) + [
             {
@@ -2359,6 +2377,180 @@ def sync_booking_charge_invoices(booking):
         charge_scope=Invoice.ChargeScope.PMS,
         apply_config=True,
     )
+
+
+def _manual_invoice_amount(rule, base_amount):
+    if not rule:
+        return Decimal("0")
+    value = Decimal(str(rule["value"]))
+    if rule["mode"] == "percentage":
+        return (base_amount * value / Decimal("100")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP,
+        )
+    return value
+
+
+def apply_check_in_invoice_adjustments(booking, adjustments=None):
+    """Replace manual rows on the booking's single editable PMS invoice."""
+    editable = list(
+        booking.invoices.select_for_update().filter(
+            charge_scope=Invoice.ChargeScope.PMS,
+            status__in=[Invoice.Status.OPEN, Invoice.Status.PARTIALLY_PAID],
+        ).order_by("issued_at", "id")
+    )
+    if len(editable) > 1:
+        raise ValidationError({
+            "invoice": "This booking has more than one editable PMS invoice. Resolve the duplicate invoices first."
+        })
+    invoice = editable[0] if editable else None
+
+    if adjustments is None:
+        existing_manual = (
+            (invoice.charge_snapshot or {}).get("manual_adjustments")
+            if invoice else None
+        )
+        if not existing_manual:
+            return invoice
+        adjustments = existing_manual.get("input") or {}
+
+    if invoice is None:
+        invoice = Invoice.objects.create(
+            booking=booking,
+            invoice_type=Invoice.Type.EXTRA_SERVICE,
+            charge_scope=Invoice.ChargeScope.PMS,
+            currency=booking.currency,
+            note="Additional stay charges",
+        )
+
+    invoice = Invoice.objects.select_for_update().prefetch_related("receipts").get(pk=invoice.pk)
+    if invoice.charge_scope != Invoice.ChargeScope.PMS or invoice.status not in {
+        Invoice.Status.OPEN, Invoice.Status.PARTIALLY_PAID,
+    }:
+        raise ValidationError({"invoice": "Only an open or partially-paid PMS invoice can be updated."})
+
+    previous_total = invoice.total
+    manual_line_types = {"manual_charge", "adjustment"}
+    invoice.lines.filter(metadata__line_type__in=manual_line_types).delete()
+    system_subtotal = sum(
+        (line.total for line in invoice.lines.all()), Decimal("0"),
+    )
+
+    charges = list(adjustments.get("charges") or [])
+    taxes = list(adjustments.get("taxes") or [])
+    discount = adjustments.get("discount")
+    adjustment = adjustments.get("adjustment")
+    manual_charge_total = sum(
+        (Decimal(str(item["amount"])) for item in charges), Decimal("0"),
+    )
+    calculation_base = system_subtotal + manual_charge_total
+    discount_amount = _manual_invoice_amount(discount, calculation_base)
+    adjustment_amount = _manual_invoice_amount(adjustment, calculation_base)
+    adjustment_signed = (
+        -adjustment_amount
+        if adjustment and adjustment["operation"] == "subtract"
+        else adjustment_amount
+    )
+    manual_tax_total = sum(
+        (Decimal(str(item["amount"])) for item in taxes), Decimal("0"),
+    )
+
+    new_lines = [
+        InvoiceLine(
+            invoice=invoice,
+            description=item["description"],
+            quantity=Decimal("1"),
+            unit_price=Decimal(str(item["amount"])),
+            total=Decimal(str(item["amount"])),
+            metadata={"line_type": "manual_charge", "manual": True},
+        )
+        for item in charges
+    ]
+    if adjustment and adjustment_amount:
+        new_lines.append(InvoiceLine(
+            invoice=invoice,
+            description=adjustment.get("description") or "Adjustment",
+            quantity=Decimal("1"),
+            unit_price=adjustment_signed,
+            total=adjustment_signed,
+            metadata={
+                "line_type": "adjustment",
+                "manual": True,
+                "operation": adjustment["operation"],
+                "mode": adjustment["mode"],
+                "value": str(adjustment["value"]),
+            },
+        ))
+    InvoiceLine.objects.bulk_create(new_lines)
+
+    snapshot = dict(invoice.charge_snapshot or {})
+    auto_taxes = [
+        item for item in snapshot.get("taxes", [])
+        if not item.get("manual")
+    ]
+    auto_tax_total = sum(
+        (Decimal(str(item.get("amount") or 0)) for item in auto_taxes), Decimal("0"),
+    )
+    manual_tax_rows = [{
+        "title": item["description"],
+        "mode": "fixed",
+        "value": str(item["amount"]),
+        "amount": str(item["amount"]),
+        "manual": True,
+    } for item in taxes]
+    snapshot["taxes"] = auto_taxes + manual_tax_rows
+    snapshot["manual_adjustments"] = {
+        "input": {
+            "charges": [
+                {"description": item["description"], "amount": str(item["amount"])}
+                for item in charges
+            ],
+            "discount": (
+                {"mode": discount["mode"], "value": str(discount["value"])}
+                if discount else None
+            ),
+            "adjustment": (
+                {
+                    "operation": adjustment["operation"],
+                    "mode": adjustment["mode"],
+                    "value": str(adjustment["value"]),
+                    "description": adjustment.get("description") or "Adjustment",
+                }
+                if adjustment else None
+            ),
+            "taxes": [
+                {"description": item["description"], "amount": str(item["amount"])}
+                for item in taxes
+            ],
+        },
+        "calculation_base": str(calculation_base),
+        "manual_charge_total": str(manual_charge_total),
+        "discount_amount": str(discount_amount),
+        "adjustment_amount": str(adjustment_signed),
+        "manual_tax_total": str(manual_tax_total),
+    }
+
+    invoice.subtotal = calculation_base + adjustment_signed
+    invoice.discount_total = discount_amount
+    invoice.tax_total = auto_tax_total + manual_tax_total
+    invoice.total = invoice.subtotal + invoice.tax_total - invoice.discount_total
+    if invoice.total < invoice.paid_amount:
+        raise ValidationError({
+            "invoice_adjustments": (
+                "Updated invoice total cannot be lower than the amount already paid. "
+                "Refund or correct the payment first."
+            )
+        })
+    if invoice.total < 0:
+        raise ValidationError({"invoice_adjustments": "Invoice total cannot be negative."})
+    invoice.charge_snapshot = snapshot
+    invoice.save(update_fields=[
+        "subtotal", "discount_total", "tax_total", "total", "charge_snapshot", "updated_at",
+    ])
+    invoice = _sync_invoice_status(invoice)
+
+    booking.grand_total += invoice.total - previous_total
+    booking.save(update_fields=["grand_total", "updated_at"])
+    return invoice
 
 
 @transaction.atomic
@@ -2867,8 +3059,13 @@ def update_reservation_for_check_in(booking, data, *, replace_payment=False):
     if booking.invoice_charge_snapshot:
         replacement_payload["_invoice_charges"] = {
             category: [
-                {key: charge[key] for key in ("title", "mode", "value")}
+                {
+                    key: charge[key]
+                    for key in ("title", "mode", "value", "calculation_basis")
+                    if key in charge
+                }
                 for charge in booking.invoice_charge_snapshot.get(category, [])
+                if not charge.get("manual")
             ]
             for category in ("taxes", "service_charges")
         }
@@ -2923,6 +3120,7 @@ def update_reservation_for_check_in(booking, data, *, replace_payment=False):
         replacement.invoice_charge_snapshot = calculate_invoice_charges(
             replacement_payload["_invoice_charges"],
             replacement.room_total + replacement.add_on_total,
+            **booking_charge_dimensions(replacement),
         )
         replacement.service_charge_total, replacement.tax_total = charge_totals(
             replacement.invoice_charge_snapshot,

@@ -14,7 +14,16 @@ from booking.storage import get_private_document_storage
 
 
 def default_invoice_charges():
-    return {"taxes": [{"title": "Tax", "mode": "included", "value": "0"}], "service_charges": []}
+    return {
+        "taxes": [{
+            "title": "Tax",
+            "mode": "included",
+            "value": "0",
+            "calculation_basis": "per_booking_per_night",
+            "charge_kind": "tax",
+        }],
+        "service_charges": [],
+    }
 
 
 class Hotel(models.Model):
@@ -72,17 +81,34 @@ class InvoiceChargeBase(models.Model):
         TAX = "tax", "Tax"
         SERVICE = "service", "Service"
 
+    class ChargeKind(models.TextChoices):
+        TAX = "tax", "Tax"
+        OTHER_TAX = "other_tax", "Other Tax"
+        SERVICE_CHARGE = "service_charge", "Service Charge"
+        OTHER_CHARGE = "other_charge", "Other Charge"
+
     class Mode(models.TextChoices):
         DO_NOT_SHOW = "do_not_show", "Do not show"
         INCLUDED = "included", "Included"
         PERCENTAGE = "percentage", "Percentage"
         FIXED = "fixed", "Fixed amount"
 
+    class CalculationBasis(models.TextChoices):
+        PER_BOOKING_PER_NIGHT = "per_booking_per_night", "Per booking / night"
+        PER_GUEST_PER_NIGHT = "per_guest_per_night", "Per guest / night"
+        PER_ROOM_PER_NIGHT = "per_room_per_night", "Per room / night"
+
     hotel = models.ForeignKey(Hotel, on_delete=models.CASCADE)
     charge_type = models.CharField(max_length=16, choices=ChargeType.choices)
+    charge_kind = models.CharField(max_length=32, choices=ChargeKind.choices)
     title = models.CharField(max_length=100)
     mode = models.CharField(max_length=20, choices=Mode.choices)
     value = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    calculation_basis = models.CharField(
+        max_length=32,
+        choices=CalculationBasis.choices,
+        default=CalculationBasis.PER_BOOKING_PER_NIGHT,
+    )
     sort_order = models.PositiveSmallIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

@@ -124,6 +124,7 @@ class InvoiceChargeSerializerBase(serializers.ModelSerializer):
     def validate(self, attrs):
         instance = self.instance
         charge_type = attrs.get("charge_type", getattr(instance, "charge_type", None))
+        charge_kind = attrs.get("charge_kind", getattr(instance, "charge_kind", None))
         mode = attrs.get("mode", getattr(instance, "mode", None))
         value = attrs.get("value", getattr(instance, "value", Decimal("0")))
         if mode in {"percentage", "fixed"} and "value" not in attrs and instance is None:
@@ -132,6 +133,14 @@ class InvoiceChargeSerializerBase(serializers.ModelSerializer):
             raise serializers.ValidationError({"value": "Percentage cannot exceed 100."})
         if charge_type == "service" and mode == "do_not_show":
             raise serializers.ValidationError({"mode": "Service charges cannot use do_not_show mode."})
+        allowed_kinds = {
+            "tax": {"tax", "other_tax"},
+            "service": {"service_charge", "other_charge"},
+        }
+        if charge_type and charge_kind not in allowed_kinds.get(charge_type, set()):
+            raise serializers.ValidationError({
+                "charge_kind": f"Invalid charge kind for {charge_type} charges."
+            })
         if mode in {"included", "do_not_show"}:
             attrs["value"] = Decimal("0")
         return attrs
@@ -1822,6 +1831,39 @@ class CheckInAddOnUpdateSerializer(serializers.Serializer):
     configuration = serializers.JSONField(required=False, default=dict)
 
 
+class ManualInvoiceAmountSerializer(serializers.Serializer):
+    description = serializers.CharField(max_length=255)
+    amount = serializers.DecimalField(
+        max_digits=14, decimal_places=2, min_value=Decimal("0.01"),
+    )
+
+
+class ManualInvoiceDiscountSerializer(serializers.Serializer):
+    mode = serializers.ChoiceField(choices=["percentage", "fixed"])
+    value = serializers.DecimalField(
+        max_digits=14, decimal_places=2, min_value=Decimal("0.01"),
+    )
+
+    def validate(self, attrs):
+        if attrs["mode"] == "percentage" and attrs["value"] > 100:
+            raise serializers.ValidationError({"value": "Percentage cannot exceed 100."})
+        return attrs
+
+
+class ManualInvoiceAdjustmentSerializer(ManualInvoiceDiscountSerializer):
+    operation = serializers.ChoiceField(choices=["add", "subtract"])
+    description = serializers.CharField(
+        max_length=255, required=False, allow_blank=True, default="Adjustment",
+    )
+
+
+class CheckInInvoiceAdjustmentsSerializer(serializers.Serializer):
+    charges = ManualInvoiceAmountSerializer(many=True, required=False, default=list)
+    discount = ManualInvoiceDiscountSerializer(required=False, allow_null=True, default=None)
+    adjustment = ManualInvoiceAdjustmentSerializer(required=False, allow_null=True, default=None)
+    taxes = ManualInvoiceAmountSerializer(many=True, required=False, default=list)
+
+
 class CheckInFormUpdateSerializer(serializers.Serializer):
     workflow = serializers.ChoiceField(
         choices=["direct_check_in", "reservation"],
@@ -1844,6 +1886,7 @@ class CheckInFormUpdateSerializer(serializers.Serializer):
     add_ons = CheckInAddOnUpdateSerializer(many=True, required=False)
     guests = CheckInGuestUpdateSerializer(many=True, required=False)
     payment = InitialPaymentSerializer(required=False, allow_null=True)
+    invoice_adjustments = CheckInInvoiceAdjustmentsSerializer(required=False)
 
     def validate(self, attrs):
         booking = self.context.get("booking")
