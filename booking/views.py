@@ -1762,12 +1762,20 @@ class OTARoomSelectionView(APIView):
         closures_by_room_type = defaultdict(list)
         for closure in OTAInventoryClosure.objects.filter(
             room_type__in=room_types,
-            end_date__gte=today,
+            reopened_at__isnull=True,
+        ).filter(
+            Q(end_date__gte=today) | Q(
+                closure_mode=OTAInventoryClosure.ClosureMode.CLOSE_NOW,
+                end_date__isnull=True,
+            ),
         ).order_by("start_date", "end_date", "id"):
             closures_by_room_type[closure.room_type_id].append({
                 "id": closure.id,
                 "start_date": str(closure.start_date),
-                "end_date": str(closure.end_date),
+                "end_date": str(closure.end_date) if closure.end_date else None,
+                "closure_mode": closure.closure_mode,
+                "is_close_now": closure.closure_mode == OTAInventoryClosure.ClosureMode.CLOSE_NOW,
+                "can_reopen": closure.closure_mode == OTAInventoryClosure.ClosureMode.CLOSE_NOW,
                 "close_all": closure.close_all,
                 "rooms_to_close": closure.rooms_to_close,
                 "note": closure.note,
@@ -3438,7 +3446,9 @@ class PMSInvoiceChargeViewSet(InvoiceChargeViewSetBase):
 class OTAInventoryClosureViewSet(AdminModelViewSet):
     queryset = OTAInventoryClosure.objects.select_related("room_type", "room_type__hotel")
     serializer_class = OTAInventoryClosureSerializer
-    filterset_fields = ["room_type", "start_date", "end_date", "close_all"]
+    filterset_fields = [
+        "room_type", "closure_mode", "start_date", "end_date", "close_all", "reopened_at",
+    ]
     business_lookup = "room_type__hotel__core_business_id"
 
     @staticmethod
@@ -3446,7 +3456,7 @@ class OTAInventoryClosureViewSet(AdminModelViewSet):
         ensure_daily_inventory_for_room_type(
             room_type,
             start_date=start_date,
-            days=(end_date - start_date).days,
+            days=((end_date - start_date).days if end_date else None),
         )
 
     @transaction.atomic
@@ -3470,6 +3480,21 @@ class OTAInventoryClosureViewSet(AdminModelViewSet):
         end_date = instance.end_date
         instance.delete()
         self._sync(room_type, start_date, end_date)
+
+    @action(detail=True, methods=["post"])
+    @transaction.atomic
+    def reopen(self, request, pk=None):
+        closure = self.get_queryset().select_for_update().filter(pk=pk).first()
+        if closure is None:
+            raise NotFound("OTA inventory closure was not found.")
+        if closure.closure_mode != OTAInventoryClosure.ClosureMode.CLOSE_NOW:
+            raise ValidationError({"closure_mode": "Only a close-now closure can be manually reopened."})
+        if closure.reopened_at is not None:
+            raise ValidationError({"reopened_at": "This closure has already been reopened."})
+        closure.reopened_at = timezone.now()
+        closure.save(update_fields=["reopened_at", "updated_at"])
+        self._sync(closure.room_type, closure.start_date, None)
+        return success(self.get_serializer(closure).data)
 
 
 class HotelViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.UpdateModelMixin, viewsets.GenericViewSet):

@@ -220,15 +220,25 @@ def recompute_ota_inventory_closures(room_type, start_date, end_date):
         stay_date__lte=end_date,
     ))
     closures = list(OTAInventoryClosure.objects.filter(
+        Q(
+            closure_mode=OTAInventoryClosure.ClosureMode.SCHEDULED,
+            end_date__gte=start_date,
+        ) | Q(
+            closure_mode=OTAInventoryClosure.ClosureMode.CLOSE_NOW,
+            end_date__isnull=True,
+        ),
         room_type=room_type,
         start_date__lte=end_date,
-        end_date__gte=start_date,
+        reopened_at__isnull=True,
     ))
     changed = []
     for row in rows:
         matching = [
             closure for closure in closures
-            if closure.start_date <= row.stay_date <= closure.end_date
+            if (
+                closure.start_date <= row.stay_date
+                and (closure.end_date is None or row.stay_date <= closure.end_date)
+            )
         ]
         if any(closure.close_all for closure in matching):
             closed_rooms = row.total_rooms

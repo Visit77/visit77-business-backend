@@ -782,6 +782,8 @@ class OTAInventoryUpdateSerializer(serializers.Serializer):
 
 
 class OTAInventoryClosureSerializer(serializers.ModelSerializer):
+    start_date = serializers.DateField(required=False)
+    end_date = serializers.DateField(required=False, allow_null=True)
     room_type_name = serializers.CharField(source="room_type.name", read_only=True)
     core_room_type_id = serializers.IntegerField(
         source="room_type.core_room_type_id", read_only=True,
@@ -790,13 +792,19 @@ class OTAInventoryClosureSerializer(serializers.ModelSerializer):
     class Meta:
         model = OTAInventoryClosure
         fields = "__all__"
-        read_only_fields = ["created_by_core_user_id", "created_at", "updated_at"]
+        read_only_fields = [
+            "created_by_core_user_id", "reopened_at", "created_at", "updated_at",
+        ]
 
     def validate(self, attrs):
         validate_request_business_scope(self, attrs)
         room_type = attrs.get("room_type", getattr(self.instance, "room_type", None))
         start_date = attrs.get("start_date", getattr(self.instance, "start_date", None))
         end_date = attrs.get("end_date", getattr(self.instance, "end_date", None))
+        closure_mode = attrs.get(
+            "closure_mode",
+            getattr(self.instance, "closure_mode", OTAInventoryClosure.ClosureMode.SCHEDULED),
+        )
         close_all = attrs.get("close_all", getattr(self.instance, "close_all", False))
         rooms_to_close = attrs.get(
             "rooms_to_close", getattr(self.instance, "rooms_to_close", 0),
@@ -805,7 +813,19 @@ class OTAInventoryClosureSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "Scheduled room-count closures are only available for OTA Only hotels."
             )
-        if start_date and end_date and end_date < start_date:
+        if closure_mode == OTAInventoryClosure.ClosureMode.CLOSE_NOW:
+            attrs["start_date"] = (
+                self.instance.start_date
+                if self.instance
+                and self.instance.closure_mode == OTAInventoryClosure.ClosureMode.CLOSE_NOW
+                else timezone.localdate()
+            )
+            attrs["end_date"] = None
+        elif not start_date or not end_date:
+            raise serializers.ValidationError({
+                "date_range": "start_date and end_date are required for a scheduled closure."
+            })
+        elif end_date < start_date:
             raise serializers.ValidationError({"end_date": "Must be on or after start_date."})
         if not close_all and rooms_to_close <= 0:
             raise serializers.ValidationError({

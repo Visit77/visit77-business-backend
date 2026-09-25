@@ -414,17 +414,25 @@ class DailyInventory(models.Model):
 
 
 class OTAInventoryClosure(models.Model):
+    class ClosureMode(models.TextChoices):
+        SCHEDULED = "scheduled", "Scheduled"
+        CLOSE_NOW = "close_now", "Close now"
+
     room_type = models.ForeignKey(
         RoomType,
         on_delete=models.CASCADE,
         related_name="ota_inventory_closures",
     )
+    closure_mode = models.CharField(
+        max_length=16, choices=ClosureMode.choices, default=ClosureMode.SCHEDULED,
+    )
     start_date = models.DateField()
-    end_date = models.DateField()
+    end_date = models.DateField(null=True, blank=True)
     close_all = models.BooleanField(default=False)
     rooms_to_close = models.PositiveSmallIntegerField(default=0)
     note = models.CharField(max_length=500, blank=True)
     created_by_core_user_id = models.PositiveBigIntegerField(null=True, blank=True)
+    reopened_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

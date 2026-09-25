@@ -187,6 +187,73 @@ class BookingServiceTests(TestCase):
         self.assertEqual(inventory.available_rooms, 1)
         self.assertFalse(OTAInventoryClosure.objects.filter(pk=closure_id).exists())
 
+    @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key", BOOKING_INVENTORY_WINDOW_DAYS=30)
+    def test_ota_only_close_now_stays_closed_until_manual_reopen(self):
+        self.hotel.package = Hotel.Package.OTA
+        self.hotel.save(update_fields=["package"])
+        self.room_type.default_inventory = 3
+        self.room_type.save(update_fields=["default_inventory"])
+        ensure_daily_inventory_for_room_type(
+            self.room_type,
+            start_date=timezone.localdate(),
+            days=30,
+        )
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        created = self.client.post(
+            "/api/v1/admin/ota-inventory-closures/",
+            {
+                "room_type": self.room_type.id,
+                "closure_mode": "close_now",
+                "rooms_to_close": 2,
+                "close_all": False,
+            },
+            format="json",
+            **headers,
+        )
+
+        self.assertEqual(created.status_code, 201, created.data)
+        closure_id = created.data["data"]["id"]
+        self.assertEqual(created.data["data"]["closure_mode"], "close_now")
+        self.assertIsNone(created.data["data"]["end_date"])
+        today_inventory = DailyInventory.objects.get(
+            room_type=self.room_type,
+            stay_date=timezone.localdate(),
+        )
+        future_inventory = DailyInventory.objects.get(
+            room_type=self.room_type,
+            stay_date=timezone.localdate() + timedelta(days=20),
+        )
+        self.assertEqual(today_inventory.closed_rooms, 2)
+        self.assertEqual(future_inventory.closed_rooms, 2)
+
+        listed = self.client.get("/api/v1/admin/ota-rooms/selection/", **headers)
+        condition = listed.data["data"]["room_types"][0]["close_conditions"][0]
+        self.assertTrue(condition["is_close_now"])
+        self.assertTrue(condition["can_reopen"])
+        self.assertIsNone(condition["end_date"])
+
+        reopened = self.client.post(
+            f"/api/v1/admin/ota-inventory-closures/{closure_id}/reopen/",
+            {},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(reopened.status_code, 200, reopened.data)
+        self.assertIsNotNone(reopened.data["data"]["reopened_at"])
+        today_inventory.refresh_from_db()
+        future_inventory.refresh_from_db()
+        self.assertEqual(today_inventory.closed_rooms, 0)
+        self.assertEqual(future_inventory.closed_rooms, 0)
+        listed = self.client.get("/api/v1/admin/ota-rooms/selection/", **headers)
+        self.assertEqual(
+            listed.data["data"]["room_types"][0]["close_conditions"],
+            [],
+        )
+
     def test_create_booking_holds_each_night_and_calculates_total(self):
         booking, created = create_booking(self.payload(), "checkout-1")
         self.assertTrue(created)
