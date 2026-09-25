@@ -1778,6 +1778,10 @@ class OTARoomSelectionView(APIView):
                 "can_reopen": closure.closure_mode == OTAInventoryClosure.ClosureMode.CLOSE_NOW,
                 "close_all": closure.close_all,
                 "rooms_to_close": closure.rooms_to_close,
+                "closed_room_count": (
+                    closure.room_type.default_inventory
+                    if closure.close_all else closure.rooms_to_close
+                ),
                 "note": closure.note,
             })
         booking_rooms = list(BookingRoom.objects.filter(

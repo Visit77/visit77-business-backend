@@ -244,7 +244,10 @@ def recompute_ota_inventory_closures(room_type, start_date, end_date):
             closed_rooms = row.total_rooms
         else:
             closed_rooms = min(
-                sum(closure.rooms_to_close for closure in matching),
+                max(
+                    (closure.rooms_to_close for closure in matching),
+                    default=0,
+                ),
                 row.total_rooms,
             )
         if row.closed_rooms != closed_rooms:

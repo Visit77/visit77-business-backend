@@ -26,6 +26,10 @@ def default_invoice_charges():
     }
 
 
+def default_ota_invoice_charges():
+    return {"taxes": [], "service_charges": []}
+
+
 class Hotel(models.Model):
     """Read-only projection of a Visit77 Core business."""
 
@@ -45,7 +49,7 @@ class Hotel(models.Model):
     base_currency = models.CharField(max_length=3, default="MMK")
     package = models.CharField(max_length=24, choices=Package.choices, default=Package.OTA)
     features = models.JSONField(default=dict, blank=True)
-    ota_invoice_charges = models.JSONField(default=default_invoice_charges, blank=True)
+    ota_invoice_charges = models.JSONField(default=default_ota_invoice_charges, blank=True)
     pms_invoice_charges = models.JSONField(default=default_invoice_charges, blank=True)
     timezone = models.CharField(max_length=64, default="Asia/Yangon")
     check_in_time = models.TimeField(default=time(12, 0))

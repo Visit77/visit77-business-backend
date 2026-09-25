@@ -219,6 +219,7 @@ class BookingServiceTests(TestCase):
         closure_id = created.data["data"]["id"]
         self.assertEqual(created.data["data"]["closure_mode"], "close_now")
         self.assertIsNone(created.data["data"]["end_date"])
+        self.assertEqual(created.data["data"]["closed_room_count"], 2)
         today_inventory = DailyInventory.objects.get(
             room_type=self.room_type,
             stay_date=timezone.localdate(),
@@ -253,6 +254,122 @@ class BookingServiceTests(TestCase):
             listed.data["data"]["room_types"][0]["close_conditions"],
             [],
         )
+
+    @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
+    def test_ota_closure_rejects_room_type_without_ota_rooms(self):
+        self.hotel.package = Hotel.Package.OTA
+        self.hotel.save(update_fields=["package"])
+        self.room_type.default_inventory = 0
+        self.room_type.save(update_fields=["default_inventory"])
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        response = self.client.post(
+            "/api/v1/admin/ota-inventory-closures/",
+            {
+                "room_type": self.room_type.id,
+                "closure_mode": "close_now",
+                "close_all": True,
+            },
+            format="json",
+            **headers,
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("at least one ota room", str(response.data).lower())
+        self.assertFalse(
+            OTAInventoryClosure.objects.filter(room_type=self.room_type).exists()
+        )
+
+    @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key", BOOKING_INVENTORY_WINDOW_DAYS=30)
+    def test_ota_closure_rejects_duplicate_close_now_and_overlapping_schedules(self):
+        self.hotel.package = Hotel.Package.OTA
+        self.hotel.save(update_fields=["package"])
+        self.room_type.default_inventory = 10
+        self.room_type.save(update_fields=["default_inventory"])
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+        url = "/api/v1/admin/ota-inventory-closures/"
+
+        first_close_now = self.client.post(url, {
+            "room_type": self.room_type.id,
+            "closure_mode": "close_now",
+            "rooms_to_close": 2,
+        }, format="json", **headers)
+        self.assertEqual(first_close_now.status_code, 201, first_close_now.data)
+        duplicate_close_now = self.client.post(url, {
+            "room_type": self.room_type.id,
+            "closure_mode": "close_now",
+            "rooms_to_close": 3,
+        }, format="json", **headers)
+        self.assertEqual(duplicate_close_now.status_code, 400, duplicate_close_now.data)
+        self.assertIn("delete or reopen", str(duplicate_close_now.data).lower())
+
+        today = timezone.localdate()
+        first_schedule = self.client.post(url, {
+            "room_type": self.room_type.id,
+            "closure_mode": "scheduled",
+            "start_date": str(today),
+            "end_date": str(today + timedelta(days=5)),
+            "rooms_to_close": 5,
+        }, format="json", **headers)
+        self.assertEqual(first_schedule.status_code, 201, first_schedule.data)
+        overlapping_schedule = self.client.post(url, {
+            "room_type": self.room_type.id,
+            "closure_mode": "scheduled",
+            "start_date": str(today + timedelta(days=3)),
+            "end_date": str(today + timedelta(days=8)),
+            "rooms_to_close": 3,
+        }, format="json", **headers)
+        self.assertEqual(overlapping_schedule.status_code, 400, overlapping_schedule.data)
+        self.assertIn("overlaps", str(overlapping_schedule.data).lower())
+        self.assertEqual(
+            OTAInventoryClosure.objects.filter(room_type=self.room_type).count(),
+            2,
+        )
+
+    @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key", BOOKING_INVENTORY_WINDOW_DAYS=30)
+    def test_close_now_and_schedule_use_highest_closed_count_not_sum(self):
+        self.hotel.package = Hotel.Package.OTA
+        self.hotel.save(update_fields=["package"])
+        self.room_type.default_inventory = 10
+        self.room_type.save(update_fields=["default_inventory"])
+        today = timezone.localdate()
+        ensure_daily_inventory_for_room_type(self.room_type, start_date=today, days=30)
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+        url = "/api/v1/admin/ota-inventory-closures/"
+        close_now = self.client.post(url, {
+            "room_type": self.room_type.id,
+            "closure_mode": "close_now",
+            "rooms_to_close": 2,
+        }, format="json", **headers)
+        self.assertEqual(close_now.status_code, 201, close_now.data)
+        scheduled = self.client.post(url, {
+            "room_type": self.room_type.id,
+            "closure_mode": "scheduled",
+            "start_date": str(today),
+            "end_date": str(today + timedelta(days=5)),
+            "rooms_to_close": 5,
+        }, format="json", **headers)
+        self.assertEqual(scheduled.status_code, 201, scheduled.data)
+
+        during_schedule = DailyInventory.objects.get(
+            room_type=self.room_type, stay_date=today + timedelta(days=3),
+        )
+        after_schedule = DailyInventory.objects.get(
+            room_type=self.room_type, stay_date=today + timedelta(days=6),
+        )
+        self.assertEqual(during_schedule.closed_rooms, 5)
+        self.assertEqual(during_schedule.available_rooms, 5)
+        self.assertEqual(after_schedule.closed_rooms, 2)
+        self.assertEqual(after_schedule.available_rooms, 8)
 
     def test_create_booking_holds_each_night_and_calculates_total(self):
         booking, created = create_booking(self.payload(), "checkout-1")
@@ -2093,11 +2210,7 @@ class BookingApiTests(BookingServiceTests):
         other_headers = {**headers, "HTTP_X_BOOKING_BUSINESS_ID": str(other_hotel.core_business_id)}
         self.assertEqual(
             self.client.get(setup_url, **other_headers).data["data"],
-            {"taxes": [{
-                "title": "Tax", "mode": "included", "value": "0.00",
-                "calculation_basis": "per_booking_per_night",
-                "charge_kind": "tax",
-            }], "service_charges": []},
+            {"taxes": [], "service_charges": []},
         )
 
         payload = self.payload()

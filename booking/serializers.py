@@ -784,6 +784,7 @@ class OTAInventoryUpdateSerializer(serializers.Serializer):
 class OTAInventoryClosureSerializer(serializers.ModelSerializer):
     start_date = serializers.DateField(required=False)
     end_date = serializers.DateField(required=False, allow_null=True)
+    closed_room_count = serializers.SerializerMethodField()
     room_type_name = serializers.CharField(source="room_type.name", read_only=True)
     core_room_type_id = serializers.IntegerField(
         source="room_type.core_room_type_id", read_only=True,
@@ -793,8 +794,13 @@ class OTAInventoryClosureSerializer(serializers.ModelSerializer):
         model = OTAInventoryClosure
         fields = "__all__"
         read_only_fields = [
-            "created_by_core_user_id", "reopened_at", "created_at", "updated_at",
+            "created_by_core_user_id", "reopened_at", "closed_room_count",
+            "created_at", "updated_at",
         ]
+
+    @staticmethod
+    def get_closed_room_count(obj):
+        return obj.room_type.default_inventory if obj.close_all else obj.rooms_to_close
 
     def validate(self, attrs):
         validate_request_business_scope(self, attrs)
@@ -813,6 +819,10 @@ class OTAInventoryClosureSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "Scheduled room-count closures are only available for OTA Only hotels."
             )
+        if room_type and room_type.default_inventory <= 0:
+            raise serializers.ValidationError({
+                "room_type": "Add at least one OTA room before creating a closure."
+            })
         if closure_mode == OTAInventoryClosure.ClosureMode.CLOSE_NOW:
             attrs["start_date"] = (
                 self.instance.start_date
@@ -831,8 +841,45 @@ class OTAInventoryClosureSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 "rooms_to_close": "Enter at least one room or set close_all to true.",
             })
+        if room_type and not close_all and rooms_to_close > room_type.default_inventory:
+            raise serializers.ValidationError({
+                "rooms_to_close": (
+                    f"Cannot close more than the {room_type.default_inventory} OTA rooms available."
+                )
+            })
         if close_all:
             attrs["rooms_to_close"] = 0
+
+        if room_type:
+            active_closures = OTAInventoryClosure.objects.filter(
+                room_type=room_type,
+                reopened_at__isnull=True,
+            )
+            if self.instance:
+                active_closures = active_closures.exclude(pk=self.instance.pk)
+            if closure_mode == OTAInventoryClosure.ClosureMode.CLOSE_NOW:
+                if active_closures.filter(
+                    closure_mode=OTAInventoryClosure.ClosureMode.CLOSE_NOW,
+                ).exists():
+                    raise serializers.ValidationError({
+                        "closure_mode": (
+                            "An active close-now condition already exists for this room type. "
+                            "Delete or reopen it before creating another one."
+                        )
+                    })
+            else:
+                overlapping = active_closures.filter(
+                    closure_mode=OTAInventoryClosure.ClosureMode.SCHEDULED,
+                    start_date__lte=end_date,
+                    end_date__gte=start_date,
+                )
+                if overlapping.exists():
+                    raise serializers.ValidationError({
+                        "date_range": (
+                            "This date range overlaps an existing scheduled closure. "
+                            "Delete the existing closure before creating another one."
+                        )
+                    })
         return attrs
 
 
