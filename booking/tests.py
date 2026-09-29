@@ -13,7 +13,7 @@ from rest_framework.test import APIClient
 from rest_framework.exceptions import ValidationError
 from rest_framework_simplejwt.backends import TokenBackend
 
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, MealPlan, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, MealPlan, OTABookingNotification, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import CoreIntegrationError, sync_business_from_core
 from booking.booking_services.invoice_charges import calculate_invoice_charges
 from booking.serializers import BookingRoomSerializer, InvoiceSerializer, PublicHotelSerializer
@@ -99,6 +99,57 @@ class BookingServiceTests(TestCase):
 
         self.assertEqual(assignments, [])
         self.assertFalse(RoomAssignment.objects.filter(booking_room__booking=booking).exists())
+
+    @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
+    def test_ota_pms_notification_list_includes_assigned_physical_rooms(self):
+        booking, _ = create_booking(self.payload())
+        booking_room = booking.rooms.get()
+        physical_room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            core_physical_room_id=8801,
+            room_number="801",
+            floor="8",
+            building="Main Building",
+        )
+        assignment = RoomAssignment.objects.create(
+            booking_room=booking_room,
+            physical_room=physical_room,
+        )
+        OTABookingNotification.objects.create(
+            hotel=self.hotel,
+            booking=booking,
+            event_type=OTABookingNotification.EventType.NEW,
+            body=f"New: {booking.booking_code}",
+            payload={
+                "booking_id": str(booking.id),
+                "rooms": [{
+                    "room_type_id": self.room_type.id,
+                    "room_type_name": self.room_type.name,
+                    "quantity": booking_room.quantity,
+                }],
+            },
+        )
+
+        response = self.client.get(
+            "/api/v1/admin/ota-notifications/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        room_payload = response.data["data"]["results"][0]["payload_data"]["rooms"][0]
+        self.assertEqual(room_payload["booking_room_id"], booking_room.id)
+        self.assertEqual(room_payload["physical_rooms"], [{
+            "assignment_id": assignment.id,
+            "id": physical_room.id,
+            "core_physical_room_id": physical_room.core_physical_room_id,
+            "room_number": "801",
+            "floor": "8",
+            "building": "Main Building",
+            "status": PhysicalRoom.Status.VACANT,
+            "assigned_at": assignment.assigned_at.isoformat(),
+        }])
 
     @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
     def test_ota_only_inventory_endpoint_uses_room_type_counts_and_has_no_assignments(self):

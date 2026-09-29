@@ -4,6 +4,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 from urllib.parse import urlparse
 import json
+import re
 
 import httpx
 
@@ -30,9 +31,41 @@ def _money(value, currency):
 def _percentage_label(value):
     """Format configured percentages without unnecessary trailing zeroes."""
     try:
-        return format(Decimal(str(value or 0)), "f").rstrip("0").rstrip(".") or "0"
+        return format(Decimal(str(value or 0)).normalize(), "f")
     except Exception:
         return str(value or 0)
+
+
+def _charge_display_rows(line, currency):
+    """Render a charge as a title row followed by its calculation row."""
+    description = str(line.get("description") or "Charge").strip()
+    total = Decimal(str(line.get("total") or 0))
+    quantity = Decimal(str(line.get("quantity") or 1))
+    parts = [part.strip() for part in re.split(r"\s+[x×]\s+", description) if part.strip()]
+
+    title_text = parts[0] if parts else description
+    detail_parts = parts[1:]
+    factors = []
+    for part in detail_parts:
+        match = re.match(r"^(\d+(?:\.\d+)?)\b", part)
+        if match:
+            factors.append(Decimal(match.group(1)))
+
+    divisor = Decimal("1")
+    for factor in factors:
+        divisor *= factor
+    if not detail_parts:
+        divisor = quantity if quantity else Decimal("1")
+        detail_parts = [_percentage_label(quantity)]
+    if not divisor:
+        divisor = Decimal("1")
+
+    unit_price = total / divisor
+    calculation = " x ".join([*detail_parts, _money(unit_price, currency)])
+    return [
+        (f"<b>{escape(title_text)}</b>", ""),
+        (escape(calculation), _money(total, currency)),
+    ]
 
 
 def _hotel_address(hotel):
@@ -295,6 +328,15 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     title = ParagraphStyle("ReceiptTitle", parent=styles["Heading1"], fontSize=18, leading=22)
     center = ParagraphStyle("ReceiptCenter", parent=small, alignment=TA_CENTER)
     right = ParagraphStyle("ReceiptRight", parent=small, alignment=TA_RIGHT)
+    meta_value = ParagraphStyle("ReceiptMetaValue", parent=small)
+    header_name_style = ParagraphStyle(
+        "HeaderName", parent=styles["BodyText"], fontSize=18, leading=18,
+        textColor=colors.HexColor("#3039F5"),
+    )
+    header_document_style = ParagraphStyle(
+        "HeaderDocument", parent=header_name_style, alignment=TA_RIGHT,
+        textColor=colors.black,
+    )
     blue = colors.HexColor("#3039F5")
     border = colors.HexColor("#8190A8")
     pale = colors.HexColor("#F3F6FA")
@@ -356,8 +398,8 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     if issuer.get("branding") == "hotel":
         hotel_logo = _hotel_logo(issuer.get("logo_url"))
         hotel_name = Paragraph(
-            f"<font color='#3039F5' size='18'><b>{escape(str(brand_label))}</b></font>",
-            small,
+            f"<b>{escape(str(brand_label))}</b>",
+            header_name_style,
         )
         if hotel_logo is not None:
             logo_column_width = hotel_logo.drawWidth + (3 * mm)
@@ -370,7 +412,6 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
                     ("RIGHTPADDING", (0, 0), (-1, -1), 2),
                     ("TOPPADDING", (0, 0), (-1, -1), 0),
                     ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-                    ("BOTTOMPADDING", (1, 0), (1, 0), 2 * mm),
                 ]),
             )
         else:
@@ -403,7 +444,7 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
         )
     document_heading = Paragraph(
         f"<b>{escape(document_title)}</b>",
-        ParagraphStyle("DocumentHeaderTitle", parent=title, alignment=TA_RIGHT, leading=18),
+        header_document_style,
     )
     if is_pms and issuer.get("footer_text"):
         document_heading = Table(
@@ -437,7 +478,7 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
         ("RIGHTPADDING", (0, 0), (-1, -1), 0),
         ("TOPPADDING", (0, 0), (-1, -1), 0),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2 * mm if is_pms else 0),
         *([("BOTTOMPADDING", (1, 0), (1, 0), 1 * mm)] if not is_pms else []),
     ]))
     story.extend([
@@ -461,10 +502,10 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
         Table([[
             "",
             Table([
-                [Paragraph(f"<b>{escape(document_title)} ID</b>", right), ":", Paragraph(escape(str(document_number)), right)],
-                [Paragraph(f"<b>{identifier_label}</b>", right), ":", Paragraph(escape(str(identifier_value)), right)],
-                [Paragraph("<b>Payment Date</b>", right), ":", Paragraph(payment_date, right)],
-            ], colWidths=[28 * mm, 3 * mm, 44 * mm], style=TableStyle([
+                [Paragraph(f"<b>{escape(document_title)} ID</b>", right), ":", Paragraph(escape(str(document_number)), meta_value)],
+                [Paragraph(f"<b>{identifier_label}</b>", right), ":", Paragraph(escape(str(identifier_value)), meta_value)],
+                [Paragraph("<b>Payment Date</b>", right), ":", Paragraph(payment_date, meta_value)],
+            ], colWidths=[27 * mm, 3 * mm, 42 * mm], style=TableStyle([
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 0),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 1),
@@ -472,7 +513,7 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
             ])),
             "",
-        ]], colWidths=[82 * mm, 75 * mm, 2 * mm], style=TableStyle([
+        ]], colWidths=[85 * mm, 72 * mm, 2 * mm], style=TableStyle([
             ("LEFTPADDING", (0, 0), (-1, -1), 0),
             ("RIGHTPADDING", (0, 0), (-1, -1), 0),
             ("TOPPADDING", (0, 0), (-1, -1), 0),
@@ -482,10 +523,11 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     ])
     story.append(Spacer(1, 4 * mm))
 
-    def section(title_text, rows, widths=(42 * mm, 117 * mm)):
-        data = [[Paragraph(f"<b>{title_text}</b>", center), ""]] + [
+    def section(title_text, rows, widths=(31 * mm, 3 * mm, 125 * mm)):
+        data = [[Paragraph(f"<b>{title_text}</b>", center), "", ""]] + [
             [
                 Paragraph(str(label) if label else " ", small),
+                Paragraph(":" if label else " ", small),
                 Paragraph(str(value) if value else (" " if not label else "-"), small),
             ] for label, value in rows
         ]
@@ -493,8 +535,8 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
         table.setStyle(TableStyle([
             ("SPAN", (0, 0), (-1, 0)), ("BACKGROUND", (0, 0), (-1, 0), pale),
             ("BOX", (0, 0), (-1, -1), 0.8, border), ("LINEBELOW", (0, 0), (-1, 0), 0.8, border),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 6),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 6), ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 2),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 2), ("TOPPADDING", (0, 0), (-1, -1), 3),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ]))
         story.extend([table, Spacer(1, 4 * mm)])
@@ -535,10 +577,8 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     ]
     if room_lines:
         amount_rows.append(("<b>Room Charges</b>", ""))
-        amount_rows.extend(
-            (escape(line["description"]), _money(line["total"], currency))
-            for line in room_lines
-        )
+        for line in room_lines:
+            amount_rows.extend(_charge_display_rows(line, currency))
         room_total = Decimal(invoice["room_charge_total"]) + Decimal(invoice["extra_bed_total"])
     else:
         room_total = Decimal(invoice["room_charge_total"]) + Decimal(invoice["extra_bed_total"])
@@ -546,10 +586,8 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     section_ends.append(len(amount_rows))
     amount_rows.append(("<b>Additional Charges</b>", ""))
     if additional_lines:
-        amount_rows.extend(
-            (escape(line["description"]), _money(line["total"], currency))
-            for line in additional_lines
-        )
+        for line in additional_lines:
+            amount_rows.extend(_charge_display_rows(line, currency))
     else:
         amount_rows.append(("-", "0"))
     section_ends.append(len(amount_rows) + 1)

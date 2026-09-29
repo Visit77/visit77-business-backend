@@ -31,7 +31,7 @@ from booking.booking_services.invoice_charges import (
 from booking.integrations.core import CoreClient, sync_business_from_core
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, GuestProfile, Hotel, Invoice, MealPlan, OTABookingNotification, OTAInvoiceCharge, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, PMSInvoiceCharge, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
-from booking.tasks import create_and_queue_ota_booking_notification, queue_booking_confirmation_notifications
+from booking.tasks import create_and_queue_ota_booking_notification, ota_notification_payload, queue_booking_confirmation_notifications
 
 from booking.serializers import (
     AddOnSerializer,
@@ -695,7 +695,7 @@ class PublicBookingDetailView(APIView):
         booking = Booking.objects.filter(public_token=public_token).select_related("hotel").prefetch_related("rooms__nights", "guests", "add_ons", "payments").first()
         if not booking:
             raise NotFound("Booking not found.")
-        return success(BookingSerializer(booking).data)
+        return success(BookingSerializer(booking, context={"request": request}).data)
 
 
 class PublicReceiptPDFView(APIView):
@@ -3321,7 +3321,13 @@ class OTAHotelNotificationView(APIView):
 
     def get(self, request):
         hotel = self._hotel(request)
-        queryset = OTABookingNotification.objects.filter(hotel=hotel, is_deleted=False)
+        queryset = OTABookingNotification.objects.filter(
+            hotel=hotel,
+            is_deleted=False,
+        ).select_related("booking", "hotel").prefetch_related(
+            "booking__rooms__room_type",
+            "booking__rooms__assignments__physical_room",
+        )
         category = request.query_params.get("category", "ota")
         category_map = {
             "bookings": OTABookingNotification.EventType.NEW,
@@ -3361,6 +3367,7 @@ class OTAHotelNotificationView(APIView):
             OTABookingNotification.EventType.UPDATED: "ota_updated",
             OTABookingNotification.EventType.CANCELLED: "ota_cancelled",
         }[notification.event_type]
+        payload = ota_notification_payload(notification.booking, notification.payload)
         return {
             "id": notification.id,
             "body": notification.body,
@@ -3371,8 +3378,8 @@ class OTAHotelNotificationView(APIView):
             "to_user": None,
             "to_page": notification.hotel.core_business_id,
             "blog": None,
-            "payload": json.dumps(notification.payload, default=str),
-            "payload_data": notification.payload,
+            "payload": json.dumps(payload, default=str),
+            "payload_data": payload,
             "created": notification.created_at,
             "updated": notification.updated_at,
             "is_deleted": notification.is_deleted,
@@ -3385,9 +3392,12 @@ class OTAHotelNotificationReadView(APIView):
 
     def post(self, request, notification_id):
         hotel = OTAHotelNotificationView._hotel(request)
-        notification = OTABookingNotification.objects.filter(
-            id=notification_id, hotel=hotel, is_deleted=False,
-        ).first()
+        notification = OTABookingNotification.objects.select_related(
+            "booking", "hotel",
+        ).prefetch_related(
+            "booking__rooms__room_type",
+            "booking__rooms__assignments__physical_room",
+        ).filter(id=notification_id, hotel=hotel, is_deleted=False).first()
         if not notification:
             raise NotFound("Notification not found.")
         if not notification.read:

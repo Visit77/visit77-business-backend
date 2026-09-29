@@ -555,6 +555,19 @@ class BookingCodeTests(TestCase):
         self.assertEqual(payment.receipt_snapshot["issuer"]["footer_text"], "")
         self.assertFalse(payment.receipt_pdf)
 
+        detail_response = self.client.get(
+            f"/api/v1/public/bookings/{booking.public_token}/"
+        )
+        self.assertEqual(detail_response.status_code, 200, detail_response.data)
+        receipt_pdf_url = detail_response.data["data"]["payments"][0]["receipt_pdf_url"]
+        self.assertEqual(
+            receipt_pdf_url,
+            (
+                f"http://testserver/api/v1/public/bookings/{booking.public_token}/"
+                f"receipts/{payment.id}/pdf/"
+            ),
+        )
+
         receipt_url = (
             f"/api/v1/public/bookings/{booking.public_token}/"
             f"receipts/{payment.id}/pdf/"

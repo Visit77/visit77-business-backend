@@ -7,10 +7,48 @@ from booking.services import (
     expire_pending_bookings,
 )
 import logging
-from booking.models import Booking, OTABookingNotification
+from booking.models import Booking, Hotel, OTABookingNotification
 from booking.booking_services.email import send_booking_confirmation_email
 from booking.integrations.core import CoreClient
 logger = logging.getLogger(__name__)
+
+
+def ota_notification_payload(booking, stored_payload):
+    """Add current PMS room assignments to OTA+PMS notification payloads."""
+    payload = dict(stored_payload or {})
+    if booking.hotel.package != Hotel.Package.OTA_PMS:
+        return payload
+
+    payload_rooms = [dict(item) for item in payload.get("rooms", [])]
+    booking_rooms = list(booking.rooms.all())
+    for index, booking_room in enumerate(booking_rooms):
+        physical_rooms = [
+            {
+                "assignment_id": assignment.id,
+                "id": assignment.physical_room_id,
+                "core_physical_room_id": assignment.physical_room.core_physical_room_id,
+                "room_number": assignment.physical_room.room_number,
+                "floor": assignment.physical_room.floor,
+                "building": assignment.physical_room.building,
+                "status": assignment.physical_room.status,
+                "assigned_at": assignment.assigned_at.isoformat(),
+            }
+            for assignment in booking_room.assignments.all()
+            if assignment.released_at is None
+        ]
+        if index < len(payload_rooms):
+            payload_rooms[index]["booking_room_id"] = booking_room.id
+            payload_rooms[index]["physical_rooms"] = physical_rooms
+        else:
+            payload_rooms.append({
+                "booking_room_id": booking_room.id,
+                "room_type_id": booking_room.room_type_id,
+                "room_type_name": booking_room.room_type.name,
+                "quantity": booking_room.quantity,
+                "physical_rooms": physical_rooms,
+            })
+    payload["rooms"] = payload_rooms
+    return payload
 
 
 def _hotel_booking_notification_contact(booking, field):
@@ -52,7 +90,10 @@ def queue_booking_confirmation_notifications(booking_id):
 
 def create_and_queue_ota_booking_notification(booking_id, event_type="new"):
     """Persist first; Firebase delivery must never control list visibility."""
-    booking = Booking.objects.select_related("hotel").prefetch_related("rooms__room_type").get(id=booking_id)
+    booking = Booking.objects.select_related("hotel").prefetch_related(
+        "rooms__room_type",
+        "rooms__assignments__physical_room",
+    ).get(id=booking_id)
     if booking.source != Booking.Source.OTA:
         return {"skipped": True, "reason": "not_ota"}
     rooms = list(booking.rooms.all())
@@ -77,6 +118,8 @@ def create_and_queue_ota_booking_notification(booking_id, event_type="new"):
             for room in rooms
         ],
     }
+    if booking.hotel.package == Hotel.Package.OTA_PMS:
+        payload = ota_notification_payload(booking, payload)
     prefix = {"new": "New", "updated": "Updated", "cancelled": "Cancelled"}[event_type]
     body = f"{prefix}: {booking.booking_code}"
     notification = OTABookingNotification.objects.create(
