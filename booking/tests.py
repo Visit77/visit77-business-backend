@@ -138,7 +138,13 @@ class BookingServiceTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200, response.data)
-        room_payload = response.data["data"]["results"][0]["payload_data"]["rooms"][0]
+        notification_payload = response.data["data"]["results"][0]
+        self.assertEqual(notification_payload["hotel_id"], self.hotel.id)
+        self.assertEqual(
+            notification_payload["business_id"],
+            self.hotel.core_business_id,
+        )
+        room_payload = notification_payload["payload_data"]["rooms"][0]
         self.assertEqual(room_payload["booking_room_id"], booking_room.id)
         self.assertEqual(room_payload["physical_rooms"], [{
             "assignment_id": assignment.id,

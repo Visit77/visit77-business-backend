@@ -25,7 +25,7 @@ services:
 
   celery:
     build: .
-    command: python -m debugpy --listen 0.0.0.0:5679 -m celery -A config worker -l ${CELERY_LOG_LEVEL:-INFO} --pool=solo
+    command: python -m debugpy --listen 0.0.0.0:5679 -m celery -A config worker -l ${CELERY_LOG_LEVEL:-INFO} --pool=solo -Q ${CELERY_TASK_DEFAULT_QUEUE:-booking}
     volumes:
       - .:/app
     ports:

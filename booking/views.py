@@ -3370,6 +3370,8 @@ class OTAHotelNotificationView(APIView):
         payload = ota_notification_payload(notification.booking, notification.payload)
         return {
             "id": notification.id,
+            "hotel_id": notification.hotel_id,
+            "business_id": notification.hotel.core_business_id,
             "body": notification.body,
             "noti_type": noti_type,
             "read": notification.read,
