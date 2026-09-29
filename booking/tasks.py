@@ -7,7 +7,7 @@ from booking.services import (
     expire_pending_bookings,
 )
 import logging
-from booking.models import Booking
+from booking.models import Booking, OTABookingNotification
 from booking.booking_services.email import send_booking_confirmation_email
 from booking.integrations.core import CoreClient
 logger = logging.getLogger(__name__)
@@ -48,13 +48,7 @@ def queue_booking_confirmation_notifications(booking_id):
     }
 
 
-@shared_task(
-    autoretry_for=(Exception,),
-    retry_backoff=True,
-    retry_backoff_max=300,
-    retry_jitter=True,
-    max_retries=3,
-)
+@shared_task
 def send_ota_booking_push_task(booking_id, event_type="new"):
     booking = Booking.objects.select_related("hotel").prefetch_related("rooms__room_type").get(id=booking_id)
     if booking.source != Booking.Source.OTA:
@@ -81,10 +75,29 @@ def send_ota_booking_push_task(booking_id, event_type="new"):
             for room in rooms
         ],
     }
-    return CoreClient().post(
-        f"booking-integrations/businesses/{booking.hotel.core_business_id}/ota-notifications/",
-        json={"event_type": event_type, "payload": payload},
+    prefix = {"new": "New", "updated": "Updated", "cancelled": "Cancelled"}[event_type]
+    body = f"{prefix}: {booking.booking_code}"
+    notification = OTABookingNotification.objects.create(
+        hotel=booking.hotel,
+        booking=booking,
+        event_type=event_type,
+        body=body,
+        payload=payload,
     )
+    try:
+        delivery = CoreClient().post(
+            f"booking-integrations/businesses/{booking.hotel.core_business_id}/ota-notifications/",
+            json={
+                "event_type": event_type,
+                "body": body,
+                "notification_id": notification.id,
+                "payload": payload,
+            },
+        )
+    except Exception:
+        logger.exception("OTA notification %s was stored but Firebase delivery failed.", notification.id)
+        delivery = {"sent_devices": 0, "delivery_failed": True}
+    return {"notification_id": notification.id, "delivery": delivery}
 
 @shared_task
 def expire_booking_holds_task():

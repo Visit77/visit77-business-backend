@@ -29,7 +29,7 @@ from booking.booking_services.invoice_charges import (
     sync_hotel_charge_config,
 )
 from booking.integrations.core import CoreClient, sync_business_from_core
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, GuestProfile, Hotel, Invoice, MealPlan, OTAInvoiceCharge, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, PMSInvoiceCharge, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, GuestProfile, Hotel, Invoice, MealPlan, OTABookingNotification, OTAInvoiceCharge, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, PMSInvoiceCharge, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
 from booking.tasks import queue_booking_confirmation_notifications, send_ota_booking_push_task
 
@@ -3309,17 +3309,62 @@ class OTAHotelNotificationView(APIView):
 
     def get(self, request):
         hotel = self._hotel(request)
-        allowed = {"category", "read", "limit", "offset"}
-        params = {
-            key: value
-            for key, value in request.query_params.items()
-            if key in allowed
+        queryset = OTABookingNotification.objects.filter(hotel=hotel)
+        category = request.query_params.get("category", "ota")
+        category_map = {
+            "bookings": OTABookingNotification.EventType.NEW,
+            "updated": OTABookingNotification.EventType.UPDATED,
+            "cancelled": OTABookingNotification.EventType.CANCELLED,
         }
-        data = CoreClient().get(
-            f"booking-integrations/businesses/{hotel.core_business_id}/ota-notifications/",
-            params=params,
-        )
-        return success(data)
+        if category in category_map:
+            queryset = queryset.filter(event_type=category_map[category])
+        elif category != "ota":
+            raise ValidationError({"category": "Use ota, bookings, updated, or cancelled."})
+        if request.query_params.get("read") in {"true", "false"}:
+            queryset = queryset.filter(read=request.query_params["read"] == "true")
+        try:
+            limit = min(max(int(request.query_params.get("limit", 20)), 1), 100)
+            offset = int(request.query_params.get("offset", 1))
+        except (TypeError, ValueError):
+            raise ValidationError({"pagination": "limit and offset must be integers."})
+        if offset < 1:
+            raise ValidationError({"offset": "Must be a page number starting from 1."})
+        count = queryset.count()
+        unread_count = queryset.filter(read=False).count()
+        start = (offset - 1) * limit
+        results = [self._serialize(item) for item in queryset[start:start + limit]]
+        return success({
+            "count": count,
+            "unread_count": unread_count,
+            "limit": limit,
+            "offset": offset,
+            "total_pages": (count + limit - 1) // limit,
+            "results": results,
+        })
+
+    @staticmethod
+    def _serialize(notification):
+        noti_type = {
+            OTABookingNotification.EventType.NEW: "ota_booking",
+            OTABookingNotification.EventType.UPDATED: "ota_updated",
+            OTABookingNotification.EventType.CANCELLED: "ota_cancelled",
+        }[notification.event_type]
+        return {
+            "id": notification.id,
+            "body": notification.body,
+            "noti_type": noti_type,
+            "read": notification.read,
+            "image": None,
+            "from_user": None,
+            "to_user": None,
+            "to_page": notification.hotel.core_business_id,
+            "blog": None,
+            "payload": json.dumps(notification.payload, default=str),
+            "payload_data": notification.payload,
+            "created": notification.created_at,
+            "updated": notification.updated_at,
+            "is_deleted": False,
+        }
 
 
 class OTAHotelNotificationReadView(APIView):
@@ -3328,12 +3373,15 @@ class OTAHotelNotificationReadView(APIView):
 
     def post(self, request, notification_id):
         hotel = OTAHotelNotificationView._hotel(request)
-        data = CoreClient().post(
-            f"booking-integrations/businesses/{hotel.core_business_id}/"
-            f"ota-notifications/{notification_id}/read/",
-            json={},
-        )
-        return success(data)
+        notification = OTABookingNotification.objects.filter(
+            id=notification_id, hotel=hotel,
+        ).first()
+        if not notification:
+            raise NotFound("Notification not found.")
+        if not notification.read:
+            notification.read = True
+            notification.save(update_fields=["read", "updated_at"])
+        return success(OTAHotelNotificationView._serialize(notification))
 
 
 class CoreEventView(APIView):

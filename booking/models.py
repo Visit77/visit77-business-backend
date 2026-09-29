@@ -1156,3 +1156,32 @@ class CoreIntegrationEvent(models.Model):
 
     class Meta:
         ordering = ["-processed_at"]
+
+
+class OTABookingNotification(models.Model):
+    class EventType(models.TextChoices):
+        NEW = "new", "New booking"
+        UPDATED = "updated", "Updated booking"
+        CANCELLED = "cancelled", "Cancelled booking"
+
+    hotel = models.ForeignKey(
+        Hotel, on_delete=models.CASCADE, related_name="ota_notifications"
+    )
+    booking = models.ForeignKey(
+        Booking, on_delete=models.CASCADE, related_name="ota_notifications"
+    )
+    event_type = models.CharField(max_length=16, choices=EventType.choices)
+    body = models.CharField(max_length=225)
+    payload = models.JSONField(default=dict, blank=True)
+    read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(
+                fields=["hotel", "event_type", "read", "created_at"],
+                name="ota_noti_hotel_filter_idx",
+            )
+        ]
