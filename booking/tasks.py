@@ -9,6 +9,7 @@ from booking.services import (
 import logging
 from booking.models import Booking
 from booking.booking_services.email import send_booking_confirmation_email
+from booking.integrations.core import CoreClient
 logger = logging.getLogger(__name__)
 
 
@@ -27,6 +28,7 @@ def queue_booking_confirmation_notifications(booking_id):
     )
     guest_sms_result = send_booking_confirmation_sms_task.delay(booking_id, "guest")
     hotel_sms_result = send_booking_confirmation_sms_task.delay(booking_id, "hotel")
+    ota_push_result = send_ota_booking_push_task.delay(booking_id, "new")
     logger.info(
         "Queued booking confirmation notifications for booking %s: "
         "guest_email_task_id=%s hotel_email_task_id=%s "
@@ -42,7 +44,47 @@ def queue_booking_confirmation_notifications(booking_id):
         "hotel_email_task_id": hotel_email_result.id,
         "guest_sms_task_id": guest_sms_result.id,
         "hotel_sms_task_id": hotel_sms_result.id,
+        "ota_push_task_id": ota_push_result.id,
     }
+
+
+@shared_task(
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=300,
+    retry_jitter=True,
+    max_retries=3,
+)
+def send_ota_booking_push_task(booking_id, event_type="new"):
+    booking = Booking.objects.select_related("hotel").prefetch_related("rooms__room_type").get(id=booking_id)
+    if booking.source != Booking.Source.OTA:
+        return {"skipped": True, "reason": "not_ota"}
+    rooms = list(booking.rooms.all())
+    payload = {
+        "booking_id": str(booking.id),
+        "booking_code": booking.booking_code,
+        "reference": booking.reference,
+        "status": booking.status,
+        "guest_name": booking.contact_name,
+        "guest_phone": booking.contact_phone,
+        "check_in": booking.check_in.isoformat(),
+        "check_out": booking.check_out.isoformat(),
+        "nights": booking.nights,
+        "adults": sum(room.adults * room.quantity for room in rooms),
+        "children": sum(room.children * room.quantity for room in rooms),
+        "rooms": [
+            {
+                "room_type_id": room.room_type_id,
+                "room_type_name": room.room_type.name,
+                "quantity": room.quantity,
+            }
+            for room in rooms
+        ],
+    }
+    return CoreClient().post(
+        f"booking-integrations/businesses/{booking.hotel.core_business_id}/ota-notifications/",
+        json={"event_type": event_type, "payload": payload},
+    )
 
 @shared_task
 def expire_booking_holds_task():

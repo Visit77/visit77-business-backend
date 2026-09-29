@@ -31,7 +31,7 @@ from booking.booking_services.invoice_charges import (
 from booking.integrations.core import CoreClient, sync_business_from_core
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, GuestProfile, Hotel, Invoice, MealPlan, OTAInvoiceCharge, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, PMSInvoiceCharge, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
-from booking.tasks import queue_booking_confirmation_notifications
+from booking.tasks import queue_booking_confirmation_notifications, send_ota_booking_push_task
 
 from booking.serializers import (
     AddOnSerializer,
@@ -3289,6 +3289,53 @@ class CoreSyncView(APIView):
         return success(sync_business_from_core(core_business_id))
 
 
+class OTAHotelNotificationView(APIView):
+    """Business-scoped OTA notification list backed by Visit77 Core."""
+
+    permission_classes = [HasBookingAdminKey]
+    business_scoped = True
+
+    @staticmethod
+    def _hotel(request):
+        core_business_id = getattr(request, "booking_core_business_id", None)
+        if not core_business_id:
+            raise ValidationError({"core_business_id": "X-Booking-Business-ID is required."})
+        hotel = Hotel.objects.filter(core_business_id=core_business_id).first()
+        if not hotel:
+            raise NotFound("Hotel is not synced in the booking engine.")
+        if hotel.package not in [Hotel.Package.OTA, Hotel.Package.OTA_PMS]:
+            raise PermissionDenied("OTA notifications are only available for OTA or OTA + PMS packages.")
+        return hotel
+
+    def get(self, request):
+        hotel = self._hotel(request)
+        allowed = {"category", "read", "limit", "offset"}
+        params = {
+            key: value
+            for key, value in request.query_params.items()
+            if key in allowed
+        }
+        data = CoreClient().get(
+            f"booking-integrations/businesses/{hotel.core_business_id}/ota-notifications/",
+            params=params,
+        )
+        return success(data)
+
+
+class OTAHotelNotificationReadView(APIView):
+    permission_classes = [HasBookingAdminKey]
+    business_scoped = True
+
+    def post(self, request, notification_id):
+        hotel = OTAHotelNotificationView._hotel(request)
+        data = CoreClient().post(
+            f"booking-integrations/businesses/{hotel.core_business_id}/"
+            f"ota-notifications/{notification_id}/read/",
+            json={},
+        )
+        return success(data)
+
+
 class CoreEventView(APIView):
     permission_classes = [HasBookingAdminKey]
 
@@ -4648,6 +4695,10 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
                 if updated_invoice:
                     updated_invoice.refresh_from_db()
         booking = self.get_queryset().prefetch_related("guests__identity_documents").get(pk=booking.pk)
+        if request.method == "PATCH" and booking.source == Booking.Source.OTA:
+            transaction.on_commit(
+                lambda: send_ota_booking_push_task.delay(str(booking.id), "updated")
+            )
         return success({
             "booking": BookingSerializer(booking, context={"request": request}).data,
             "verification": _check_in_readiness(booking),
@@ -4716,7 +4767,12 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
-        return success(BookingSerializer(cancel_booking(self.get_object())).data)
+        booking = cancel_booking(self.get_object())
+        if booking.source == Booking.Source.OTA:
+            transaction.on_commit(
+                lambda: send_ota_booking_push_task.delay(str(booking.id), "cancelled")
+            )
+        return success(BookingSerializer(booking).data)
 
     @action(detail=True, methods=["post"])
     def refund(self, request, pk=None):
