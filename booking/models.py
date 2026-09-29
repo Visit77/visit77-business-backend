@@ -9,6 +9,7 @@ from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.db.models.functions import Lower
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from booking.storage import get_private_document_storage
 
@@ -78,6 +79,18 @@ class Hotel(models.Model):
 
     def has_feature(self, key):
         return bool((self.features or {}).get(key))
+
+    @property
+    def public_booking_enabled(self):
+        snapshot = self.access_snapshot or {}
+        trial = snapshot.get("trial") or {}
+        trial_ends_at = parse_datetime(str(trial.get("ends_at") or "")) if trial else None
+        if trial and (
+            trial.get("is_active", False)
+            and (trial_ends_at is None or trial_ends_at > timezone.now())
+        ):
+            return False
+        return snapshot.get("public_booking_enabled", True) is not False
 
 
 class InvoiceChargeBase(models.Model):
@@ -1174,6 +1187,7 @@ class OTABookingNotification(models.Model):
     body = models.CharField(max_length=225)
     payload = models.JSONField(default=dict, blank=True)
     read = models.BooleanField(default=False)
+    is_deleted = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

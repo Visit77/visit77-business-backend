@@ -31,7 +31,7 @@ from booking.booking_services.invoice_charges import (
 from booking.integrations.core import CoreClient, sync_business_from_core
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, GuestProfile, Hotel, Invoice, MealPlan, OTABookingNotification, OTAInvoiceCharge, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, PMSInvoiceCharge, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
-from booking.tasks import queue_booking_confirmation_notifications, send_ota_booking_push_task
+from booking.tasks import create_and_queue_ota_booking_notification, queue_booking_confirmation_notifications
 
 from booking.serializers import (
     AddOnSerializer,
@@ -262,7 +262,7 @@ class PublicAvailabilityView(APIView):
 
     def get(self, request, core_business_id):
         hotel = Hotel.objects.filter(core_business_id=core_business_id, is_active=True).first()
-        if not hotel:
+        if not hotel or not hotel.public_booking_enabled:
             raise NotFound("Hotel is not available in the booking engine.")
         check_in = parse_date(request.query_params.get("check_in", ""))
         check_out = parse_date(request.query_params.get("check_out", ""))
@@ -311,7 +311,7 @@ class PublicOTARoomTypeCatalogView(APIView):
             is_active=True,
             package__in=[Hotel.Package.OTA, Hotel.Package.OTA_PMS],
         ).first()
-        if not hotel:
+        if not hotel or not hotel.public_booking_enabled:
             raise NotFound("OTA hotel is not available in the booking engine.")
 
         room_type_filters = {
@@ -392,7 +392,7 @@ class PublicHotelRoomTypeCatalogView(APIView):
         query = PublicOTARoomTypeCatalogQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         hotel = Hotel.objects.filter(core_business_id=core_business_id, is_active=True).first()
-        if not hotel:
+        if not hotel or not hotel.public_booking_enabled:
             raise NotFound("Hotel is not available in the booking engine.")
 
         room_types = list(
@@ -455,7 +455,7 @@ class PublicGlobalAvailabilityView(APIView):
             room_types__core_active=True,
             room_types__rate_plans__is_active=True,
             room_types__rate_plans__guest_market__in=[data["guest_market"], RatePlan.GuestMarket.ALL],
-        ).distinct().order_by("id")
+        ).exclude(access_snapshot__public_booking_enabled=False).distinct().order_by("id")
         query = data.get("q", "")
         if query:
             hotels = hotels.filter(Q(name__icontains=query) | Q(slug__icontains=query) | Q(address__icontains=query))
@@ -513,7 +513,7 @@ class AdminAvailableHotelIdsView(APIView):
                     data["guest_market"],
                     RatePlan.GuestMarket.ALL,
                 ],
-            ).distinct().order_by("id")
+            ).exclude(access_snapshot__public_booking_enabled=False).distinct().order_by("id")
         )
         availability = availability_for_hotels(
             hotels,
@@ -556,7 +556,7 @@ class AdminOTAHotelIdsView(APIView):
                 room_types__booking_enabled=True,
                 room_types__core_active=True,
                 room_types__rate_plans__is_active=True,
-            ).filter(base_filter)
+            ).exclude(access_snapshot__public_booking_enabled=False).filter(base_filter)
             .order_by("core_business_id")
             .values_list("core_business_id", flat=True)
             .distinct()
@@ -1190,6 +1190,18 @@ class PublicDemoPaymentView(APIView):
         )
 
         if existing and booking.status == Booking.Status.CONFIRMED:
+            if (
+                booking.source == Booking.Source.OTA
+                and not booking.ota_notifications.filter(
+                    event_type=OTABookingNotification.EventType.NEW,
+                ).exists()
+            ):
+                booking_id = str(booking.id)
+                transaction.on_commit(
+                    lambda: create_and_queue_ota_booking_notification(
+                        booking_id, "new"
+                    )
+                )
             return success(
                 {
                     "booking": BookingSerializer(booking).data,
@@ -3309,7 +3321,7 @@ class OTAHotelNotificationView(APIView):
 
     def get(self, request):
         hotel = self._hotel(request)
-        queryset = OTABookingNotification.objects.filter(hotel=hotel)
+        queryset = OTABookingNotification.objects.filter(hotel=hotel, is_deleted=False)
         category = request.query_params.get("category", "ota")
         category_map = {
             "bookings": OTABookingNotification.EventType.NEW,
@@ -3363,7 +3375,7 @@ class OTAHotelNotificationView(APIView):
             "payload_data": notification.payload,
             "created": notification.created_at,
             "updated": notification.updated_at,
-            "is_deleted": False,
+            "is_deleted": notification.is_deleted,
         }
 
 
@@ -3374,7 +3386,7 @@ class OTAHotelNotificationReadView(APIView):
     def post(self, request, notification_id):
         hotel = OTAHotelNotificationView._hotel(request)
         notification = OTABookingNotification.objects.filter(
-            id=notification_id, hotel=hotel,
+            id=notification_id, hotel=hotel, is_deleted=False,
         ).first()
         if not notification:
             raise NotFound("Notification not found.")
@@ -3382,6 +3394,24 @@ class OTAHotelNotificationReadView(APIView):
             notification.read = True
             notification.save(update_fields=["read", "updated_at"])
         return success(OTAHotelNotificationView._serialize(notification))
+
+
+class OTAHotelNotificationDetailView(APIView):
+    permission_classes = [HasBookingAdminKey]
+    business_scoped = True
+
+    def delete(self, request, notification_id):
+        hotel = OTAHotelNotificationView._hotel(request)
+        notification = OTABookingNotification.objects.filter(
+            id=notification_id,
+            hotel=hotel,
+            is_deleted=False,
+        ).first()
+        if not notification:
+            raise NotFound("Notification not found.")
+        notification.is_deleted = True
+        notification.save(update_fields=["is_deleted", "updated_at"])
+        return success([])
 
 
 class CoreEventView(APIView):
@@ -3410,6 +3440,15 @@ class CoreEventView(APIView):
 
             if data["event_type"] in ["direct_booking.revoked", "direct_booking.expired"]:
                 deprovision_hotel(data["business_id"])
+            elif data["event_type"] == "direct_booking.trial_expired":
+                hotel = Hotel.objects.filter(core_business_id=data["business_id"]).first()
+                if hotel:
+                    snapshot = dict(hotel.access_snapshot or {})
+                    trial = dict(snapshot.get("trial") or {})
+                    trial.update({"status": "expired", "is_active": False})
+                    snapshot["trial"] = trial
+                    hotel.access_snapshot = snapshot
+                    hotel.save(update_fields=["access_snapshot"])
             else:
                 sync_business_from_core(data["business_id"])
         return success([])
@@ -4745,7 +4784,7 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
         booking = self.get_queryset().prefetch_related("guests__identity_documents").get(pk=booking.pk)
         if request.method == "PATCH" and booking.source == Booking.Source.OTA:
             transaction.on_commit(
-                lambda: send_ota_booking_push_task.delay(str(booking.id), "updated")
+                lambda: create_and_queue_ota_booking_notification(str(booking.id), "updated")
             )
         return success({
             "booking": BookingSerializer(booking, context={"request": request}).data,
@@ -4818,7 +4857,7 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
         booking = cancel_booking(self.get_object())
         if booking.source == Booking.Source.OTA:
             transaction.on_commit(
-                lambda: send_ota_booking_push_task.delay(str(booking.id), "cancelled")
+                lambda: create_and_queue_ota_booking_notification(str(booking.id), "cancelled")
             )
         return success(BookingSerializer(booking).data)
 

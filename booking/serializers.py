@@ -1095,6 +1095,8 @@ class CoreEventSerializer(serializers.Serializer):
         "direct_booking.activated",
         "direct_booking.reconcile",
         "direct_booking.catalog_changed",
+        "direct_booking.trial_activated",
+        "direct_booking.trial_expired",
         "direct_booking.revoked",
         "direct_booking.expired",
     ])

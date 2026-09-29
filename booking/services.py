@@ -326,7 +326,9 @@ def ensure_daily_inventory_for_room_type(room_type, start_date=None, days=None, 
 def ensure_rolling_daily_inventory(days=None):
     """Maintain the rolling future inventory window for all active synced room types."""
     summary = {"room_types": 0, "created": 0, "updated": 0}
-    queryset = RoomType.objects.filter(hotel__is_active=True, core_active=True, booking_enabled=True).select_related("hotel")
+    queryset = RoomType.objects.filter(hotel__is_active=True, core_active=True, booking_enabled=True).exclude(
+        hotel__access_snapshot__public_booking_enabled=False
+    ).select_related("hotel")
     for room_type in queryset.iterator():
         result = ensure_daily_inventory_for_room_type(room_type, days=days)
         summary["room_types"] += 1
@@ -1355,6 +1357,8 @@ def booking_guest_counts(data):
 def estimate_booking(data):
     logger.info(data)
     hotel = Hotel.objects.get(core_business_id=data["core_business_id"], is_active=True)
+    if not hotel.public_booking_enabled:
+        raise ValidationError("Online booking is unavailable for trial hotels.")
     check_in, check_out = data["check_in"], data["check_out"]
     if check_out <= check_in:
         raise ValidationError({"check_out": "Must be after check_in."})
@@ -1612,6 +1616,8 @@ def estimate_booking(data):
 @transaction.atomic
 def create_booking(data, idempotency_key=None):
     hotel = Hotel.objects.get(core_business_id=data["core_business_id"], is_active=True)
+    if not hotel.public_booking_enabled:
+        raise ValidationError("Online booking is unavailable for trial hotels.")
     if idempotency_key:
         existing = Booking.objects.filter(hotel=hotel, idempotency_key=idempotency_key).first()
         if existing:

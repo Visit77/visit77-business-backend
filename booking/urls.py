@@ -27,6 +27,7 @@ from booking.views import (
     OTARecordListView,
     OTARoomSelectionView,
     OTAHotelNotificationReadView,
+    OTAHotelNotificationDetailView,
     OTAHotelNotificationView,
     OTARoomSaleStatusView,
     PhysicalRoomViewSet,
@@ -91,6 +92,10 @@ urlpatterns = [
     path(
         "admin/ota-notifications/<int:notification_id>/read/",
         OTAHotelNotificationReadView.as_view(),
+    ),
+    path(
+        "admin/ota-notifications/<int:notification_id>/",
+        OTAHotelNotificationDetailView.as_view(),
     ),
     path("admin/ota-records/", OTARecordListView.as_view()),
     path("admin/ota-revenue/", OTARevenueView.as_view()),

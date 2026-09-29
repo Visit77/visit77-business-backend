@@ -20,6 +20,9 @@ def _hotel_booking_notification_contact(booking, field):
 
 def queue_booking_confirmation_notifications(booking_id):
     """Publish independent guest/hotel email and SMS jobs."""
+    ota_notification_result = create_and_queue_ota_booking_notification(
+        booking_id, "new"
+    )
     guest_email_result = send_booking_confirmation_email_task.delay(
         booking_id, "guest"
     )
@@ -28,7 +31,6 @@ def queue_booking_confirmation_notifications(booking_id):
     )
     guest_sms_result = send_booking_confirmation_sms_task.delay(booking_id, "guest")
     hotel_sms_result = send_booking_confirmation_sms_task.delay(booking_id, "hotel")
-    ota_push_result = send_ota_booking_push_task.delay(booking_id, "new")
     logger.info(
         "Queued booking confirmation notifications for booking %s: "
         "guest_email_task_id=%s hotel_email_task_id=%s "
@@ -44,12 +46,12 @@ def queue_booking_confirmation_notifications(booking_id):
         "hotel_email_task_id": hotel_email_result.id,
         "guest_sms_task_id": guest_sms_result.id,
         "hotel_sms_task_id": hotel_sms_result.id,
-        "ota_push_task_id": ota_push_result.id,
+        "ota_notification": ota_notification_result,
     }
 
 
-@shared_task
-def send_ota_booking_push_task(booking_id, event_type="new"):
+def create_and_queue_ota_booking_notification(booking_id, event_type="new"):
+    """Persist first; Firebase delivery must never control list visibility."""
     booking = Booking.objects.select_related("hotel").prefetch_related("rooms__room_type").get(id=booking_id)
     if booking.source != Booking.Source.OTA:
         return {"skipped": True, "reason": "not_ota"}
@@ -85,13 +87,34 @@ def send_ota_booking_push_task(booking_id, event_type="new"):
         payload=payload,
     )
     try:
+        delivery_task = send_ota_booking_push_task.delay(notification.id)
+        delivery_task_id = delivery_task.id
+    except Exception:
+        logger.exception(
+            "OTA notification %s was stored but Firebase delivery could not be queued.",
+            notification.id,
+        )
+        delivery_task_id = None
+    return {
+        "notification_id": notification.id,
+        "delivery_task_id": delivery_task_id,
+    }
+
+
+@shared_task
+def send_ota_booking_push_task(notification_id):
+    notification = OTABookingNotification.objects.select_related(
+        "hotel", "booking"
+    ).get(id=notification_id)
+    booking = notification.booking
+    try:
         delivery = CoreClient().post(
             f"booking-integrations/businesses/{booking.hotel.core_business_id}/ota-notifications/",
             json={
-                "event_type": event_type,
-                "body": body,
+                "event_type": notification.event_type,
+                "body": notification.body,
                 "notification_id": notification.id,
-                "payload": payload,
+                "payload": notification.payload,
             },
         )
     except Exception:
