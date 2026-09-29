@@ -1897,6 +1897,11 @@ class OTARoomSelectionView(APIView):
             })
         total_rooms = sum(row["total_rooms"] for row in rows)
         today_available_ota_rooms = sum(row["available_rooms"] for row in rows)
+        total_booking_count = len({
+            record["booking_id"]
+            for row in rows
+            for record in row["ota_records"]
+        })
         return {
             "direct_booking_package": hotel.package,
             "inventory_mode": "room_type_count",
@@ -1904,6 +1909,7 @@ class OTARoomSelectionView(APIView):
             "total_rooms": total_rooms,
             "total_ota_rooms": total_rooms,
             "today_available_ota_rooms": today_available_ota_rooms,
+            "total_booking_count": total_booking_count,
             "applied_timeline_status": timeline_status,
             "room_types": rows,
         }
@@ -2068,6 +2074,12 @@ class OTARoomSelectionView(APIView):
             "total_rooms": len(rooms),
             "total_ota_rooms": sum(int(room.ota_enabled) for room in rooms),
             "total_open_ota_rooms": sum(int(room.ota_enabled and room.ota_sale_open) for room in rooms),
+            "total_booking_count": len({
+                record["booking_id"]
+                for group in grouped.values()
+                for room in group["rooms"]
+                for record in room["ota_records"]
+            }),
             "selected_room_ids": [room.id for room in rooms if room.ota_enabled],
             "deselected_room_ids": [room.id for room in rooms if not room.ota_enabled],
             "applied_timeline_status": timeline_status,

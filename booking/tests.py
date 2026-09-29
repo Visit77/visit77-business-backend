@@ -184,6 +184,7 @@ class BookingServiceTests(TestCase):
         self.assertEqual(payload["total_rooms"], 7)
         self.assertEqual(payload["total_ota_rooms"], 7)
         self.assertEqual(payload["today_available_ota_rooms"], 7)
+        self.assertEqual(payload["total_booking_count"], 0)
         self.assertEqual(payload["room_types"][0]["total_rooms"], 7)
         self.assertEqual(payload["room_types"][0]["physical_rooms"], [])
 
@@ -199,6 +200,7 @@ class BookingServiceTests(TestCase):
         self.assertEqual(listed.data["data"]["total_rooms"], 7)
         self.assertEqual(listed.data["data"]["total_ota_rooms"], 7)
         self.assertEqual(listed.data["data"]["today_available_ota_rooms"], 5)
+        self.assertEqual(listed.data["data"]["total_booking_count"], 1)
         records = listed.data["data"]["room_types"][0]["ota_records"]
         self.assertEqual(records[0]["booking_id"], str(booking.id))
         self.assertIsNone(records[0]["assignment_id"])
