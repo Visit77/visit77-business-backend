@@ -181,17 +181,41 @@ class BookingServiceTests(TestCase):
         payload = updated.data["data"]
         self.assertEqual(payload["inventory_mode"], "room_type_count")
         self.assertFalse(payload["assignment_required"])
+        self.assertEqual(payload["total_rooms"], 7)
+        self.assertEqual(payload["total_ota_rooms"], 7)
+        self.assertEqual(payload["today_available_ota_rooms"], 7)
         self.assertEqual(payload["room_types"][0]["total_rooms"], 7)
         self.assertEqual(payload["room_types"][0]["physical_rooms"], [])
 
         booking, _ = create_booking(self.payload())
+        today_inventory = DailyInventory.objects.get(
+            room_type=self.room_type,
+            stay_date=timezone.localdate(),
+        )
+        today_inventory.closed_rooms = 2
+        today_inventory.save(update_fields=["closed_rooms"])
         listed = self.client.get("/api/v1/admin/ota-rooms/selection/", **headers)
         self.assertEqual(listed.status_code, 200, listed.data)
+        self.assertEqual(listed.data["data"]["total_rooms"], 7)
+        self.assertEqual(listed.data["data"]["total_ota_rooms"], 7)
+        self.assertEqual(listed.data["data"]["today_available_ota_rooms"], 5)
         records = listed.data["data"]["room_types"][0]["ota_records"]
         self.assertEqual(records[0]["booking_id"], str(booking.id))
         self.assertIsNone(records[0]["assignment_id"])
         self.assertEqual(records[0]["physical_room_ids"], [])
         self.assertEqual(records[0]["room_numbers"], [])
+
+        ota_records = self.client.get("/api/v1/admin/ota-records/", **headers)
+        self.assertEqual(ota_records.status_code, 200, ota_records.data)
+        ota_record_data = ota_records.data["data"]
+        self.assertEqual(ota_record_data["inventory_mode"], "room_type_count")
+        self.assertEqual(ota_record_data["count"], 1)
+        ota_record = ota_record_data["rooms"][0]
+        self.assertEqual(ota_record["booking_id"], str(booking.id))
+        self.assertEqual(ota_record["room_type"]["id"], self.room_type.id)
+        self.assertEqual(ota_record["quantity"], 2)
+        self.assertIsNone(ota_record["assignment_id"])
+        self.assertIsNone(ota_record["physical_room_id"])
 
     @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
     def test_ota_only_scheduled_closure_keeps_booking_record_and_can_be_deleted(self):

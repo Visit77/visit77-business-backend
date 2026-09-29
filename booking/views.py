@@ -1895,10 +1895,15 @@ class OTARoomSelectionView(APIView):
                 "ota_records": records,
                 "close_conditions": closures_by_room_type.get(room_type.id, []),
             })
+        total_rooms = sum(row["total_rooms"] for row in rows)
+        today_available_ota_rooms = sum(row["available_rooms"] for row in rows)
         return {
             "direct_booking_package": hotel.package,
             "inventory_mode": "room_type_count",
             "assignment_required": False,
+            "total_rooms": total_rooms,
+            "total_ota_rooms": total_rooms,
+            "today_available_ota_rooms": today_available_ota_rooms,
             "applied_timeline_status": timeline_status,
             "room_types": rows,
         }
@@ -2266,13 +2271,157 @@ class OTARoomHistoryView(APIView):
 
 
 class OTARecordListView(APIView):
-    """Flat booking-assignment feed for rooms currently enabled for OTA sales."""
+    """Flat OTA booking feed for both physical-room and room-count inventory."""
 
     permission_classes = [HasBookingAdminKey]
     business_scoped = True
 
+    @staticmethod
+    def _room_type_card_details(room_type):
+        snapshot = room_type.core_snapshot or {}
+        beds = snapshot.get("beds") or []
+        bed_types = [
+            bed.get("bed_type")
+            for bed in beds
+            if isinstance(bed, dict) and bed.get("bed_type")
+        ]
+        room_views = snapshot.get("room_views") or []
+        room_view = (
+            snapshot.get("room_view")
+            or snapshot.get("view")
+            or (room_views[0] if room_views else None)
+        )
+        if not room_views and room_view:
+            room_views = [room_view]
+        room_area = snapshot.get("room_area")
+        if room_area is None:
+            room_area = snapshot.get("size_sqft")
+        area_unit = snapshot.get("area_unit")
+        room_standard = snapshot.get("room_standard")
+        return {
+            "room_type": {
+                "id": room_type.id,
+                "core_room_type_id": room_type.core_room_type_id,
+                "name": room_type.name,
+            },
+            "room_type_name": room_type.name,
+            "room_standard": room_standard,
+            "room_standard_id": (
+                room_standard.get("id") if isinstance(room_standard, dict) else None
+            ),
+            "beds": beds,
+            "bed_type": snapshot.get("bed_type") or (bed_types[0] if bed_types else None),
+            "bed_types": bed_types,
+            "room_view": room_view,
+            "room_views": room_views,
+            "room_area": room_area,
+            "area_unit": area_unit,
+            "size_sqft": snapshot.get("size_sqft") or (
+                room_area if area_unit == "sqft" else None
+            ),
+            "room_area_text": (
+                f"{room_area} {area_unit}"
+                if room_area is not None and area_unit
+                else None
+            ),
+        }
+
+    @staticmethod
+    def _ota_only_records(request, hotel):
+        booking_rooms = BookingRoom.objects.filter(
+            room_type__hotel=hotel,
+            booking__source=Booking.Source.OTA,
+        ).select_related(
+            "room_type",
+            "booking",
+        ).prefetch_related(
+            "booking__guests__identity_documents",
+            "booking__invoices",
+            "booking__payments",
+        ).order_by(
+            "-booking__created_at",
+            "-id",
+        )
+
+        records = []
+        for booking_room in booking_rooms:
+            booking = booking_room.booking
+            guests = sorted(booking.guests.all(), key=lambda guest: guest.id)
+            primary_guest = next((guest for guest in guests if guest.is_primary), None)
+            paid_invoice_ids = {
+                payment.invoice_id
+                for payment in booking.payments.all()
+                if payment.invoice_id and payment.receipt_number
+            }
+            invoices = [
+                {
+                    "id": str(invoice.id),
+                    "invoice_number": invoice.invoice_number,
+                    "status": invoice.status,
+                    "total": invoice.total,
+                    "currency": invoice.currency,
+                    "invoice_pdf_url": _invoice_pdf_url(
+                        request, booking, invoice, paid_invoice_ids,
+                    ),
+                }
+                for invoice in booking.invoices.all()
+            ]
+            divisor = booking.nights * booking_room.quantity
+            records.append({
+                "assignment_id": None,
+                "assigned_at": None,
+                "released_at": None,
+                "created_at": booking.created_at,
+                "physical_room_id": None,
+                "core_physical_room_id": None,
+                "room_number": None,
+                "building_id": None,
+                "building": None,
+                "floor_id": None,
+                "floor": None,
+                **OTARecordListView._room_type_card_details(booking_room.room_type),
+                "booking_id": str(booking.id),
+                "booking_code": booking.booking_code,
+                "booking_reference": booking.reference,
+                "booking_status": booking.status,
+                "source": booking.source,
+                "check_in": booking.check_in,
+                "check_out": booking.check_out,
+                "nights": booking.nights,
+                "quantity": booking_room.quantity,
+                "adults": booking_room.adults,
+                "children": booking_room.children,
+                "contact_name": booking.contact_name,
+                "contact_phone": booking.contact_phone,
+                "guest": {
+                    "id": primary_guest.id if primary_guest else None,
+                    "name": primary_guest.name if primary_guest else booking.contact_name,
+                    "phone": primary_guest.phone if primary_guest else booking.contact_phone,
+                },
+                "guests": GuestSerializer(guests, many=True).data,
+                "amount": booking_room.total,
+                "price_per_night": (
+                    booking_room.total / divisor if divisor > 0 else booking_room.total
+                ),
+                "currency": booking.currency,
+                "invoice_count": len(invoices),
+                "invoices": invoices,
+                "stay_bill_url": f"/api/v1/admin/bookings/{booking.id}/stay-bill/",
+                "invoice_url": booking_invoice_url(booking),
+                "receipt_url": booking_receipt_url(booking),
+            })
+        return records
+
     def get(self, request):
         hotel = OTARoomSelectionView._hotel(request)
+        if hotel.package == Hotel.Package.OTA:
+            records = self._ota_only_records(request, hotel)
+            return success({
+                "inventory_mode": "room_type_count",
+                "ordering": "-created_at",
+                "count": len(records),
+                "rooms": records,
+            })
         assignments = RoomAssignment.objects.filter(
             physical_room__hotel=hotel,
             physical_room__is_active=True,
@@ -2364,6 +2513,7 @@ class OTARecordListView(APIView):
             })
 
         return success({
+            "inventory_mode": "physical_room",
             "ordering": "-created_at",
             "count": len(records),
             "rooms": records,
