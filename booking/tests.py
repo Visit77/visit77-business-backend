@@ -4628,6 +4628,25 @@ class BookingApiTests(BookingServiceTests):
         self.assertTrue(history.data["data"][0]["metadata"]["ota_selection_changed"])
         self.assertFalse(history.data["data"][0]["metadata"]["ota_enabled"])
 
+        deselected_all = self.client.put(
+            "/api/v1/admin/ota-rooms/selection/",
+            {
+                "selected_room_ids": [],
+                "deselected_room_ids": [room.id for room in rooms],
+            },
+            format="json",
+            **headers,
+        )
+        self.assertEqual(deselected_all.status_code, 200, deselected_all.data)
+        self.assertEqual(deselected_all.data["data"]["total_rooms"], 3)
+        self.assertEqual(deselected_all.data["data"]["total_ota_rooms"], 0)
+        self.assertEqual(len(deselected_all.data["data"]["room_types"]), 1)
+        room_type_row = deselected_all.data["data"]["room_types"][0]
+        self.assertEqual(room_type_row["room_type_id"], self.room_type.id)
+        self.assertEqual(room_type_row["total_rooms"], 3)
+        self.assertEqual(room_type_row["selected_count"], 0)
+        self.assertEqual(room_type_row["rooms"], [])
+
     def test_ota_record_list_is_flat_created_first_and_keeps_same_room_bookings(self):
         ota_room = PhysicalRoom.objects.create(
             hotel=self.hotel,

@@ -2114,7 +2114,10 @@ class OTARoomSelectionView(APIView):
             "deselected_room_ids": [room.id for room in rooms if not room.ota_enabled],
             "applied_timeline_status": timeline_status,
             "include_unselected": include_unselected,
-            "room_types": [group for group in grouped.values() if group["rooms"]],
+            # Keep the room-type card visible even when none of its physical
+            # rooms has been selected for OTA yet. include_unselected controls
+            # the nested room rows, not whether the room type itself exists.
+            "room_types": list(grouped.values()),
         }
 
     def get(self, request):
