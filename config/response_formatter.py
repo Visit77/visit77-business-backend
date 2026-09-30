@@ -81,11 +81,24 @@ def success(args, message='Success', extra_dict=None, status_code=status.HTTP_20
         return Response(normalize_monetary_response(response), status=status)
 
 
-def fail(error=None, status_code=status.HTTP_400_BAD_REQUEST, args=None):
+def fail(
+    error=None,
+    status_code=status.HTTP_400_BAD_REQUEST,
+    args=None,
+    error_type=None,
+):
     if args is None:
         args = []
-    return Response(_response_formatter(args, status_code=status_code, error=error, message='Fail'),
-                    status=status_code)
+    response = _response_formatter(
+        args,
+        status_code=status_code,
+        error=error,
+        message='Fail',
+    )
+    error_list = response.pop("error")
+    response["error_type"] = error_type
+    response["error"] = error_list
+    return Response(response, status=status_code)
 
 
 def _response_formatter(args, status_code=200, message='Success', error=None):

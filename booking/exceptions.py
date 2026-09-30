@@ -1,6 +1,15 @@
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.views import exception_handler
 
 from config.response_formatter import fail
+
+
+class TrialExpired(PermissionDenied):
+    default_detail = (
+        "Your Direct Booking trial has expired. "
+        "Subscribe to continue using hotel actions."
+    )
+    default_code = "trial_expired"
 
 
 def api_exception_handler(exc, context):
@@ -20,6 +29,9 @@ def api_exception_handler(exc, context):
             error=error_data,
             args=response_data,
             status_code=response.status_code,
+            error_type=(
+                "trial_expired" if isinstance(exc, TrialExpired) else None
+            ),
         )
         for header, value in response.items():
             formatted[header] = value

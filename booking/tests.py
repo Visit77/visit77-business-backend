@@ -71,6 +71,42 @@ class BookingServiceTests(TestCase):
             }],
         }
 
+    @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
+    def test_expired_trial_error_has_machine_readable_error_type(self):
+        self.hotel.access_snapshot = {
+            "trial": {
+                "is_active": False,
+                "ends_at": (timezone.now() - timedelta(days=1)).isoformat(),
+            },
+        }
+        self.hotel.save(update_fields=["access_snapshot"])
+
+        response = self.client.patch(
+            "/api/v1/admin/ota-rooms/selection/",
+            {"inventory_mode": Hotel.InventoryMode.ROOM_TYPE_COUNT},
+            format="json",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertEqual(response.data["error_type"], "trial_expired")
+        self.assertEqual(response.data["error"], [
+            "Your Direct Booking trial has expired. "
+            "Subscribe to continue using hotel actions."
+        ])
+
+    @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
+    def test_other_permission_errors_have_null_error_type(self):
+        response = self.client.get(
+            "/api/v1/admin/ota-rooms/selection/",
+            HTTP_X_BOOKING_ADMIN_KEY="wrong-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertIsNone(response.data["error_type"])
+
     def test_ota_only_availability_uses_room_type_count_without_physical_rooms(self):
         self.hotel.package = Hotel.Package.OTA
         self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT

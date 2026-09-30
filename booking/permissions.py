@@ -6,6 +6,7 @@ from django.utils.dateparse import parse_datetime
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import BasePermission
 
+from booking.exceptions import TrialExpired
 from booking.models import Hotel
 
 
@@ -54,9 +55,7 @@ class HasBookingAdminKey(BasePermission):
                 )
             )
             if trial_expired:
-                return self.deny(
-                    "Your Direct Booking trial has expired. Subscribe to continue using hotel actions."
-                )
+                raise TrialExpired()
         return True
 
 
