@@ -26,6 +26,7 @@ class BookingServiceTests(TestCase):
             core_business_id=77,
             name="Boston Properties",
             package=Hotel.Package.OTA_PMS,
+            inventory_mode=Hotel.InventoryMode.PHYSICAL_ROOM,
         )
         self.room_type = RoomType.objects.create(
             hotel=self.hotel,
@@ -72,7 +73,8 @@ class BookingServiceTests(TestCase):
 
     def test_ota_only_availability_uses_room_type_count_without_physical_rooms(self):
         self.hotel.package = Hotel.Package.OTA
-        self.hotel.save(update_fields=["package"])
+        self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
+        self.hotel.save(update_fields=["package", "inventory_mode"])
         self.room_type.default_inventory = 4
         self.room_type.save(update_fields=["default_inventory"])
         ensure_daily_inventory_for_room_type(
@@ -90,7 +92,8 @@ class BookingServiceTests(TestCase):
 
     def test_ota_only_confirmed_booking_does_not_assign_physical_rooms(self):
         self.hotel.package = Hotel.Package.OTA
-        self.hotel.save(update_fields=["package"])
+        self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
+        self.hotel.save(update_fields=["package", "inventory_mode"])
         booking, _ = create_booking(self.payload())
         booking.status = Booking.Status.CONFIRMED
         booking.save(update_fields=["status"])
@@ -160,7 +163,8 @@ class BookingServiceTests(TestCase):
     @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
     def test_ota_only_inventory_endpoint_uses_room_type_counts_and_has_no_assignments(self):
         self.hotel.package = Hotel.Package.OTA
-        self.hotel.save(update_fields=["package"])
+        self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
+        self.hotel.save(update_fields=["package", "inventory_mode"])
         headers = {
             "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
             "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
@@ -219,10 +223,58 @@ class BookingServiceTests(TestCase):
         self.assertIsNone(ota_record["assignment_id"])
         self.assertIsNone(ota_record["physical_room_id"])
 
+        physical_room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            core_physical_room_id=9901,
+            room_number="901",
+            ota_enabled=True,
+        )
+        switched = self.client.patch(
+            "/api/v1/admin/ota-rooms/selection/",
+            {"inventory_mode": Hotel.InventoryMode.PHYSICAL_ROOM},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(switched.status_code, 200, switched.data)
+        self.assertEqual(
+            switched.data["data"]["inventory_mode"],
+            Hotel.InventoryMode.PHYSICAL_ROOM,
+        )
+        physical_records = self.client.get("/api/v1/admin/ota-records/", **headers)
+        self.assertEqual(physical_records.data["data"]["count"], 1)
+        self.assertEqual(
+            physical_records.data["data"]["rooms"][0]["unassigned_quantity"],
+            2,
+        )
+
+        assignment = RoomAssignment.objects.create(
+            booking_room=booking.rooms.get(),
+            physical_room=physical_room,
+        )
+        assigned_records = self.client.get("/api/v1/admin/ota-records/", **headers)
+        assigned_record = assigned_records.data["data"]["rooms"][0]
+        self.assertEqual(assigned_record["assignment_id"], assignment.id)
+        self.assertEqual(len(assigned_record["assignments"]), 1)
+        self.assertEqual(assigned_record["unassigned_quantity"], 1)
+
+        switched_back = self.client.patch(
+            "/api/v1/admin/ota-rooms/selection/",
+            {"inventory_mode": Hotel.InventoryMode.ROOM_TYPE_COUNT},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(switched_back.status_code, 200, switched_back.data)
+        count_records = self.client.get("/api/v1/admin/ota-records/", **headers)
+        count_record = count_records.data["data"]["rooms"][0]
+        self.assertEqual(count_record["unassigned_quantity"], 0)
+        self.assertEqual(count_record["assignments"][0]["assignment_id"], assignment.id)
+
     @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
     def test_ota_only_scheduled_closure_keeps_booking_record_and_can_be_deleted(self):
         self.hotel.package = Hotel.Package.OTA
-        self.hotel.save(update_fields=["package"])
+        self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
+        self.hotel.save(update_fields=["package", "inventory_mode"])
         self.room_type.default_inventory = 3
         self.room_type.save(update_fields=["default_inventory"])
         ensure_daily_inventory_for_room_type(
@@ -273,7 +325,8 @@ class BookingServiceTests(TestCase):
     @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key", BOOKING_INVENTORY_WINDOW_DAYS=30)
     def test_ota_only_close_now_stays_closed_until_manual_reopen(self):
         self.hotel.package = Hotel.Package.OTA
-        self.hotel.save(update_fields=["package"])
+        self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
+        self.hotel.save(update_fields=["package", "inventory_mode"])
         self.room_type.default_inventory = 3
         self.room_type.save(update_fields=["default_inventory"])
         ensure_daily_inventory_for_room_type(
@@ -341,7 +394,8 @@ class BookingServiceTests(TestCase):
     @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
     def test_ota_closure_rejects_room_type_without_ota_rooms(self):
         self.hotel.package = Hotel.Package.OTA
-        self.hotel.save(update_fields=["package"])
+        self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
+        self.hotel.save(update_fields=["package", "inventory_mode"])
         self.room_type.default_inventory = 0
         self.room_type.save(update_fields=["default_inventory"])
         headers = {
@@ -369,7 +423,8 @@ class BookingServiceTests(TestCase):
     @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key", BOOKING_INVENTORY_WINDOW_DAYS=30)
     def test_ota_closure_rejects_duplicate_close_now_and_overlapping_schedules(self):
         self.hotel.package = Hotel.Package.OTA
-        self.hotel.save(update_fields=["package"])
+        self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
+        self.hotel.save(update_fields=["package", "inventory_mode"])
         self.room_type.default_inventory = 10
         self.room_type.save(update_fields=["default_inventory"])
         headers = {
@@ -418,7 +473,8 @@ class BookingServiceTests(TestCase):
     @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key", BOOKING_INVENTORY_WINDOW_DAYS=30)
     def test_close_now_and_schedule_use_highest_closed_count_not_sum(self):
         self.hotel.package = Hotel.Package.OTA
-        self.hotel.save(update_fields=["package"])
+        self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
+        self.hotel.save(update_fields=["package", "inventory_mode"])
         self.room_type.default_inventory = 10
         self.room_type.save(update_fields=["default_inventory"])
         today = timezone.localdate()
@@ -4521,12 +4577,15 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(response.status_code, 200, response.data)
         data = response.data["data"]
         self.assertEqual(data["ordering"], "-created_at")
-        self.assertEqual(data["count"], 2)
+        self.assertEqual(data["count"], 3)
         self.assertEqual(
             [record["booking_reference"] for record in data["rooms"]],
-            ["OTA-301-NEWER", "OTA-301-OLDER"],
+            ["OTA-301-NEWER", "OTA-DISABLED", "OTA-301-OLDER"],
         )
-        self.assertEqual([record["room_number"] for record in data["rooms"]], ["301", "301"])
+        self.assertEqual(
+            [record["room_number"] for record in data["rooms"]],
+            ["301", "302", "301"],
+        )
         newer.refresh_from_db()
         self.assertEqual(data["rooms"][0]["booking_code"], newer.booking_code)
         self.assertEqual(

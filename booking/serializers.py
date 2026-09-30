@@ -175,6 +175,7 @@ class HotelSerializer(serializers.ModelSerializer):
             "core_business_id", "name", "slug", "address", "phone", "cover_image_url",
             "features", "core_snapshot", "access_snapshot", "synced_at",
             "ota_invoice_charges", "pms_invoice_charges", "document_code",
+            "inventory_mode",
         ]
 
     def validate_base_currency(self, value):
@@ -576,7 +577,7 @@ class RoomTypeSerializer(serializers.ModelSerializer):
         ))
 
     def get_rooms(self, obj):
-        if obj.hotel.package == Hotel.Package.OTA:
+        if obj.hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
             return []
         room_type_snapshot = obj.core_snapshot or {}
         room_list = []
@@ -626,12 +627,12 @@ class RoomTypeSerializer(serializers.ModelSerializer):
         return room_list
 
     def get_total_room_count(self, obj):
-        if obj.hotel.package == Hotel.Package.OTA:
+        if obj.hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
             return obj.default_inventory
         return len(self._rooms(obj))
 
     def get_ota_enabled_room_count(self, obj):
-        if obj.hotel.package == Hotel.Package.OTA:
+        if obj.hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
             return obj.default_inventory
         return sum(1 for room in self._rooms(obj) if room.ota_enabled)
 
@@ -766,6 +767,10 @@ class OTARoomSelectionUpdateSerializer(serializers.Serializer):
         return attrs
 
 
+class OTAInventoryModeUpdateSerializer(serializers.Serializer):
+    inventory_mode = serializers.ChoiceField(choices=Hotel.InventoryMode.choices)
+
+
 class OTAInventoryRoomTypeSerializer(serializers.Serializer):
     room_type_id = serializers.IntegerField(min_value=1)
     total_rooms = serializers.IntegerField(min_value=0, max_value=32767)
@@ -815,9 +820,12 @@ class OTAInventoryClosureSerializer(serializers.ModelSerializer):
         rooms_to_close = attrs.get(
             "rooms_to_close", getattr(self.instance, "rooms_to_close", 0),
         )
-        if room_type and room_type.hotel.package != Hotel.Package.OTA:
+        if (
+            room_type
+            and room_type.hotel.inventory_mode != Hotel.InventoryMode.ROOM_TYPE_COUNT
+        ):
             raise serializers.ValidationError(
-                "Scheduled room-count closures are only available for OTA Only hotels."
+                "Scheduled room-count closures require room_type_count inventory mode."
             )
         if room_type and room_type.default_inventory <= 0:
             raise serializers.ValidationError({

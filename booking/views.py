@@ -67,6 +67,7 @@ from booking.serializers import (
     MealPlanSerializer,
     OTAHotelIdsQuerySerializer,
     OTAInventoryClosureSerializer,
+    OTAInventoryModeUpdateSerializer,
     OTAInventoryUpdateSerializer,
     OTARoomSelectionUpdateSerializer,
     OTARoomSaleStatusSerializer,
@@ -320,7 +321,7 @@ class PublicOTARoomTypeCatalogView(APIView):
             "core_active": True,
             "rate_plans__is_active": True,
         }
-        if hotel.package == Hotel.Package.OTA_PMS:
+        if hotel.inventory_mode == Hotel.InventoryMode.PHYSICAL_ROOM:
             room_type_filters.update({
                 "physical_rooms__is_active": True,
                 "physical_rooms__ota_enabled": True,
@@ -355,7 +356,7 @@ class PublicOTARoomTypeCatalogView(APIView):
                 ),
             ).distinct().order_by("name", "id")
         )
-        if hotel.package == Hotel.Package.OTA:
+        if hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
             for room_type in room_types:
                 room_type.ota_enabled_room_count = room_type.default_inventory
                 room_type.ota_open_room_count = room_type.default_inventory
@@ -538,8 +539,12 @@ class AdminOTAHotelIdsView(APIView):
     def post(self, request):
         serializer = OTAHotelIdsQuerySerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        base_filter = Q(package=Hotel.Package.OTA) | Q(
-            package=Hotel.Package.OTA_PMS,
+        base_filter = Q(
+            package__in=[Hotel.Package.OTA, Hotel.Package.OTA_PMS],
+            inventory_mode=Hotel.InventoryMode.ROOM_TYPE_COUNT,
+        ) | Q(
+            package__in=[Hotel.Package.OTA, Hotel.Package.OTA_PMS],
+            inventory_mode=Hotel.InventoryMode.PHYSICAL_ROOM,
             room_types__physical_rooms__is_active=True,
             room_types__physical_rooms__ota_enabled=True,
             room_types__physical_rooms__ota_sale_open=True,
@@ -1683,6 +1688,29 @@ class OTARoomSelectionView(APIView):
     business_scoped = True
 
     @staticmethod
+    def _total_booking_count(hotel, timeline_status="all"):
+        today = timezone.localdate()
+        live_statuses = [
+            Booking.Status.PENDING_PAYMENT,
+            Booking.Status.CONFIRMED,
+            Booking.Status.CHECKED_IN,
+        ]
+        queryset = Booking.objects.filter(hotel=hotel, source=Booking.Source.OTA)
+        active_today = Q(
+            status__in=live_statuses,
+            check_in__lte=today,
+            check_out__gt=today,
+        )
+        upcoming = Q(status__in=live_statuses, check_in__gt=today)
+        if timeline_status == "active_today":
+            queryset = queryset.filter(active_today)
+        elif timeline_status == "upcoming":
+            queryset = queryset.filter(upcoming)
+        elif timeline_status == "past":
+            queryset = queryset.exclude(active_today | upcoming)
+        return queryset.count()
+
+    @staticmethod
     def _hotel(request):
         core_business_id = getattr(request, "booking_core_business_id", None)
         if not core_business_id:
@@ -1897,11 +1925,9 @@ class OTARoomSelectionView(APIView):
             })
         total_rooms = sum(row["total_rooms"] for row in rows)
         today_available_ota_rooms = sum(row["available_rooms"] for row in rows)
-        total_booking_count = len({
-            record["booking_id"]
-            for row in rows
-            for record in row["ota_records"]
-        })
+        total_booking_count = OTARoomSelectionView._total_booking_count(
+            hotel, timeline_status,
+        )
         return {
             "direct_booking_package": hotel.package,
             "inventory_mode": "room_type_count",
@@ -2071,15 +2097,13 @@ class OTARoomSelectionView(APIView):
             })
         return {
             "direct_booking_package": hotel.package,
+            "inventory_mode": Hotel.InventoryMode.PHYSICAL_ROOM,
             "total_rooms": len(rooms),
             "total_ota_rooms": sum(int(room.ota_enabled) for room in rooms),
             "total_open_ota_rooms": sum(int(room.ota_enabled and room.ota_sale_open) for room in rooms),
-            "total_booking_count": len({
-                record["booking_id"]
-                for group in grouped.values()
-                for room in group["rooms"]
-                for record in room["ota_records"]
-            }),
+            "total_booking_count": OTARoomSelectionView._total_booking_count(
+                hotel, timeline_status,
+            ),
             "selected_room_ids": [room.id for room in rooms if room.ota_enabled],
             "deselected_room_ids": [room.id for room in rooms if not room.ota_enabled],
             "applied_timeline_status": timeline_status,
@@ -2091,7 +2115,7 @@ class OTARoomSelectionView(APIView):
         query = OTARoomTimelineQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         hotel = self._hotel(request)
-        if hotel.package == Hotel.Package.OTA:
+        if hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
             return success(self._ota_only_payload(
                 hotel,
                 timeline_status=query.validated_data["timeline_status"],
@@ -2105,9 +2129,33 @@ class OTARoomSelectionView(APIView):
         ))
 
     @transaction.atomic
+    def patch(self, request):
+        hotel = self._hotel(request)
+        serializer = OTAInventoryModeUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        inventory_mode = serializer.validated_data["inventory_mode"]
+        if hotel.inventory_mode != inventory_mode:
+            hotel.inventory_mode = inventory_mode
+            hotel.save(update_fields=["inventory_mode"])
+            room_types = hotel.room_types.filter(
+                core_active=True,
+                booking_enabled=True,
+            )
+            if inventory_mode == Hotel.InventoryMode.PHYSICAL_ROOM:
+                DailyInventory.objects.filter(
+                    room_type__in=room_types,
+                    stay_date__gte=timezone.localdate(),
+                ).update(closed_rooms=0)
+            for room_type in room_types:
+                ensure_daily_inventory_for_room_type(room_type)
+        if inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
+            return success(self._ota_only_payload(hotel, request=request))
+        return success(self._payload(hotel, request=request))
+
+    @transaction.atomic
     def put(self, request):
         hotel = self._hotel(request)
-        if hotel.package == Hotel.Package.OTA:
+        if hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
             serializer = OTAInventoryUpdateSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
             requested = serializer.validated_data["room_types"]
@@ -2339,14 +2387,16 @@ class OTARecordListView(APIView):
         }
 
     @staticmethod
-    def _ota_only_records(request, hotel):
+    def _booking_room_records(request, hotel):
         booking_rooms = BookingRoom.objects.filter(
             room_type__hotel=hotel,
             booking__source=Booking.Source.OTA,
-        ).select_related(
+        )
+        booking_rooms = booking_rooms.select_related(
             "room_type",
             "booking",
         ).prefetch_related(
+            "assignments__physical_room",
             "booking__guests__identity_documents",
             "booking__invoices",
             "booking__payments",
@@ -2358,6 +2408,35 @@ class OTARecordListView(APIView):
         records = []
         for booking_room in booking_rooms:
             booking = booking_room.booking
+            assignments = sorted(
+                booking_room.assignments.all(),
+                key=lambda assignment: (assignment.released_at is not None, assignment.id),
+            )
+            active_assignments = [
+                assignment for assignment in assignments
+                if assignment.released_at is None
+            ]
+            primary_assignment = active_assignments[0] if active_assignments else (
+                assignments[0] if assignments else None
+            )
+            primary_room = (
+                primary_assignment.physical_room if primary_assignment else None
+            )
+            assignment_payload = [
+                {
+                    "assignment_id": assignment.id,
+                    "assigned_at": assignment.assigned_at,
+                    "released_at": assignment.released_at,
+                    "physical_room_id": assignment.physical_room_id,
+                    "core_physical_room_id": assignment.physical_room.core_physical_room_id,
+                    "room_number": assignment.physical_room.room_number,
+                    "building_id": assignment.physical_room.core_building_id,
+                    "building": assignment.physical_room.building,
+                    "floor_id": assignment.physical_room.core_floor_id,
+                    "floor": assignment.physical_room.floor,
+                }
+                for assignment in assignments
+            ]
             guests = sorted(booking.guests.all(), key=lambda guest: guest.id)
             primary_guest = next((guest for guest in guests if guest.is_primary), None)
             paid_invoice_ids = {
@@ -2380,18 +2459,29 @@ class OTARecordListView(APIView):
             ]
             divisor = booking.nights * booking_room.quantity
             records.append({
-                "assignment_id": None,
-                "assigned_at": None,
-                "released_at": None,
+                "booking_room_id": booking_room.id,
+                "assignment_id": primary_assignment.id if primary_assignment else None,
+                "assigned_at": primary_assignment.assigned_at if primary_assignment else None,
+                "released_at": primary_assignment.released_at if primary_assignment else None,
                 "created_at": booking.created_at,
-                "physical_room_id": None,
-                "core_physical_room_id": None,
-                "room_number": None,
-                "building_id": None,
-                "building": None,
-                "floor_id": None,
-                "floor": None,
-                **OTARecordListView._room_type_card_details(booking_room.room_type),
+                "physical_room_id": primary_room.id if primary_room else None,
+                "core_physical_room_id": primary_room.core_physical_room_id if primary_room else None,
+                "room_number": primary_room.room_number if primary_room else None,
+                "building_id": primary_room.core_building_id if primary_room else None,
+                "building": primary_room.building if primary_room else None,
+                "floor_id": primary_room.core_floor_id if primary_room else None,
+                "floor": primary_room.floor if primary_room else None,
+                **(
+                    OTARoomSelectionView._room_card_details(primary_room)
+                    if primary_room
+                    else OTARecordListView._room_type_card_details(booking_room.room_type)
+                ),
+                "assignments": assignment_payload,
+                "unassigned_quantity": (
+                    max(booking_room.quantity - len(active_assignments), 0)
+                    if hotel.inventory_mode == Hotel.InventoryMode.PHYSICAL_ROOM
+                    else 0
+                ),
                 "booking_id": str(booking.id),
                 "booking_code": booking.booking_code,
                 "booking_reference": booking.reference,
@@ -2426,106 +2516,9 @@ class OTARecordListView(APIView):
 
     def get(self, request):
         hotel = OTARoomSelectionView._hotel(request)
-        if hotel.package == Hotel.Package.OTA:
-            records = self._ota_only_records(request, hotel)
-            return success({
-                "inventory_mode": "room_type_count",
-                "ordering": "-created_at",
-                "count": len(records),
-                "rooms": records,
-            })
-        assignments = RoomAssignment.objects.filter(
-            physical_room__hotel=hotel,
-            physical_room__is_active=True,
-            physical_room__ota_enabled=True,
-            booking_room__booking__source=Booking.Source.OTA,
-        ).select_related(
-            "physical_room",
-            "physical_room__room_type",
-            "booking_room",
-            "booking_room__booking",
-        ).prefetch_related(
-            "booking_room__booking__guests__identity_documents",
-            "booking_room__booking__invoices",
-            "booking_room__booking__payments",
-        ).order_by(
-            "-booking_room__booking__created_at",
-            "-id",
-        )
-
-        records = []
-        for assignment in assignments:
-            room = assignment.physical_room
-            booking_room = assignment.booking_room
-            booking = booking_room.booking
-            primary_guest = next(
-                (guest for guest in booking.guests.all() if guest.is_primary),
-                None,
-            )
-            guests = sorted(booking.guests.all(), key=lambda guest: guest.id)
-            paid_invoice_ids = {
-                payment.invoice_id
-                for payment in booking.payments.all()
-                if payment.invoice_id and payment.receipt_number
-            }
-            invoices = [
-                {
-                    "id": str(invoice.id),
-                    "invoice_number": invoice.invoice_number,
-                    "status": invoice.status,
-                    "total": invoice.total,
-                    "currency": invoice.currency,
-                    "invoice_pdf_url": _invoice_pdf_url(
-                        request, booking, invoice, paid_invoice_ids,
-                    ),
-                }
-                for invoice in booking.invoices.all()
-            ]
-            divisor = booking.nights * booking_room.quantity
-            records.append({
-                "assignment_id": assignment.id,
-                "assigned_at": assignment.assigned_at,
-                "released_at": assignment.released_at,
-                "created_at": booking.created_at,
-                "physical_room_id": room.id,
-                "core_physical_room_id": room.core_physical_room_id,
-                "room_number": room.room_number,
-                "building_id": room.core_building_id,
-                "building": room.building,
-                "floor_id": room.core_floor_id,
-                "floor": room.floor,
-                **OTARoomSelectionView._room_card_details(room),
-                "booking_id": str(booking.id),
-                "booking_code": booking.booking_code,
-                "booking_reference": booking.reference,
-                "booking_status": booking.status,
-                "source": booking.source,
-                "check_in": booking.check_in,
-                "check_out": booking.check_out,
-                "nights": booking.nights,
-                "quantity": booking_room.quantity,
-                "adults": booking_room.adults,
-                "children": booking_room.children,
-                "contact_name": booking.contact_name,
-                "contact_phone": booking.contact_phone,
-                "guest": {
-                    "id": primary_guest.id if primary_guest else None,
-                    "name": primary_guest.name if primary_guest else booking.contact_name,
-                    "phone": primary_guest.phone if primary_guest else booking.contact_phone,
-                },
-                "guests": GuestSerializer(guests, many=True).data,
-                "amount": booking_room.total,
-                "price_per_night": booking_room.total / divisor if divisor > 0 else booking_room.total,
-                "currency": booking.currency,
-                "invoice_count": len(invoices),
-                "invoices": invoices,
-                "stay_bill_url": f"/api/v1/admin/bookings/{booking.id}/stay-bill/",
-                "invoice_url": booking_invoice_url(booking),
-                "receipt_url": booking_receipt_url(booking),
-            })
-
+        records = self._booking_room_records(request, hotel)
         return success({
-            "inventory_mode": "physical_room",
+            "inventory_mode": hotel.inventory_mode,
             "ordering": "-created_at",
             "count": len(records),
             "rooms": records,

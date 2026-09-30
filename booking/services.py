@@ -267,7 +267,7 @@ def ensure_daily_inventory_for_room_type(room_type, start_date=None, days=None, 
     """
     room_type = RoomType.objects.select_for_update().get(pk=room_type.pk)
     dates = inventory_window_dates(start_date=start_date, days=days)
-    if room_type.hotel.package == Hotel.Package.OTA:
+    if room_type.hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
         # OTA-only hotels sell an abstract room-type allotment and do not need
         # physical rooms. The hotel-managed default inventory is authoritative.
         total_rooms = room_type.default_inventory if total_rooms is None else total_rooms
@@ -285,7 +285,7 @@ def ensure_daily_inventory_for_room_type(room_type, start_date=None, days=None, 
             stay_date=day,
             total_rooms=(
                 total_rooms
-                if room_type.hotel.package == Hotel.Package.OTA
+                if room_type.hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT
                 else sellable_room_count_for_date(room_type, day, total_rooms)
             ),
         )
@@ -297,7 +297,7 @@ def ensure_daily_inventory_for_room_type(room_type, start_date=None, days=None, 
         committed_rooms = row.held_rooms + row.reserved_rooms
         date_total_rooms = (
             total_rooms
-            if room_type.hotel.package == Hotel.Package.OTA
+            if room_type.hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT
             else sellable_room_count_for_date(room_type, row.stay_date, total_rooms)
         )
         safe_total_rooms = max(date_total_rooms, committed_rooms)
@@ -310,7 +310,7 @@ def ensure_daily_inventory_for_room_type(room_type, start_date=None, days=None, 
         room_type.default_inventory = total_rooms
         room_type.save(update_fields=["default_inventory"])
 
-    if room_type.hotel.package == Hotel.Package.OTA:
+    if room_type.hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
         recompute_ota_inventory_closures(room_type, dates[0], dates[-1])
 
     return {
@@ -987,7 +987,7 @@ def auto_assign_physical_rooms_for_booking(booking):
     booking = Booking.objects.select_for_update().prefetch_related("rooms__assignments").get(pk=booking.pk)
     if booking.status != Booking.Status.CONFIRMED:
         return []
-    if booking.hotel.package == Hotel.Package.OTA:
+    if booking.hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
         return []
 
     created_assignments = []
@@ -1108,7 +1108,7 @@ def availability_for_hotels(
             else room_type.default_inventory
             for day in dates
         ], default=0)
-        if room_type.hotel.package != Hotel.Package.OTA:
+        if room_type.hotel.inventory_mode == Hotel.InventoryMode.PHYSICAL_ROOM:
             # PMS-backed packages keep their existing physical-room capacity
             # and operational-status constraints.
             available = min(
@@ -1118,7 +1118,7 @@ def availability_for_hotels(
                     default=0,
                 ),
             )
-        if room_type.hotel.package == Hotel.Package.OTA_PMS:
+        if room_type.hotel.inventory_mode == Hotel.InventoryMode.PHYSICAL_ROOM:
             # DailyInventory is shared PMS capacity. Public OTA sales are
             # additionally limited to the hotel's selected/open OTA room pool.
             available = min(

@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 def ota_notification_payload(booking, stored_payload):
     """Add current PMS room assignments to OTA+PMS notification payloads."""
     payload = dict(stored_payload or {})
-    if booking.hotel.package != Hotel.Package.OTA_PMS:
+    if booking.hotel.inventory_mode != Hotel.InventoryMode.PHYSICAL_ROOM:
         return payload
 
     payload_rooms = [dict(item) for item in payload.get("rooms", [])]
@@ -118,7 +118,7 @@ def create_and_queue_ota_booking_notification(booking_id, event_type="new"):
             for room in rooms
         ],
     }
-    if booking.hotel.package == Hotel.Package.OTA_PMS:
+    if booking.hotel.inventory_mode == Hotel.InventoryMode.PHYSICAL_ROOM:
         payload = ota_notification_payload(booking, payload)
     prefix = {"new": "New", "updated": "Updated", "cancelled": "Cancelled"}[event_type]
     body = f"{prefix}: {booking.booking_code}"

@@ -181,6 +181,12 @@ def sync_business_from_core(core_business_id: int, client=None, *, preserve_acce
         "access_snapshot": access_data,
         "synced_at": now,
     }
+    if not existing_hotel:
+        hotel_defaults["inventory_mode"] = (
+            Hotel.InventoryMode.ROOM_TYPE_COUNT
+            if package == Hotel.Package.OTA
+            else Hotel.InventoryMode.PHYSICAL_ROOM
+        )
     if preserve_access and existing_hotel:
         # Catalog-only bulk syncs must never downgrade or otherwise replace
         # the locally active subscription/package projection.
@@ -451,7 +457,7 @@ def sync_business_from_core(core_business_id: int, client=None, *, preserve_acce
     for room_type in synced_room_types:
         active_rooms = (
             room_type.default_inventory
-            if hotel.package == Hotel.Package.OTA
+            if hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT
             else active_sellable_room_count(room_type)
         )
         result = ensure_daily_inventory_for_room_type(room_type, total_rooms=active_rooms)
