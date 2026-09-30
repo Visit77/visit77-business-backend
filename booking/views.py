@@ -358,8 +358,8 @@ class PublicOTARoomTypeCatalogView(APIView):
         )
         if hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
             for room_type in room_types:
-                room_type.ota_enabled_room_count = room_type.default_inventory
-                room_type.ota_open_room_count = room_type.default_inventory
+                room_type.ota_enabled_room_count = room_type.room_type_count_inventory
+                room_type.ota_open_room_count = room_type.room_type_count_inventory
         context = {
             "request": request,
             "guest_market": query.validated_data.get("guest_market"),
@@ -1718,7 +1718,10 @@ class OTARoomSelectionView(APIView):
         hotel = Hotel.objects.filter(core_business_id=core_business_id, is_active=True).first()
         if not hotel:
             raise NotFound("Hotel is not synced in the booking engine.")
-        if hotel.package not in [Hotel.Package.OTA, Hotel.Package.OTA_PMS]:
+        if (
+            hotel.package not in [Hotel.Package.OTA, Hotel.Package.OTA_PMS]
+            and not hotel.direct_booking_trial_active
+        ):
             raise PermissionDenied("OTA room selection is only available for OTA or OTA + PMS packages.")
         return hotel
 
@@ -1819,7 +1822,7 @@ class OTARoomSelectionView(APIView):
                 "close_all": closure.close_all,
                 "rooms_to_close": closure.rooms_to_close,
                 "closed_room_count": (
-                    closure.room_type.default_inventory
+                    closure.room_type.room_type_count_inventory
                     if closure.close_all else closure.rooms_to_close
                 ),
                 "note": closure.note,
@@ -1907,13 +1910,16 @@ class OTARoomSelectionView(APIView):
             closed_rooms = today_inventory.closed_rooms if today_inventory else 0
             available_rooms = (
                 today_inventory.available_rooms
-                if today_inventory else max(room_type.default_inventory - booked_rooms, 0)
+                if today_inventory else max(
+                    room_type.room_type_count_inventory - booked_rooms,
+                    0,
+                )
             )
             rows.append({
                 "room_type_id": room_type.id,
                 "core_room_type_id": room_type.core_room_type_id,
                 "room_type_name": room_type.name,
-                "total_rooms": room_type.default_inventory,
+                "total_rooms": room_type.room_type_count_inventory,
                 "booked_rooms": booked_rooms,
                 "closed_rooms": closed_rooms,
                 "available_rooms": available_rooms,
@@ -2197,8 +2203,8 @@ class OTARoomSelectionView(APIView):
                 })
             for item in requested:
                 room_type = room_types_by_id[item["room_type_id"]]
-                room_type.default_inventory = item["total_rooms"]
-                room_type.save(update_fields=["default_inventory"])
+                room_type.room_type_count_inventory = item["total_rooms"]
+                room_type.save(update_fields=["room_type_count_inventory"])
                 ensure_daily_inventory_for_room_type(
                     room_type,
                     total_rooms=item["total_rooms"],

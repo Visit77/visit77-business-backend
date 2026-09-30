@@ -90,14 +90,20 @@ class Hotel(models.Model):
         return bool((self.features or {}).get(key))
 
     @property
-    def public_booking_enabled(self):
-        snapshot = self.access_snapshot or {}
-        trial = snapshot.get("trial") or {}
-        trial_ends_at = parse_datetime(str(trial.get("ends_at") or "")) if trial else None
-        if trial and (
+    def direct_booking_trial_active(self):
+        trial = (self.access_snapshot or {}).get("trial") or {}
+        trial_ends_at = (
+            parse_datetime(str(trial.get("ends_at") or "")) if trial else None
+        )
+        return bool(
             trial.get("is_active", False)
             and (trial_ends_at is None or trial_ends_at > timezone.now())
-        ):
+        )
+
+    @property
+    def public_booking_enabled(self):
+        snapshot = self.access_snapshot or {}
+        if self.direct_booking_trial_active:
             return False
         return snapshot.get("public_booking_enabled", True) is not False
 
@@ -188,6 +194,7 @@ class RoomType(models.Model):
     breakfast_custom_foreign_base_price = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     breakfast_custom_foreign_usd_display_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     default_inventory = models.PositiveSmallIntegerField(default=0)
+    room_type_count_inventory = models.PositiveSmallIntegerField(default=0)
     booking_enabled = models.BooleanField(default=True)
     core_active = models.BooleanField(default=True)
     core_snapshot = models.JSONField(default=dict, blank=True)

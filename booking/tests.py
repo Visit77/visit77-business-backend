@@ -36,6 +36,7 @@ class BookingServiceTests(TestCase):
             max_children=1,
             max_occupancy=3,
             default_inventory=3,
+            room_type_count_inventory=3,
             core_snapshot={
                 "extra_bed_available": True,
                 "extra_bed_quantity": 1,
@@ -107,12 +108,78 @@ class BookingServiceTests(TestCase):
         self.assertEqual(response.status_code, 403, response.data)
         self.assertIsNone(response.data["error_type"])
 
+    @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
+    def test_active_trial_keeps_free_package_and_allows_admin_inventory(self):
+        self.hotel.package = Hotel.Package.FREE
+        self.hotel.access_snapshot = {
+            "package": Hotel.Package.FREE,
+            "effective_package": Hotel.Package.OTA_PMS,
+            "trial": {
+                "is_active": True,
+                "ends_at": (timezone.now() + timedelta(days=30)).isoformat(),
+            },
+            "public_booking_enabled": False,
+        }
+        self.hotel.save(update_fields=["package", "access_snapshot"])
+
+        response = self.client.get(
+            "/api/v1/admin/ota-rooms/selection/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            response.data["data"]["direct_booking_package"],
+            Hotel.Package.FREE,
+        )
+        self.assertFalse(self.hotel.public_booking_enabled)
+
+    def test_core_sync_does_not_store_trial_effective_package_as_subscription(self):
+        class TrialCoreClient:
+            @staticmethod
+            def provisioning_bundle(core_business_id):
+                return {
+                    "business": {
+                        "id": core_business_id,
+                        "name": "Trial Hotel",
+                        "status": True,
+                    },
+                    "access": {
+                        "package": Hotel.Package.FREE,
+                        "effective_package": Hotel.Package.OTA_PMS,
+                        "effective_features": {
+                            "room_catalog": True,
+                            "room_assignment": True,
+                        },
+                        "trial": {
+                            "is_active": True,
+                            "ends_at": (
+                                timezone.now() + timedelta(days=30)
+                            ).isoformat(),
+                        },
+                        "public_booking_enabled": False,
+                    },
+                    "room_types": [],
+                    "physical_rooms": [],
+                }
+
+        synced = sync_business_from_core(9090, client=TrialCoreClient())
+        hotel = Hotel.objects.get(id=synced["hotel_id"])
+
+        self.assertEqual(hotel.package, Hotel.Package.FREE)
+        self.assertTrue(hotel.direct_booking_trial_active)
+        self.assertTrue(hotel.features["room_assignment"])
+
     def test_ota_only_availability_uses_room_type_count_without_physical_rooms(self):
         self.hotel.package = Hotel.Package.OTA
         self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
         self.hotel.save(update_fields=["package", "inventory_mode"])
         self.room_type.default_inventory = 4
-        self.room_type.save(update_fields=["default_inventory"])
+        self.room_type.room_type_count_inventory = 4
+        self.room_type.save(update_fields=[
+            "default_inventory", "room_type_count_inventory",
+        ])
         ensure_daily_inventory_for_room_type(
             self.room_type,
             start_date=self.check_in,
@@ -218,6 +285,7 @@ class BookingServiceTests(TestCase):
         self.assertEqual(updated.status_code, 200, updated.data)
         self.room_type.refresh_from_db()
         self.assertEqual(self.room_type.default_inventory, 7)
+        self.assertEqual(self.room_type.room_type_count_inventory, 7)
         payload = updated.data["data"]
         self.assertEqual(payload["inventory_mode"], "room_type_count")
         self.assertFalse(payload["assignment_required"])
@@ -277,6 +345,9 @@ class BookingServiceTests(TestCase):
             switched.data["data"]["inventory_mode"],
             Hotel.InventoryMode.PHYSICAL_ROOM,
         )
+        self.room_type.refresh_from_db()
+        self.assertEqual(self.room_type.default_inventory, 1)
+        self.assertEqual(self.room_type.room_type_count_inventory, 7)
         physical_records = self.client.get("/api/v1/admin/ota-records/", **headers)
         self.assertEqual(physical_records.data["data"]["count"], 1)
         self.assertEqual(
@@ -301,6 +372,10 @@ class BookingServiceTests(TestCase):
             **headers,
         )
         self.assertEqual(switched_back.status_code, 200, switched_back.data)
+        self.assertEqual(switched_back.data["data"]["total_rooms"], 7)
+        self.room_type.refresh_from_db()
+        self.assertEqual(self.room_type.default_inventory, 7)
+        self.assertEqual(self.room_type.room_type_count_inventory, 7)
         count_records = self.client.get("/api/v1/admin/ota-records/", **headers)
         count_record = count_records.data["data"]["rooms"][0]
         self.assertEqual(count_record["unassigned_quantity"], 0)
@@ -312,7 +387,10 @@ class BookingServiceTests(TestCase):
         self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
         self.hotel.save(update_fields=["package", "inventory_mode"])
         self.room_type.default_inventory = 3
-        self.room_type.save(update_fields=["default_inventory"])
+        self.room_type.room_type_count_inventory = 3
+        self.room_type.save(update_fields=[
+            "default_inventory", "room_type_count_inventory",
+        ])
         ensure_daily_inventory_for_room_type(
             self.room_type,
             start_date=self.check_in,
@@ -364,7 +442,10 @@ class BookingServiceTests(TestCase):
         self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
         self.hotel.save(update_fields=["package", "inventory_mode"])
         self.room_type.default_inventory = 3
-        self.room_type.save(update_fields=["default_inventory"])
+        self.room_type.room_type_count_inventory = 3
+        self.room_type.save(update_fields=[
+            "default_inventory", "room_type_count_inventory",
+        ])
         ensure_daily_inventory_for_room_type(
             self.room_type,
             start_date=timezone.localdate(),
@@ -433,7 +514,10 @@ class BookingServiceTests(TestCase):
         self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
         self.hotel.save(update_fields=["package", "inventory_mode"])
         self.room_type.default_inventory = 0
-        self.room_type.save(update_fields=["default_inventory"])
+        self.room_type.room_type_count_inventory = 0
+        self.room_type.save(update_fields=[
+            "default_inventory", "room_type_count_inventory",
+        ])
         headers = {
             "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
             "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
@@ -462,7 +546,10 @@ class BookingServiceTests(TestCase):
         self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
         self.hotel.save(update_fields=["package", "inventory_mode"])
         self.room_type.default_inventory = 10
-        self.room_type.save(update_fields=["default_inventory"])
+        self.room_type.room_type_count_inventory = 10
+        self.room_type.save(update_fields=[
+            "default_inventory", "room_type_count_inventory",
+        ])
         headers = {
             "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
             "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
@@ -512,7 +599,10 @@ class BookingServiceTests(TestCase):
         self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
         self.hotel.save(update_fields=["package", "inventory_mode"])
         self.room_type.default_inventory = 10
-        self.room_type.save(update_fields=["default_inventory"])
+        self.room_type.room_type_count_inventory = 10
+        self.room_type.save(update_fields=[
+            "default_inventory", "room_type_count_inventory",
+        ])
         today = timezone.localdate()
         ensure_daily_inventory_for_room_type(self.room_type, start_date=today, days=30)
         headers = {

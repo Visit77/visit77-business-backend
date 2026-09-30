@@ -131,11 +131,10 @@ def sync_business_from_core(core_business_id: int, client=None, *, preserve_acce
     access_data = bundle.get("access") or {}
     existing_hotel = Hotel.objects.filter(core_business_id=core_business_id).first()
     package = (
-        access_data.get("effective_package")
-        or access_data.get("package")
+        access_data.get("package")
         or business_data.get("hotel_package")
         or (existing_hotel.package if existing_hotel else None)
-        or Hotel.Package.OTA
+        or Hotel.Package.FREE
     )
     features = (
         access_data.get("effective_features")
@@ -456,7 +455,7 @@ def sync_business_from_core(core_business_id: int, client=None, *, preserve_acce
     inventory_updated = 0
     for room_type in synced_room_types:
         active_rooms = (
-            room_type.default_inventory
+            room_type.room_type_count_inventory
             if hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT
             else active_sellable_room_count(room_type)
         )

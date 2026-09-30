@@ -270,7 +270,11 @@ def ensure_daily_inventory_for_room_type(room_type, start_date=None, days=None, 
     if room_type.hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
         # OTA-only hotels sell an abstract room-type allotment and do not need
         # physical rooms. The hotel-managed default inventory is authoritative.
-        total_rooms = room_type.default_inventory if total_rooms is None else total_rooms
+        total_rooms = (
+            room_type.room_type_count_inventory
+            if total_rooms is None
+            else total_rooms
+        )
     else:
         total_rooms = active_sellable_room_count(room_type) if total_rooms is None else total_rooms
 
@@ -306,9 +310,18 @@ def ensure_daily_inventory_for_room_type(room_type, start_date=None, days=None, 
             row.save(update_fields=["total_rooms"])
             updated += 1
 
+    inventory_update_fields = []
     if room_type.default_inventory != total_rooms:
         room_type.default_inventory = total_rooms
-        room_type.save(update_fields=["default_inventory"])
+        inventory_update_fields.append("default_inventory")
+    if (
+        room_type.hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT
+        and room_type.room_type_count_inventory != total_rooms
+    ):
+        room_type.room_type_count_inventory = total_rooms
+        inventory_update_fields.append("room_type_count_inventory")
+    if inventory_update_fields:
+        room_type.save(update_fields=inventory_update_fields)
 
     if room_type.hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
         recompute_ota_inventory_closures(room_type, dates[0], dates[-1])
@@ -1105,7 +1118,11 @@ def availability_for_hotels(
         available = min([
             inventory[(room_type.id, day)].available_rooms
             if (room_type.id, day) in inventory
-            else room_type.default_inventory
+            else (
+                room_type.room_type_count_inventory
+                if room_type.hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT
+                else room_type.default_inventory
+            )
             for day in dates
         ], default=0)
         if room_type.hotel.inventory_mode == Hotel.InventoryMode.PHYSICAL_ROOM:
@@ -1336,11 +1353,16 @@ def availability_for_hotel_with_display(
 
 
 def _lock_inventory(room_type, dates):
+    initial_total_rooms = (
+        room_type.room_type_count_inventory
+        if room_type.hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT
+        else room_type.default_inventory
+    )
     for day in dates:
         DailyInventory.objects.get_or_create(
             room_type=room_type,
             stay_date=day,
-            defaults={"total_rooms": room_type.default_inventory},
+            defaults={"total_rooms": initial_total_rooms},
         )
     return list(DailyInventory.objects.select_for_update().filter(room_type=room_type, stay_date__in=dates).order_by("stay_date"))
 

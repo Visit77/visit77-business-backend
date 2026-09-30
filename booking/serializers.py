@@ -628,12 +628,12 @@ class RoomTypeSerializer(serializers.ModelSerializer):
 
     def get_total_room_count(self, obj):
         if obj.hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
-            return obj.default_inventory
+            return obj.room_type_count_inventory
         return len(self._rooms(obj))
 
     def get_ota_enabled_room_count(self, obj):
         if obj.hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
-            return obj.default_inventory
+            return obj.room_type_count_inventory
         return sum(1 for room in self._rooms(obj) if room.ota_enabled)
 
     class Meta:
@@ -805,7 +805,11 @@ class OTAInventoryClosureSerializer(serializers.ModelSerializer):
 
     @staticmethod
     def get_closed_room_count(obj):
-        return obj.room_type.default_inventory if obj.close_all else obj.rooms_to_close
+        return (
+            obj.room_type.room_type_count_inventory
+            if obj.close_all
+            else obj.rooms_to_close
+        )
 
     def validate(self, attrs):
         validate_request_business_scope(self, attrs)
@@ -827,7 +831,7 @@ class OTAInventoryClosureSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "Scheduled room-count closures require room_type_count inventory mode."
             )
-        if room_type and room_type.default_inventory <= 0:
+        if room_type and room_type.room_type_count_inventory <= 0:
             raise serializers.ValidationError({
                 "room_type": "Add at least one OTA room before creating a closure."
             })
@@ -849,10 +853,15 @@ class OTAInventoryClosureSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({
                 "rooms_to_close": "Enter at least one room or set close_all to true.",
             })
-        if room_type and not close_all and rooms_to_close > room_type.default_inventory:
+        if (
+            room_type
+            and not close_all
+            and rooms_to_close > room_type.room_type_count_inventory
+        ):
             raise serializers.ValidationError({
                 "rooms_to_close": (
-                    f"Cannot close more than the {room_type.default_inventory} OTA rooms available."
+                    "Cannot close more than the "
+                    f"{room_type.room_type_count_inventory} OTA rooms available."
                 )
             })
         if close_all:
