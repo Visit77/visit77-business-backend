@@ -394,7 +394,7 @@ class PublicHotelRoomTypeCatalogView(APIView):
         query = PublicOTARoomTypeCatalogQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         hotel = Hotel.objects.filter(core_business_id=core_business_id, is_active=True).first()
-        if not hotel or not hotel.public_booking_enabled:
+        if not hotel:
             raise NotFound("Hotel is not available in the booking engine.")
 
         room_types = list(

@@ -4538,6 +4538,33 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(query_response.status_code, 200, query_response.data)
         self.assertEqual(len(query_response.data["data"]["room_types"]), 2)
 
+    def test_public_room_type_catalog_does_not_require_package_or_trial(self):
+        self.hotel.package = Hotel.Package.FREE
+        self.hotel.access_snapshot = {
+            "public_booking_enabled": False,
+            "trial": {
+                "is_active": False,
+                "ends_at": (timezone.now() - timedelta(days=1)).isoformat(),
+            },
+        }
+        self.hotel.save(update_fields=["package", "access_snapshot"])
+
+        response = self.client.get(
+            "/api/v1/public/room-types/",
+            {"business_id": self.hotel.core_business_id},
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            response.data["data"]["hotel"]["direct_booking_package"],
+            Hotel.Package.FREE,
+        )
+        self.assertEqual(len(response.data["data"]["room_types"]), 1)
+        self.assertEqual(
+            response.data["data"]["room_types"][0]["room_type_id"],
+            self.room_type.id,
+        )
+
     def test_public_meal_plans_are_hotel_level_and_do_not_require_room_links(self):
         standalone_plan = MealPlan.objects.create(
             hotel=self.hotel,
