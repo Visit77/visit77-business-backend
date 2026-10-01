@@ -1815,6 +1815,13 @@ class OTARoomSelectionView(APIView):
                 stay_date=today,
             )
         }
+        physical_totals = dict(PhysicalRoom.objects.filter(
+            hotel=hotel,
+            room_type__in=room_types,
+            is_active=True,
+        ).values("room_type_id").annotate(
+            total=Count("id"),
+        ).values_list("room_type_id", "total"))
         closures_by_room_type = defaultdict(list)
         for closure in OTAInventoryClosure.objects.filter(
             room_type__in=room_types,
@@ -1917,6 +1924,13 @@ class OTARoomSelectionView(APIView):
             records = records_by_room_type.get(room_type.id, [])
             today_inventory = inventory_today.get(room_type.id)
             count_inventory = room_type.room_type_count_inventory
+            # total_rooms is the hotel's PMS/catalog room total. The OTA
+            # allotment is independent and must never be auto-selected merely
+            # because the hotel subscribed to OTA + PMS.
+            catalog_total = physical_totals.get(
+                room_type.id,
+                count_inventory,
+            )
             booked_rooms = (
                 today_inventory.held_rooms + today_inventory.reserved_rooms
                 if today_inventory else active_quantities.get(room_type.id, 0)
@@ -1939,7 +1953,8 @@ class OTARoomSelectionView(APIView):
                 "room_type_id": room_type.id,
                 "core_room_type_id": room_type.core_room_type_id,
                 "room_type_name": room_type.name,
-                "total_rooms": count_inventory,
+                "total_rooms": catalog_total,
+                "total_ota_rooms": count_inventory,
                 "booked_rooms": booked_rooms,
                 "closed_rooms": closed_rooms,
                 "available_rooms": available_rooms,
@@ -1950,6 +1965,7 @@ class OTARoomSelectionView(APIView):
                 "close_conditions": closures_by_room_type.get(room_type.id, []),
             })
         total_rooms = sum(row["total_rooms"] for row in rows)
+        total_ota_rooms = sum(row["total_ota_rooms"] for row in rows)
         today_available_ota_rooms = sum(row["available_rooms"] for row in rows)
         total_booking_count = OTARoomSelectionView._total_booking_count(
             hotel, timeline_status,
@@ -1959,7 +1975,7 @@ class OTARoomSelectionView(APIView):
             "inventory_mode": "room_type_count",
             "assignment_required": False,
             "total_rooms": total_rooms,
-            "total_ota_rooms": total_rooms,
+            "total_ota_rooms": total_ota_rooms,
             "today_available_ota_rooms": today_available_ota_rooms,
             "total_booking_count": total_booking_count,
             "applied_timeline_status": timeline_status,
@@ -2164,12 +2180,24 @@ class OTARoomSelectionView(APIView):
         serializer.is_valid(raise_exception=True)
         inventory_mode = serializer.validated_data["inventory_mode"]
         if hotel.inventory_mode != inventory_mode:
+            previous_inventory_mode = hotel.inventory_mode
             hotel.inventory_mode = inventory_mode
             hotel.save(update_fields=["inventory_mode"])
             room_types = hotel.room_types.filter(
                 core_active=True,
                 booking_enabled=True,
             )
+            if (
+                previous_inventory_mode == Hotel.InventoryMode.PHYSICAL_ROOM
+                and inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT
+            ):
+                # Physical inventory used to be copied into
+                # room_type_count_inventory during initial migration. For a
+                # hotel that has never configured count mode, switching modes
+                # must start from zero rather than inherit physical-room totals.
+                room_types.filter(
+                    room_type_count_configured=False,
+                ).update(room_type_count_inventory=0)
             if inventory_mode == Hotel.InventoryMode.PHYSICAL_ROOM:
                 DailyInventory.objects.filter(
                     room_type__in=room_types,
@@ -2227,7 +2255,11 @@ class OTARoomSelectionView(APIView):
             for item in requested:
                 room_type = room_types_by_id[item["room_type_id"]]
                 room_type.room_type_count_inventory = item["total_rooms"]
-                room_type.save(update_fields=["room_type_count_inventory"])
+                room_type.room_type_count_configured = True
+                room_type.save(update_fields=[
+                    "room_type_count_inventory",
+                    "room_type_count_configured",
+                ])
                 ensure_daily_inventory_for_room_type(
                     room_type,
                     total_rooms=item["total_rooms"],

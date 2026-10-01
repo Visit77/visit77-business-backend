@@ -291,6 +291,74 @@ class BookingServiceTests(TestCase):
         }])
 
     @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
+    def test_first_count_mode_switch_does_not_copy_physical_inventory(self):
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+        PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            core_physical_room_id=9899,
+            room_number="899",
+            ota_enabled=True,
+        )
+        self.room_type.default_inventory = 9
+        self.room_type.room_type_count_inventory = 9
+        self.room_type.room_type_count_configured = False
+        self.room_type.save(update_fields=[
+            "default_inventory",
+            "room_type_count_inventory",
+            "room_type_count_configured",
+        ])
+
+        first_switch = self.client.patch(
+            "/api/v1/admin/ota-rooms/selection/",
+            {"inventory_mode": Hotel.InventoryMode.ROOM_TYPE_COUNT},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(first_switch.status_code, 200, first_switch.data)
+        self.assertEqual(first_switch.data["data"]["total_rooms"], 1)
+        self.assertEqual(first_switch.data["data"]["total_ota_rooms"], 0)
+        self.assertEqual(
+            first_switch.data["data"]["room_types"][0]["total_rooms"],
+            1,
+        )
+        self.assertEqual(
+            first_switch.data["data"]["room_types"][0]["total_ota_rooms"],
+            0,
+        )
+
+        configured = self.client.put(
+            "/api/v1/admin/ota-rooms/selection/",
+            {"room_types": [{
+                "room_type_id": self.room_type.id,
+                "total_rooms": 4,
+            }]},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(configured.status_code, 200, configured.data)
+        self.room_type.refresh_from_db()
+        self.assertTrue(self.room_type.room_type_count_configured)
+
+        self.client.patch(
+            "/api/v1/admin/ota-rooms/selection/",
+            {"inventory_mode": Hotel.InventoryMode.PHYSICAL_ROOM},
+            format="json",
+            **headers,
+        )
+        switched_back = self.client.patch(
+            "/api/v1/admin/ota-rooms/selection/",
+            {"inventory_mode": Hotel.InventoryMode.ROOM_TYPE_COUNT},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(switched_back.data["data"]["total_rooms"], 1)
+        self.assertEqual(switched_back.data["data"]["total_ota_rooms"], 4)
+
+    @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
     def test_ota_only_inventory_endpoint_uses_room_type_counts_and_has_no_assignments(self):
         self.hotel.package = Hotel.Package.OTA
         self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
@@ -413,7 +481,7 @@ class BookingServiceTests(TestCase):
             **headers,
         )
         self.assertEqual(switched_back.status_code, 200, switched_back.data)
-        self.assertEqual(switched_back.data["data"]["total_rooms"], 7)
+        self.assertEqual(switched_back.data["data"]["total_rooms"], 1)
         self.assertEqual(switched_back.data["data"]["total_ota_rooms"], 7)
         self.assertEqual(switched_back.data["data"]["total_booking_count"], 1)
         self.room_type.refresh_from_db()

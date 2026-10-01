@@ -195,6 +195,7 @@ class RoomType(models.Model):
     breakfast_custom_foreign_usd_display_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     default_inventory = models.PositiveSmallIntegerField(default=0)
     room_type_count_inventory = models.PositiveSmallIntegerField(default=0)
+    room_type_count_configured = models.BooleanField(default=False)
     booking_enabled = models.BooleanField(default=True)
     core_active = models.BooleanField(default=True)
     core_snapshot = models.JSONField(default=dict, blank=True)
