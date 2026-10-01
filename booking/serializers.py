@@ -1469,6 +1469,56 @@ class BookingRoomSerializer(serializers.ModelSerializer):
 
 class BookingDetailRoomSerializer(BookingRoomSerializer):
     room_type = PublicOTARoomTypeCatalogSerializer(read_only=True)
+    assigned_physical_rooms = serializers.SerializerMethodField()
+
+    def get_assigned_physical_rooms(self, obj):
+        rows = []
+        room_type_snapshot = obj.room_type.core_snapshot or {}
+        for assignment in obj.assignments.all():
+            if assignment.released_at is not None:
+                continue
+            room = assignment.physical_room
+            snapshot = room.core_snapshot or {}
+            room_views = snapshot.get("room_views") or []
+            beds = snapshot.get("beds") or []
+            bed_type = snapshot.get("bed_type")
+            if not bed_type and beds:
+                bed_type = beds[0].get("bed_type") or beds[0]
+            room_area = snapshot.get("room_area")
+            if room_area is None:
+                room_area = snapshot.get("size_sqft")
+            if room_area is None:
+                room_area = room_type_snapshot.get("room_area") or room_type_snapshot.get("size_sqft")
+            area_unit = snapshot.get("area_unit") or room_type_snapshot.get("area_unit")
+            rows.append({
+                "assignment_id": assignment.id,
+                "id": room.id,
+                "core_physical_room_id": room.core_physical_room_id,
+                "room_type_id": room.room_type_id,
+                "core_room_type_id": room.room_type.core_room_type_id,
+                "room_type_name": room.room_type.name,
+                "room_number": room.room_number,
+                "building_id": room.core_building_id,
+                "building": room.building,
+                "floor_id": room.core_floor_id,
+                "floor": room.floor,
+                "status": room.status,
+                "note": room.note,
+                "is_active": room.is_active,
+                "ota_enabled": room.ota_enabled,
+                "ota_sale_open": room.ota_sale_open,
+                "room_standard": snapshot.get("room_standard") or room_type_snapshot.get("room_standard"),
+                "bed_type": bed_type or room_type_snapshot.get("bed_type"),
+                "beds": beds or room_type_snapshot.get("beds") or [],
+                "room_view": snapshot.get("room_view") or (room_views[0] if room_views else None) or room_type_snapshot.get("room_view"),
+                "room_views": room_views or room_type_snapshot.get("room_views") or [],
+                "room_area": room_area,
+                "area_unit": area_unit,
+                "size_sqft": room_area if area_unit == "sqft" else snapshot.get("size_sqft"),
+                "room_area_text": f"{room_area} {area_unit}" if room_area is not None and area_unit else None,
+                "assigned_at": assignment.assigned_at,
+            })
+        return rows
 
     class Meta:
         model = BookingRoom

@@ -2613,8 +2613,30 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(room["rate_plan"]["name"], self.rate_plan.name)
         self.assertEqual(room["rate_plan"]["base_price"], 80000.0)
 
-    def test_admin_booking_detail_includes_room_type_object(self):
+    def test_admin_booking_detail_includes_physical_room_data(self):
         booking, _ = create_booking(self.payload())
+        booking_room = booking.rooms.get()
+        physical_room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            core_physical_room_id=9301,
+            core_building_id=81,
+            core_floor_id=82,
+            room_number="M 303",
+            building="Main",
+            floor="3",
+            core_snapshot={
+                "room_standard": {"id": 1, "name": "Double Room"},
+                "beds": [{"quantity": 1, "bed_type": {"id": 2, "name": "King Bed"}}],
+                "room_views": [{"id": 3, "name": "City View"}],
+                "room_area": 301,
+                "area_unit": "sqft",
+            },
+        )
+        assignment = RoomAssignment.objects.create(
+            booking_room=booking_room,
+            physical_room=physical_room,
+        )
 
         response = self.client.get(
             f"/api/v1/admin/bookings/{booking.id}/",
@@ -2624,21 +2646,22 @@ class BookingApiTests(BookingServiceTests):
 
         self.assertEqual(response.status_code, 200, response.data)
         room = response.data["data"]["rooms"][0]
-        self.assertEqual(room["room_type_id"], str(self.room_type.id))
-        self.assertEqual(room["room_type_name"], self.room_type.name)
         self.assertEqual(room["room_type"]["room_type_id"], self.room_type.id)
         self.assertEqual(
             room["room_type"]["core_room_type_id"],
             self.room_type.core_room_type_id,
         )
         self.assertEqual(room["room_type"]["name"], self.room_type.name)
-        self.assertIn("room_standard", room["room_type"])
-        self.assertIn("bed_type", room["room_type"])
-        self.assertIn("room_view", room["room_type"])
-        self.assertIn("room_area", room["room_type"])
-        self.assertIn("area_unit", room["room_type"])
-        self.assertIn("default_prices", room["room_type"])
-        self.assertIn("rate_plans", room["room_type"])
+        physical = room["assigned_physical_rooms"][0]
+        self.assertEqual(physical["assignment_id"], assignment.id)
+        self.assertEqual(physical["id"], physical_room.id)
+        self.assertEqual(physical["room_number"], "M 303")
+        self.assertEqual(physical["room_standard"]["name"], "Double Room")
+        self.assertEqual(physical["bed_type"]["name"], "King Bed")
+        self.assertEqual(physical["room_view"]["name"], "City View")
+        self.assertEqual(physical["room_area"], 301)
+        self.assertEqual(physical["area_unit"], "sqft")
+        self.assertEqual(physical["room_area_text"], "301 sqft")
 
     def test_public_availability_can_ignore_occupancy_filter(self):
         PhysicalRoom.objects.create(
