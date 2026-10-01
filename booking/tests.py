@@ -135,6 +135,33 @@ class BookingServiceTests(TestCase):
         )
         self.assertFalse(self.hotel.public_booking_enabled)
 
+    def test_active_trial_allows_pms_reservation_but_blocks_public_booking(self):
+        self.hotel.package = Hotel.Package.FREE
+        self.hotel.access_snapshot = {
+            "package": Hotel.Package.FREE,
+            "trial": {
+                "is_active": True,
+                "ends_at": (timezone.now() + timedelta(days=30)).isoformat(),
+            },
+            "public_booking_enabled": False,
+        }
+        self.hotel.save(update_fields=["package", "access_snapshot"])
+
+        pms_payload = self.payload()
+        pms_payload["source"] = Booking.Source.PMS
+        booking, created = create_booking(pms_payload)
+
+        self.assertTrue(created)
+        self.assertEqual(booking.source, Booking.Source.PMS)
+
+        ota_payload = self.payload()
+        ota_payload["contact_phone"] = "09999999999"
+        with self.assertRaisesMessage(
+            ValidationError,
+            "Online booking is unavailable for trial hotels.",
+        ):
+            create_booking(ota_payload)
+
     def test_core_sync_does_not_store_trial_effective_package_as_subscription(self):
         class TrialCoreClient:
             @staticmethod

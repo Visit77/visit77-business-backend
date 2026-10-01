@@ -1376,10 +1376,18 @@ def booking_guest_counts(data):
     )
 
 
+def booking_source(data):
+    return (
+        Booking.Source.OTA
+        if str(data.get("source", Booking.Source.OTA)).lower() in {"ota", "direct"}
+        else Booking.Source.PMS
+    )
+
+
 def estimate_booking(data):
     logger.info(data)
     hotel = Hotel.objects.get(core_business_id=data["core_business_id"], is_active=True)
-    if not hotel.public_booking_enabled:
+    if booking_source(data) == Booking.Source.OTA and not hotel.public_booking_enabled:
         raise ValidationError("Online booking is unavailable for trial hotels.")
     check_in, check_out = data["check_in"], data["check_out"]
     if check_out <= check_in:
@@ -1638,7 +1646,8 @@ def estimate_booking(data):
 @transaction.atomic
 def create_booking(data, idempotency_key=None):
     hotel = Hotel.objects.get(core_business_id=data["core_business_id"], is_active=True)
-    if not hotel.public_booking_enabled:
+    source = booking_source(data)
+    if source == Booking.Source.OTA and not hotel.public_booking_enabled:
         raise ValidationError("Online booking is unavailable for trial hotels.")
     if idempotency_key:
         existing = Booking.objects.filter(hotel=hotel, idempotency_key=idempotency_key).first()
@@ -1657,11 +1666,7 @@ def create_booking(data, idempotency_key=None):
         booked_by_core_user_id=data.get("booked_by_core_user_id"),
         core_customer_user_id=data.get("core_customer_user_id"),
         idempotency_key=idempotency_key,
-        source=(
-            Booking.Source.OTA
-            if str(data.get("source", Booking.Source.OTA)).lower() in {"ota", "direct"}
-            else Booking.Source.PMS
-        ),
+        source=source,
         source_name=data.get("source_name", ""),
         check_in=check_in,
         check_out=check_out,
