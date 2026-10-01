@@ -1697,6 +1697,18 @@ class OTARoomSelectionView(APIView):
             Booking.Status.CHECKED_IN,
         ]
         queryset = Booking.objects.filter(hotel=hotel, source=Booking.Source.OTA)
+        if hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
+            # Count-mode records exist at BookingRoom/RoomType level and do
+            # not require physical-room assignments.
+            queryset = queryset.filter(rooms__room_type__hotel=hotel)
+        else:
+            # Physical-mode selection only displays OTA bookings assigned to
+            # an active physical room. Do not mix unassigned/count-mode
+            # records into this mode's total.
+            queryset = queryset.filter(
+                rooms__assignments__physical_room__hotel=hotel,
+                rooms__assignments__physical_room__is_active=True,
+            )
         active_today = Q(
             status__in=live_statuses,
             check_in__lte=today,
@@ -1709,7 +1721,7 @@ class OTARoomSelectionView(APIView):
             queryset = queryset.filter(upcoming)
         elif timeline_status == "past":
             queryset = queryset.exclude(active_today | upcoming)
-        return queryset.count()
+        return queryset.distinct().count()
 
     @staticmethod
     def _hotel(request):
@@ -1904,23 +1916,30 @@ class OTARoomSelectionView(APIView):
         for room_type in room_types:
             records = records_by_room_type.get(room_type.id, [])
             today_inventory = inventory_today.get(room_type.id)
+            count_inventory = room_type.room_type_count_inventory
             booked_rooms = (
                 today_inventory.held_rooms + today_inventory.reserved_rooms
                 if today_inventory else active_quantities.get(room_type.id, 0)
             )
-            closed_rooms = today_inventory.closed_rooms if today_inventory else 0
-            available_rooms = (
-                today_inventory.available_rooms
-                if today_inventory else max(
-                    room_type.room_type_count_inventory - booked_rooms,
-                    0,
-                )
+            # DailyInventory is shared by both inventory modes and its
+            # total_rooms value is rewritten when the hotel changes mode.
+            # Never use that shared total for a room-type-count response: the
+            # dedicated count inventory must remain independent from physical
+            # room totals across mode switches.
+            booked_rooms = min(booked_rooms, count_inventory)
+            closed_rooms = min(
+                today_inventory.closed_rooms if today_inventory else 0,
+                max(count_inventory - booked_rooms, 0),
+            )
+            available_rooms = max(
+                count_inventory - booked_rooms - closed_rooms,
+                0,
             )
             rows.append({
                 "room_type_id": room_type.id,
                 "core_room_type_id": room_type.core_room_type_id,
                 "room_type_name": room_type.name,
-                "total_rooms": room_type.room_type_count_inventory,
+                "total_rooms": count_inventory,
                 "booked_rooms": booked_rooms,
                 "closed_rooms": closed_rooms,
                 "available_rooms": available_rooms,

@@ -328,8 +328,11 @@ class BookingServiceTests(TestCase):
             room_type=self.room_type,
             stay_date=timezone.localdate(),
         )
+        # Simulate a stale/shared total left by physical-room mode. Selection
+        # totals for room_type_count must only use room_type_count_inventory.
+        today_inventory.total_rooms = 99
         today_inventory.closed_rooms = 2
-        today_inventory.save(update_fields=["closed_rooms"])
+        today_inventory.save(update_fields=["total_rooms", "closed_rooms"])
         listed = self.client.get("/api/v1/admin/ota-rooms/selection/", **headers)
         self.assertEqual(listed.status_code, 200, listed.data)
         self.assertEqual(listed.data["data"]["total_rooms"], 7)
@@ -372,6 +375,9 @@ class BookingServiceTests(TestCase):
             switched.data["data"]["inventory_mode"],
             Hotel.InventoryMode.PHYSICAL_ROOM,
         )
+        self.assertEqual(switched.data["data"]["total_rooms"], 1)
+        self.assertEqual(switched.data["data"]["total_ota_rooms"], 1)
+        self.assertEqual(switched.data["data"]["total_booking_count"], 0)
         self.room_type.refresh_from_db()
         self.assertEqual(self.room_type.default_inventory, 1)
         self.assertEqual(self.room_type.room_type_count_inventory, 7)
@@ -391,6 +397,14 @@ class BookingServiceTests(TestCase):
         self.assertEqual(assigned_record["assignment_id"], assignment.id)
         self.assertEqual(len(assigned_record["assignments"]), 1)
         self.assertEqual(assigned_record["unassigned_quantity"], 1)
+        physical_selection = self.client.get(
+            "/api/v1/admin/ota-rooms/selection/",
+            **headers,
+        )
+        self.assertEqual(
+            physical_selection.data["data"]["total_booking_count"],
+            1,
+        )
 
         switched_back = self.client.patch(
             "/api/v1/admin/ota-rooms/selection/",
@@ -400,6 +414,8 @@ class BookingServiceTests(TestCase):
         )
         self.assertEqual(switched_back.status_code, 200, switched_back.data)
         self.assertEqual(switched_back.data["data"]["total_rooms"], 7)
+        self.assertEqual(switched_back.data["data"]["total_ota_rooms"], 7)
+        self.assertEqual(switched_back.data["data"]["total_booking_count"], 1)
         self.room_type.refresh_from_db()
         self.assertEqual(self.room_type.default_inventory, 7)
         self.assertEqual(self.room_type.room_type_count_inventory, 7)
