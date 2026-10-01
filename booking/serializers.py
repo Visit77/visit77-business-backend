@@ -1467,6 +1467,14 @@ class BookingRoomSerializer(serializers.ModelSerializer):
         exclude = ["room_type"]
 
 
+class BookingDetailRoomSerializer(BookingRoomSerializer):
+    room_type = PublicOTARoomTypeCatalogSerializer(read_only=True)
+
+    class Meta:
+        model = BookingRoom
+        fields = "__all__"
+
+
 class BookingHistoryRoomSerializer(BookingRoomSerializer):
     photos = serializers.SerializerMethodField()
 
@@ -1733,6 +1741,10 @@ class BookingSerializer(serializers.ModelSerializer):
     class Meta:
         model = Booking
         fields = "__all__"
+
+
+class BookingDetailSerializer(BookingSerializer):
+    rooms = BookingDetailRoomSerializer(many=True, read_only=True)
 
 
 class BookingHistorySerializer(BookingSerializer):

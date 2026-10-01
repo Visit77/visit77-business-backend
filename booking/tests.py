@@ -2613,6 +2613,33 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(room["rate_plan"]["name"], self.rate_plan.name)
         self.assertEqual(room["rate_plan"]["base_price"], 80000.0)
 
+    def test_admin_booking_detail_includes_room_type_object(self):
+        booking, _ = create_booking(self.payload())
+
+        response = self.client.get(
+            f"/api/v1/admin/bookings/{booking.id}/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        room = response.data["data"]["rooms"][0]
+        self.assertEqual(room["room_type_id"], str(self.room_type.id))
+        self.assertEqual(room["room_type_name"], self.room_type.name)
+        self.assertEqual(room["room_type"]["room_type_id"], self.room_type.id)
+        self.assertEqual(
+            room["room_type"]["core_room_type_id"],
+            self.room_type.core_room_type_id,
+        )
+        self.assertEqual(room["room_type"]["name"], self.room_type.name)
+        self.assertIn("room_standard", room["room_type"])
+        self.assertIn("bed_type", room["room_type"])
+        self.assertIn("room_view", room["room_type"])
+        self.assertIn("room_area", room["room_type"])
+        self.assertIn("area_unit", room["room_type"])
+        self.assertIn("default_prices", room["room_type"])
+        self.assertIn("rate_plans", room["room_type"])
+
     def test_public_availability_can_ignore_occupancy_filter(self):
         PhysicalRoom.objects.create(
             hotel=self.hotel,

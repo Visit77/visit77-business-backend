@@ -43,6 +43,7 @@ from booking.serializers import (
     AdminReservationCreateSerializer,
     AdminMealPlanSerializer,
     BookingCreateSerializer,
+    BookingDetailSerializer,
     BookingEstimateSerializer,
     BookingHistorySerializer,
     BookingSerializer,
@@ -4641,6 +4642,11 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
     ]
     business_scoped = True
     business_lookup = "hotel__core_business_id"
+
+    def get_serializer_class(self):
+        if self.action == "retrieve":
+            return BookingDetailSerializer
+        return BookingSerializer
 
     def get_queryset(self):
         return self.scope_queryset(
