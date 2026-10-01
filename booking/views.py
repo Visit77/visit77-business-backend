@@ -3890,6 +3890,11 @@ class RoomTypeViewSet(AdminModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset()
+        # Core deletions are projected as inactive rows so historical bookings
+        # keep valid foreign keys. Hide those archived catalog rows by default,
+        # while still allowing an explicit ?core_active=false audit query.
+        if "core_active" not in self.request.query_params:
+            queryset = queryset.filter(core_active=True)
         ota_enabled = str(self.request.query_params.get("ota_enabled", "all")).strip().lower()
         ota_only = self.request.query_params.get("ota_only")
         if ota_only is not None:

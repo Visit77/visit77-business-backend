@@ -5154,6 +5154,30 @@ class BookingApiTests(BookingServiceTests):
             [deselected.id, selected.id],
         )
 
+    def test_admin_room_type_api_hides_core_deleted_rows_by_default(self):
+        self.room_type.core_active = False
+        self.room_type.booking_enabled = False
+        self.room_type.save(update_fields=["core_active", "booking_enabled"])
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        active = self.client.get("/api/v1/admin/room-types/", **headers)
+        archived = self.client.get(
+            "/api/v1/admin/room-types/",
+            {"core_active": "false"},
+            **headers,
+        )
+
+        self.assertEqual(active.status_code, 200, active.data)
+        self.assertEqual(active.data["data"], [])
+        self.assertEqual(archived.status_code, 200, archived.data)
+        self.assertEqual(
+            [item["id"] for item in archived.data["data"]],
+            [self.room_type.id],
+        )
+
     def test_ota_room_deselect_rejects_capacity_below_existing_commitments(self):
         room = PhysicalRoom.objects.create(
             hotel=self.hotel,
