@@ -10,7 +10,7 @@ from django.conf import settings
 from django.http import FileResponse
 from django.shortcuts import redirect
 from django.db import transaction
-from django.db.models import Count, Max, Prefetch, Q
+from django.db.models import Count, F, Max, Prefetch, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django.utils.text import slugify
@@ -98,7 +98,7 @@ from booking.serializers import (
     DEFAULT_CANCELLATION_POLICY,
     normalize_cancellation_policy,
 )
-from booking.services import apply_check_in_invoice_adjustments, availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, deprovision_hotel, ensure_daily_inventory_for_room_type, estimate_booking, format_money, record_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, release_checked_in_room_inventory, replace_booking_payment_snapshot, sync_guest_profile, update_reservation_for_check_in, validate_assignment_preferences
+from booking.services import apply_check_in_invoice_adjustments, availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, deprovision_hotel, ensure_daily_inventory_for_room_type, estimate_booking, format_money, reconcile_daily_inventory_for_room_type, record_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, release_checked_in_room_inventory, replace_booking_payment_snapshot, sync_guest_profile, update_reservation_for_check_in, validate_assignment_preferences
 from config.response_formatter import success
 
 import logging
@@ -1700,12 +1700,16 @@ class OTARoomSelectionView(APIView):
         if hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
             # Count-mode records exist at BookingRoom/RoomType level and do
             # not require physical-room assignments.
-            queryset = queryset.filter(rooms__room_type__hotel=hotel)
+            queryset = queryset.filter(
+                inventory_mode=Hotel.InventoryMode.ROOM_TYPE_COUNT,
+                rooms__room_type__hotel=hotel,
+            )
         else:
             # Physical-mode selection only displays OTA bookings assigned to
             # an active physical room. Do not mix unassigned/count-mode
             # records into this mode's total.
             queryset = queryset.filter(
+                inventory_mode=Hotel.InventoryMode.PHYSICAL_ROOM,
                 rooms__assignments__physical_room__hotel=hotel,
                 rooms__assignments__physical_room__is_active=True,
             )
@@ -1850,6 +1854,7 @@ class OTARoomSelectionView(APIView):
         booking_rooms = list(BookingRoom.objects.filter(
             room_type__in=room_types,
             booking__source=Booking.Source.OTA,
+            booking__inventory_mode=Hotel.InventoryMode.ROOM_TYPE_COUNT,
         ).select_related("booking", "room_type").prefetch_related(
             "booking__invoices", "booking__payments",
         ).order_by("booking__created_at", "id"))
@@ -1931,10 +1936,10 @@ class OTARoomSelectionView(APIView):
                 room_type.id,
                 count_inventory,
             )
-            booked_rooms = (
-                today_inventory.held_rooms + today_inventory.reserved_rooms
-                if today_inventory else active_quantities.get(room_type.id, 0)
-            )
+            # Count-mode OTA selection is isolated from PMS. Derive this from
+            # OTA bookings directly instead of legacy/shared inventory counters
+            # that may still contain PMS reservations.
+            booked_rooms = active_quantities.get(room_type.id, 0)
             # DailyInventory is shared by both inventory modes and its
             # total_rooms value is rewritten when the hotel changes mode.
             # Never use that shared total for a room-type-count response: the
@@ -2000,6 +2005,7 @@ class OTARoomSelectionView(APIView):
         assignments = list(RoomAssignment.objects.filter(
             physical_room_id__in=room_ids,
             booking_room__booking__source=Booking.Source.OTA,
+            booking_room__booking__inventory_mode=Hotel.InventoryMode.PHYSICAL_ROOM,
         ).select_related(
             "booking_room__booking",
         ).prefetch_related(
@@ -2080,6 +2086,7 @@ class OTARoomSelectionView(APIView):
             physical_room__is_active=True,
             released_at__isnull=True,
             booking_room__booking__source=Booking.Source.OTA,
+            booking_room__booking__inventory_mode=Hotel.InventoryMode.PHYSICAL_ROOM,
             booking_room__booking__status__in=[Booking.Status.PENDING_PAYMENT, Booking.Status.CONFIRMED],
             booking_room__booking__check_out__gt=timezone.localdate(),
         ).values("physical_room_id").annotate(total=Count("id")).values_list("physical_room_id", "total"))
@@ -2204,7 +2211,12 @@ class OTARoomSelectionView(APIView):
                     stay_date__gte=timezone.localdate(),
                 ).update(closed_rooms=0)
             for room_type in room_types:
-                ensure_daily_inventory_for_room_type(room_type)
+                inventory_result = ensure_daily_inventory_for_room_type(room_type)
+                reconcile_daily_inventory_for_room_type(
+                    room_type,
+                    inventory_result["start_date"],
+                    inventory_result["end_date"] + timedelta(days=1),
+                )
         if inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
             return success(self._ota_only_payload(hotel, request=request))
         return success(self._payload(hotel, request=request))
@@ -2452,6 +2464,7 @@ class OTARecordListView(APIView):
         booking_rooms = BookingRoom.objects.filter(
             room_type__hotel=hotel,
             booking__source=Booking.Source.OTA,
+            booking__inventory_mode=hotel.inventory_mode,
         )
         booking_rooms = booking_rooms.select_related(
             "room_type",
@@ -2469,9 +2482,16 @@ class OTARecordListView(APIView):
         records = []
         for booking_room in booking_rooms:
             booking = booking_room.booking
-            assignments = sorted(
-                booking_room.assignments.all(),
-                key=lambda assignment: (assignment.released_at is not None, assignment.id),
+            assignments = (
+                sorted(
+                    booking_room.assignments.all(),
+                    key=lambda assignment: (
+                        assignment.released_at is not None,
+                        assignment.id,
+                    ),
+                )
+                if hotel.inventory_mode == Hotel.InventoryMode.PHYSICAL_ROOM
+                else []
             )
             active_assignments = [
                 assignment for assignment in assignments
@@ -2618,6 +2638,7 @@ class OTARoomSaleStatusView(APIView):
                 physical_room=room,
                 released_at__isnull=True,
                 booking_room__booking__source=Booking.Source.OTA,
+                booking_room__booking__inventory_mode=Hotel.InventoryMode.PHYSICAL_ROOM,
                 booking_room__booking__status__in=[
                     Booking.Status.PENDING_PAYMENT,
                     Booking.Status.CONFIRMED,
@@ -2751,6 +2772,7 @@ class RoomBoardView(APIView):
         active_assignments = RoomAssignment.objects.filter(
             physical_room_id__in=room_ids,
             released_at__isnull=True,
+            booking_room__booking__inventory_mode=hotel.inventory_mode,
             booking_room__booking__status__in=[Booking.Status.CONFIRMED, Booking.Status.CHECKED_IN],
             booking_room__booking__check_in__lte=target_date,
             booking_room__booking__check_out__gt=target_date,
@@ -2766,10 +2788,15 @@ class RoomBoardView(APIView):
             "booking_room__booking__payments",
             "booking_room__booking__guests__identity_documents",
         ).order_by("assigned_at", "id")
+        if hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
+            active_assignments = active_assignments.filter(
+                booking_room__booking__source=Booking.Source.PMS,
+            )
         assignment_by_room = {assignment.physical_room_id: assignment for assignment in active_assignments}
         checked_in_assignments = RoomAssignment.objects.filter(
             physical_room_id__in=room_ids,
             released_at__isnull=True,
+            booking_room__booking__inventory_mode=hotel.inventory_mode,
             booking_room__booking__status=Booking.Status.CHECKED_IN,
         ).select_related(
             "physical_room", "booking_room__room_type", "booking_room__rate_plan",
@@ -2779,6 +2806,10 @@ class RoomBoardView(APIView):
             "booking_room__nights", "booking_room__booking__payments",
             "booking_room__booking__guests__identity_documents",
         ).order_by("assigned_at", "id")
+        if hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
+            checked_in_assignments = checked_in_assignments.filter(
+                booking_room__booking__source=Booking.Source.PMS,
+            )
         # An actual active stay has precedence over a date-based reservation.
         for checked_in_assignment in checked_in_assignments:
             assignment_by_room[checked_in_assignment.physical_room_id] = checked_in_assignment
@@ -2786,6 +2817,7 @@ class RoomBoardView(APIView):
         future_assignments = RoomAssignment.objects.filter(
             physical_room_id__in=room_ids,
             released_at__isnull=True,
+            booking_room__booking__inventory_mode=hotel.inventory_mode,
             booking_room__booking__status=Booking.Status.CONFIRMED,
             booking_room__booking__check_in__gte=target_date,
         ).select_related(
@@ -2799,6 +2831,10 @@ class RoomBoardView(APIView):
             "booking_room__booking__payments",
             "booking_room__booking__invoices",
         ).order_by("booking_room__booking__check_in", "assigned_at", "id")
+        if hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
+            future_assignments = future_assignments.filter(
+                booking_room__booking__source=Booking.Source.PMS,
+            )
         next_assignments_by_room = defaultdict(list)
         for future_assignment in future_assignments:
             next_assignments_by_room[future_assignment.physical_room_id].append(future_assignment)
@@ -2806,12 +2842,17 @@ class RoomBoardView(APIView):
         released_assignments = RoomAssignment.objects.filter(
             physical_room_id__in=room_ids,
             released_at__isnull=False,
+            booking_room__booking__inventory_mode=hotel.inventory_mode,
             booking_room__booking__status=Booking.Status.CHECKED_OUT,
             booking_room__booking__check_out=target_date,
         ).select_related(
             "booking_room__room_type",
             "booking_room__booking",
         ).order_by("-released_at", "-id")
+        if hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
+            released_assignments = released_assignments.filter(
+                booking_room__booking__source=Booking.Source.PMS,
+            )
         last_checkout_assignment_by_room = {}
         for released_assignment in released_assignments:
             last_checkout_assignment_by_room.setdefault(released_assignment.physical_room_id, released_assignment)
@@ -2961,6 +3002,7 @@ class RoomBoardView(APIView):
         room_type_ids = {room.room_type_id for room in rooms}
         confirmed_rooms = BookingRoom.objects.filter(
             booking__hotel=hotel,
+            booking__inventory_mode=hotel.inventory_mode,
             booking__status=Booking.Status.CONFIRMED,
             booking__check_in__lte=target_date,
             booking__check_out__gt=target_date,
@@ -2968,6 +3010,10 @@ class RoomBoardView(APIView):
         ).select_related("booking", "room_type").prefetch_related(
             Prefetch("assignments", queryset=RoomAssignment.objects.filter(released_at__isnull=True))
         )
+        if hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
+            confirmed_rooms = confirmed_rooms.filter(
+                booking__source=Booking.Source.PMS,
+            )
         unassigned = []
         for booking_room in confirmed_rooms:
             remaining = booking_room.quantity - len(booking_room.assignments.all())
@@ -4710,7 +4756,7 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
                 "rooms__nights", "rooms__room_type", "rooms__rate_plan",
                 "rooms__assignments__physical_room", "guests__identity_documents", "add_ons", "payments",
                 "invoices__lines", "invoices__receipts",
-            )
+            ).filter(inventory_mode=F("hotel__inventory_mode"))
         )
 
     @staticmethod

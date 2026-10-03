@@ -364,8 +364,9 @@ def reconcile_daily_inventory_for_room_type(room_type, check_in, check_out):
     rows = list(DailyInventory.objects.select_for_update().filter(
         room_type=room_type, stay_date__in=dates,
     ).order_by("stay_date"))
-    active_rooms = list(BookingRoom.objects.filter(
+    active_rooms_query = BookingRoom.objects.filter(
         room_type=room_type,
+        booking__inventory_mode=room_type.hotel.inventory_mode,
         booking__status__in=[
             Booking.Status.PENDING_PAYMENT,
             Booking.Status.CONFIRMED,
@@ -373,8 +374,18 @@ def reconcile_daily_inventory_for_room_type(room_type, check_in, check_out):
         ],
         booking__check_in__lt=check_out,
         booking__check_out__gt=check_in,
-    ).select_related("booking"))
-    base_total = active_sellable_room_count(room_type)
+    )
+    if room_type.hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
+        active_rooms_query = active_rooms_query.filter(
+            booking__source=Booking.Source.OTA,
+            booking__inventory_mode=Hotel.InventoryMode.ROOM_TYPE_COUNT,
+        )
+    active_rooms = list(active_rooms_query.select_related("booking"))
+    base_total = (
+        room_type.room_type_count_inventory
+        if room_type.hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT
+        else active_sellable_room_count(room_type)
+    )
     for row in rows:
         held_rooms = sum(
             booking_room.quantity
@@ -388,7 +399,11 @@ def reconcile_daily_inventory_for_room_type(room_type, check_in, check_out):
             if booking_room.booking.status in [Booking.Status.CONFIRMED, Booking.Status.CHECKED_IN]
             and booking_room.booking.check_in <= row.stay_date < booking_room.booking.check_out
         )
-        sellable_total = sellable_room_count_for_date(room_type, row.stay_date, base_total)
+        sellable_total = (
+            base_total
+            if room_type.hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT
+            else sellable_room_count_for_date(room_type, row.stay_date, base_total)
+        )
         row.held_rooms = held_rooms
         row.reserved_rooms = reserved_rooms
         row.total_rooms = max(sellable_total, held_rooms + reserved_rooms)
@@ -1000,7 +1015,7 @@ def auto_assign_physical_rooms_for_booking(booking):
     booking = Booking.objects.select_for_update().prefetch_related("rooms__assignments").get(pk=booking.pk)
     if booking.status != Booking.Status.CONFIRMED:
         return []
-    if booking.hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
+    if booking.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
         return []
 
     created_assignments = []
@@ -1384,6 +1399,26 @@ def booking_source(data):
     )
 
 
+def uses_shared_daily_inventory(hotel, source, inventory_mode=None):
+    """Whether this booking participates in the shared DailyInventory pool.
+
+    room_type_count is an OTA-only allotment. PMS bookings continue to use
+    physical-room assignments and must not consume or be blocked by that OTA
+    pool. physical_room mode intentionally shares capacity between OTA + PMS.
+    """
+    effective_mode = inventory_mode or hotel.inventory_mode
+    if effective_mode != hotel.inventory_mode:
+        # This booking belongs to the inactive inventory silo. Its status is
+        # still updated, but it must not mutate the currently active counters.
+        # Counters are rebuilt from booking snapshots when that mode is active
+        # again.
+        return False
+    return not (
+        effective_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT
+        and source == Booking.Source.PMS
+    )
+
+
 def estimate_booking(data):
     logger.info(data)
     hotel = Hotel.objects.get(core_business_id=data["core_business_id"], is_active=True)
@@ -1667,6 +1702,7 @@ def create_booking(data, idempotency_key=None):
         core_customer_user_id=data.get("core_customer_user_id"),
         idempotency_key=idempotency_key,
         source=source,
+        inventory_mode=hotel.inventory_mode,
         source_name=data.get("source_name", ""),
         check_in=check_in,
         check_out=check_out,
@@ -1723,10 +1759,19 @@ def create_booking(data, idempotency_key=None):
             preference_snapshot.get("guaranteed_constraints") or {},
             quantity,
         )
-        inventory_rows = _lock_inventory(room_type, dates)
-        if len(inventory_rows) != len(dates) or any(row.available_rooms < quantity for row in inventory_rows):
-            raise ValidationError({"rooms": f"{room_type.name} is no longer available for all selected dates."})
-        DailyInventory.objects.filter(id__in=[row.id for row in inventory_rows]).update(held_rooms=F("held_rooms") + quantity)
+        if uses_shared_daily_inventory(hotel, source):
+            if hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
+                # Clear any legacy PMS counters before validating the isolated
+                # OTA allotment. Reconciliation in this mode counts OTA only.
+                reconcile_daily_inventory_for_room_type(
+                    room_type,
+                    check_in,
+                    check_out,
+                )
+            inventory_rows = _lock_inventory(room_type, dates)
+            if len(inventory_rows) != len(dates) or any(row.available_rooms < quantity for row in inventory_rows):
+                raise ValidationError({"rooms": f"{room_type.name} is no longer available for all selected dates."})
+            DailyInventory.objects.filter(id__in=[row.id for row in inventory_rows]).update(held_rooms=F("held_rooms") + quantity)
 
         booking_room = BookingRoom.objects.create(
             booking=booking,
@@ -1918,6 +1963,12 @@ def create_booking(data, idempotency_key=None):
 
 
 def _move_inventory(booking, from_field, to_field=None):
+    if not uses_shared_daily_inventory(
+        booking.hotel,
+        booking.source,
+        booking.inventory_mode,
+    ):
+        return
     for room in booking.rooms.select_related("room_type"):
         dates = list(stay_dates(booking.check_in, booking.check_out))
         rows = _lock_inventory(room.room_type, dates)
@@ -1945,6 +1996,12 @@ def release_checked_in_room_inventory(assignment):
     booking = assignment.booking_room.booking
     if booking.status != Booking.Status.CHECKED_IN:
         raise ValidationError("Only a room from a checked-in booking can check out.")
+    if not uses_shared_daily_inventory(
+        booking.hotel,
+        booking.source,
+        booking.inventory_mode,
+    ):
+        return
     rows = _lock_inventory(
         assignment.booking_room.room_type,
         list(stay_dates(booking.check_in, booking.check_out)),

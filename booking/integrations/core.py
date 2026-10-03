@@ -459,19 +459,13 @@ def sync_business_from_core(core_business_id: int, client=None, *, preserve_acce
 
     inventory_created = 0
     inventory_updated = 0
-    if ota_access_activated:
-        hotel.physical_rooms.update(ota_enabled=False)
     for room_type in synced_room_types:
-        if ota_access_activated:
+        if ota_access_activated and not room_type.room_type_count_configured:
             # Subscribing enables the OTA feature; it does not opt every PMS
-            # room into OTA inventory. The hotel must select a physical room
-            # or explicitly set its room-type-count allotment.
+            # room into OTA inventory. Preserve any explicit trial/configured
+            # selection, but never copy the PMS physical-room total by default.
             room_type.room_type_count_inventory = 0
-            room_type.room_type_count_configured = False
-            room_type.save(update_fields=[
-                "room_type_count_inventory",
-                "room_type_count_configured",
-            ])
+            room_type.save(update_fields=["room_type_count_inventory"])
         active_rooms = (
             room_type.room_type_count_inventory
             if hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT

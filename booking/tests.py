@@ -225,6 +225,10 @@ class BookingServiceTests(TestCase):
         self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
         self.hotel.save(update_fields=["package", "inventory_mode"])
         booking, _ = create_booking(self.payload())
+        self.assertEqual(
+            booking.inventory_mode,
+            Hotel.InventoryMode.ROOM_TYPE_COUNT,
+        )
         booking.status = Booking.Status.CONFIRMED
         booking.save(update_fields=["status"])
 
@@ -450,21 +454,29 @@ class BookingServiceTests(TestCase):
         self.assertEqual(self.room_type.default_inventory, 1)
         self.assertEqual(self.room_type.room_type_count_inventory, 7)
         physical_records = self.client.get("/api/v1/admin/ota-records/", **headers)
-        self.assertEqual(physical_records.data["data"]["count"], 1)
-        self.assertEqual(
-            physical_records.data["data"]["rooms"][0]["unassigned_quantity"],
-            2,
-        )
+        self.assertEqual(physical_records.data["data"]["count"], 0)
 
+        physical_payload = self.payload()
+        physical_payload["rooms"][0].update({
+            "quantity": 1,
+            "adults": 2,
+            "extra_beds": 0,
+        })
+        physical_booking, _ = create_booking(physical_payload)
+        self.assertEqual(
+            physical_booking.inventory_mode,
+            Hotel.InventoryMode.PHYSICAL_ROOM,
+        )
         assignment = RoomAssignment.objects.create(
-            booking_room=booking.rooms.get(),
+            booking_room=physical_booking.rooms.get(),
             physical_room=physical_room,
         )
         assigned_records = self.client.get("/api/v1/admin/ota-records/", **headers)
-        assigned_record = assigned_records.data["data"]["rooms"][0]
-        self.assertEqual(assigned_record["assignment_id"], assignment.id)
-        self.assertEqual(len(assigned_record["assignments"]), 1)
-        self.assertEqual(assigned_record["unassigned_quantity"], 1)
+        self.assertEqual(assigned_records.data["data"]["count"], 1)
+        self.assertEqual(
+            assigned_records.data["data"]["rooms"][0]["booking_id"],
+            str(physical_booking.id),
+        )
         physical_selection = self.client.get(
             "/api/v1/admin/ota-rooms/selection/",
             **headers,
@@ -490,7 +502,8 @@ class BookingServiceTests(TestCase):
         count_records = self.client.get("/api/v1/admin/ota-records/", **headers)
         count_record = count_records.data["data"]["rooms"][0]
         self.assertEqual(count_record["unassigned_quantity"], 0)
-        self.assertEqual(count_record["assignments"][0]["assignment_id"], assignment.id)
+        self.assertEqual(count_record["assignments"], [])
+        self.assertIsNone(count_record["assignment_id"])
 
     @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
     def test_ota_only_scheduled_closure_keeps_booking_record_and_can_be_deleted(self):
@@ -1163,6 +1176,62 @@ class BookingServiceTests(TestCase):
                 stay_date__lt=self.check_out,
             ).values_list("total_rooms", flat=True)
         ))
+
+    def test_room_type_count_ota_closure_does_not_block_pms_walk_in(self):
+        self.hotel.package = Hotel.Package.OTA_PMS
+        self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
+        self.hotel.save(update_fields=["package", "inventory_mode"])
+        self.room_type.room_type_count_inventory = 3
+        self.room_type.room_type_count_configured = True
+        self.room_type.save(update_fields=[
+            "room_type_count_inventory",
+            "room_type_count_configured",
+        ])
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="PMS-ISOLATED",
+            ota_enabled=False,
+        )
+        OTAInventoryClosure.objects.create(
+            room_type=self.room_type,
+            closure_mode=OTAInventoryClosure.ClosureMode.SCHEDULED,
+            start_date=self.check_in,
+            end_date=self.check_out - timedelta(days=1),
+            close_all=True,
+        )
+        ensure_daily_inventory_for_room_type(
+            self.room_type,
+            start_date=self.check_in,
+            days=(self.check_out - self.check_in).days - 1,
+        )
+
+        booking = create_walk_in_booking(
+            {
+                "physical_room_id": room.id,
+                "rate_plan_id": self.rate_plan.id,
+                "check_in": self.check_in,
+                "check_out": self.check_out,
+                "contact_name": "PMS Isolated Guest",
+                "contact_phone": "091111111",
+                "guest_market": "local",
+                "adults": 1,
+                "children": 0,
+                "guests": [{"name": "PMS Isolated Guest", "is_primary": True}],
+            },
+            core_business_id=self.hotel.core_business_id,
+            check_in_immediately=False,
+        )
+
+        self.assertEqual(booking.source, Booking.Source.PMS)
+        self.assertEqual(booking.status, Booking.Status.CONFIRMED)
+        inventory = DailyInventory.objects.get(
+            room_type=self.room_type,
+            stay_date=self.check_in,
+        )
+        self.assertEqual(inventory.closed_rooms, 3)
+        self.assertEqual(inventory.held_rooms, 0)
+        self.assertEqual(inventory.reserved_rooms, 0)
 
     def test_pms_on_call_reservation_can_use_ota_disabled_room(self):
         self.hotel.package = Hotel.Package.OTA_PMS
