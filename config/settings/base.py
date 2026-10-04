@@ -205,6 +205,10 @@ DEFAULT_FROM_EMAIL = env(
     "DEFAULT_FROM_EMAIL",
     default="Visit77 Customer Service <no-reply@visit77.com>",
 )
+VISIT77_OTA_NOTIFICATION_EMAIL = env(
+    "VISIT77_OTA_NOTIFICATION_EMAIL",
+    default="",
+).strip()
 RECEIPT_ISSUER_NAME = env("RECEIPT_ISSUER_NAME", default="Visit 77 Company Limited")
 RECEIPT_ISSUER_ADDRESS = env(
     "RECEIPT_ISSUER_ADDRESS",

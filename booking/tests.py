@@ -1484,6 +1484,25 @@ class BookingServiceTests(TestCase):
         self.assertEqual(canceled_count, 0)
         self.assertEqual(booking.status, Booking.Status.CONFIRMED)
 
+    def test_auto_cancel_no_show_skips_ota_only_hotel_without_pms_check_in(self):
+        self.hotel.package = Hotel.Package.OTA
+        self.hotel.inventory_mode = Hotel.InventoryMode.PHYSICAL_ROOM
+        self.hotel.save(update_fields=["package", "inventory_mode"])
+        booking, _ = create_booking(self.payload())
+        record_payment(booking, {
+            "provider": "cash",
+            "amount": booking.grand_total,
+            "status": Payment.Status.PAID,
+        })
+
+        canceled_count = auto_cancel_no_show_reservations(
+            as_of=booking.check_in + timedelta(days=1),
+        )
+
+        booking.refresh_from_db()
+        self.assertEqual(canceled_count, 0)
+        self.assertEqual(booking.status, Booking.Status.CONFIRMED)
+
     def test_extra_bed_is_priced_for_each_night(self):
         self.rate_plan.extra_bed_price = Decimal("30000")
         self.rate_plan.save(update_fields=["extra_bed_price"])

@@ -828,6 +828,7 @@ class BookingCodeTests(TestCase):
             ["booking-contact@example.com"],
         )
 
+    @override_settings(VISIT77_OTA_NOTIFICATION_EMAIL="visit77hotelnoti@gmail.com")
     @patch("booking.booking_services.email.EmailMultiAlternatives")
     def test_ota_confirmation_also_emails_hotel_verification_contact(self, email_class_mock):
         booking = self.create_booking("OTA-HOTEL-EMAIL")
@@ -843,11 +844,15 @@ class BookingCodeTests(TestCase):
         )
 
         self.assertTrue(send_booking_confirmation_email_task(str(booking.id)))
-        self.assertEqual(email_class_mock.call_count, 2)
+        self.assertEqual(email_class_mock.call_count, 3)
         recipients = [call.kwargs["to"] for call in email_class_mock.call_args_list]
         self.assertEqual(
             recipients,
-            [["guest@example.com"], ["hotel-bookings@example.com"]],
+            [
+                ["guest@example.com"],
+                ["hotel-bookings@example.com"],
+                ["visit77hotelnoti@gmail.com"],
+            ],
         )
 
     @patch("booking.booking_services.email.EmailMultiAlternatives")
@@ -926,6 +931,7 @@ class BookingCodeTests(TestCase):
         email_delay.side_effect = [
             type("Result", (), {"id": "guest-email-task"})(),
             type("Result", (), {"id": "hotel-email-task"})(),
+            type("Result", (), {"id": "visit77-email-task"})(),
         ]
         sms_delay.side_effect = [
             type("Result", (), {"id": "guest-sms-task"})(),
@@ -936,7 +942,11 @@ class BookingCodeTests(TestCase):
 
         self.assertEqual(
             email_delay.call_args_list,
-            [call("booking-id", "guest"), call("booking-id", "hotel")],
+            [
+                call("booking-id", "guest"),
+                call("booking-id", "hotel"),
+                call("booking-id", "visit77"),
+            ],
         )
         self.assertEqual(
             sms_delay.call_args_list,
@@ -947,3 +957,4 @@ class BookingCodeTests(TestCase):
         )
         self.assertEqual(result["guest_email_task_id"], "guest-email-task")
         self.assertEqual(result["hotel_email_task_id"], "hotel-email-task")
+        self.assertEqual(result["visit77_email_task_id"], "visit77-email-task")

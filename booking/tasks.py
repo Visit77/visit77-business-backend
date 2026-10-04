@@ -67,21 +67,26 @@ def queue_booking_confirmation_notifications(booking_id):
     hotel_email_result = send_booking_confirmation_email_task.delay(
         booking_id, "hotel"
     )
+    visit77_email_result = send_booking_confirmation_email_task.delay(
+        booking_id, "visit77"
+    )
     guest_sms_result = send_booking_confirmation_sms_task.delay(booking_id, "guest")
     hotel_sms_result = send_booking_confirmation_sms_task.delay(booking_id, "hotel")
     logger.info(
         "Queued booking confirmation notifications for booking %s: "
-        "guest_email_task_id=%s hotel_email_task_id=%s "
+        "guest_email_task_id=%s hotel_email_task_id=%s visit77_email_task_id=%s "
         "guest_sms_task_id=%s hotel_sms_task_id=%s",
         booking_id,
         guest_email_result.id,
         hotel_email_result.id,
+        visit77_email_result.id,
         guest_sms_result.id,
         hotel_sms_result.id,
     )
     return {
         "guest_email_task_id": guest_email_result.id,
         "hotel_email_task_id": hotel_email_result.id,
+        "visit77_email_task_id": visit77_email_result.id,
         "guest_sms_task_id": guest_sms_result.id,
         "hotel_sms_task_id": hotel_sms_result.id,
         "ota_notification": ota_notification_result,
@@ -206,8 +211,8 @@ def send_booking_confirmation_email_task(self, booking_id, recipient_type="all")
         .get(id=booking_id)
     )
 
-    if recipient_type not in {"all", "guest", "hotel"}:
-        raise ValueError("recipient_type must be all, guest, or hotel.")
+    if recipient_type not in {"all", "guest", "hotel", "visit77"}:
+        raise ValueError("recipient_type must be all, guest, hotel, or visit77.")
 
     guest_sent = False
     if recipient_type in {"all", "guest"}:
@@ -234,14 +239,29 @@ def send_booking_confirmation_email_task(self, booking_id, recipient_type="all")
             booking, recipient_email=hotel_email
         )
 
-    if not guest_sent and not hotel_sent:
+    visit77_sent = False
+    visit77_email = str(
+        getattr(settings, "VISIT77_OTA_NOTIFICATION_EMAIL", "") or ""
+    ).strip()
+    if (
+        recipient_type in {"all", "visit77"}
+        and booking.source == Booking.Source.OTA
+        and visit77_email
+        and visit77_email.lower() not in guest_emails
+        and visit77_email.lower() != hotel_email.lower()
+    ):
+        visit77_sent = send_booking_confirmation_email(
+            booking, recipient_email=visit77_email
+        )
+
+    if not guest_sent and not hotel_sent and not visit77_sent:
         logger.info(
             "Booking confirmation %s email skipped because booking %s has no recipient email.",
             recipient_type,
             booking.booking_code,
         )
 
-    return bool(guest_sent or hotel_sent)
+    return bool(guest_sent or hotel_sent or visit77_sent)
 
 @shared_task(
     autoretry_for=(Exception,),

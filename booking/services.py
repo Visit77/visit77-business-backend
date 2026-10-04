@@ -3501,23 +3501,34 @@ def cancel_booking(booking):
 
 
 def auto_cancel_no_show_reservations(as_of=None):
-    """Cancel confirmed reservations whose arrival date has already passed.
+    """Cancel PMS-capable confirmed reservations whose arrival date passed.
 
     This deliberately reuses the normal cancellation bookkeeping (inventory and
     assignment release), but does not create physical-room action history: a
     no-show never performed a room action such as check-in or check-out.
+
+    OTA-only hotels cannot perform PMS check-in, so absence of a check-in event
+    is not evidence of a no-show and must never auto-cancel their bookings.
     """
     as_of = as_of or timezone.localdate()
     booking_ids = list(
         Booking.objects.filter(
             status=Booking.Status.CONFIRMED,
             check_in__lt=as_of,
+        ).filter(
+            Q(hotel__package__in=[Hotel.Package.PMS, Hotel.Package.OTA_PMS])
+            | Q(hotel__package=Hotel.Package.FREE)
         ).order_by("check_in", "id").values_list("id", flat=True)
     )
     canceled = 0
     for booking_id in booking_ids:
-        booking = Booking.objects.filter(pk=booking_id).first()
+        booking = Booking.objects.select_related("hotel").filter(pk=booking_id).first()
         if not booking:
+            continue
+        if (
+            booking.hotel.package == Hotel.Package.FREE
+            and not booking.hotel.direct_booking_trial_active
+        ):
             continue
         try:
             cancel_booking(booking)
