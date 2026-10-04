@@ -30,7 +30,10 @@ from booking.models import (
     format_receipt_number,
 )
 from booking.booking_services.email import build_booking_confirmation_context, send_booking_confirmation_email
-from booking.booking_services.sms import normalize_sms_phone_number
+from booking.booking_services.sms import (
+    PermanentSMSDeliveryError,
+    normalize_sms_phone_number,
+)
 from booking.booking_services.receipt import (
     _contact_values,
     build_invoice_snapshot,
@@ -922,6 +925,24 @@ class BookingCodeTests(TestCase):
         self.assertEqual(normalize_sms_phone_number("+95 9 333-333-333"), "09333333333")
         self.assertEqual(normalize_sms_phone_number("959333333333"), "09333333333")
         self.assertEqual(normalize_sms_phone_number("09 333 333 333"), "09333333333")
+
+    @patch("booking.booking_services.sms.send_custom_sms")
+    def test_permanently_rejected_sms_is_not_raised_for_retry(self, send_sms_mock):
+        booking = self.create_booking("OTA-INVALID-SMS")
+        Guest.objects.create(
+            booking=booking,
+            name="Invalid SMS Guest",
+            phone="09112233445",
+            is_primary=True,
+        )
+        send_sms_mock.side_effect = PermanentSMSDeliveryError(
+            '422 SMS API error: {"message":"Invalid Phone Number"}'
+        )
+
+        self.assertFalse(
+            send_booking_confirmation_sms_task(str(booking.id), "guest")
+        )
+        send_sms_mock.assert_called_once()
 
     @patch("booking.tasks.send_booking_confirmation_sms_task.delay")
     @patch("booking.tasks.send_booking_confirmation_email_task.delay")

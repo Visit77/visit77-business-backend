@@ -9,6 +9,10 @@ from booking.services import (
 import logging
 from booking.models import Booking, Hotel, OTABookingNotification
 from booking.booking_services.email import send_booking_confirmation_email
+from booking.booking_services.sms import (
+    PermanentSMSDeliveryError,
+    SMS_RETRYABLE_EXCEPTIONS,
+)
 from booking.integrations.core import CoreClient
 logger = logging.getLogger(__name__)
 
@@ -264,7 +268,7 @@ def send_booking_confirmation_email_task(self, booking_id, recipient_type="all")
     return bool(guest_sent or hotel_sent or visit77_sent)
 
 @shared_task(
-    autoretry_for=(Exception,),
+    autoretry_for=SMS_RETRYABLE_EXCEPTIONS,
     retry_backoff=True,
     retry_backoff_max=300,
     retry_jitter=True,
@@ -335,7 +339,18 @@ def send_booking_confirmation_sms_task(booking_id, recipient_type="all"):
     ):
         recipients.append(hotel_phone)
 
+    sent = False
     for recipient in recipients:
-        send_custom_sms(phone_no=recipient, message=message)
+        try:
+            send_custom_sms(phone_no=recipient, message=message)
+            sent = True
+        except PermanentSMSDeliveryError as exc:
+            logger.warning(
+                "Booking confirmation SMS permanently rejected for booking %s, "
+                "recipient %s: %s",
+                booking.booking_code,
+                recipient,
+                exc,
+            )
 
-    return bool(recipients)
+    return sent
