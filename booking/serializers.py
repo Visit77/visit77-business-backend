@@ -1642,8 +1642,19 @@ class InvoiceSerializer(serializers.ModelSerializer):
             total = sum((line.total for line in lines), Decimal("0"))
             return {
                 "lines": InvoiceLineSerializer(lines, many=True).data,
-                "total": f"{total:.2f}",
+                "total": total,
             }
+
+        def decimal_value(value):
+            return Decimal(str(value or 0)).quantize(Decimal("0.01"))
+
+        def decimal_charge_rule(item):
+            normalized = dict(item)
+            if "value" in normalized:
+                normalized["value"] = decimal_value(normalized["value"])
+            if "amount" in normalized:
+                normalized["amount"] = decimal_value(normalized["amount"])
+            return normalized
 
         room_group = line_group(room_lines)
         meal_plan_group = line_group(meal_plan_lines)
@@ -1663,8 +1674,8 @@ class InvoiceSerializer(serializers.ModelSerializer):
         if discount_input:
             discount = {
                 "mode": discount_input.get("mode"),
-                "value": str(discount_input.get("value")),
-                "amount": f"{Decimal(str(manual_adjustments.get('discount_amount') or 0)):.2f}",
+                "value": decimal_value(discount_input.get("value")),
+                "amount": decimal_value(manual_adjustments.get("discount_amount")),
             }
 
         adjustment_input = manual_input.get("adjustment")
@@ -1673,26 +1684,31 @@ class InvoiceSerializer(serializers.ModelSerializer):
             adjustment = {
                 "operation": adjustment_input.get("operation"),
                 "mode": adjustment_input.get("mode"),
-                "value": str(adjustment_input.get("value")),
+                "value": decimal_value(adjustment_input.get("value")),
                 "description": adjustment_input.get("description") or "Adjustment",
-                "amount": f"{Decimal(str(manual_adjustments.get('adjustment_amount') or 0)):.2f}",
+                "amount": decimal_value(manual_adjustments.get("adjustment_amount")),
             }
 
-        service_charge_lines = list(snapshot.get("service_charges") or [])
+        service_charge_lines = [
+            decimal_charge_rule(item)
+            for item in snapshot.get("service_charges", [])
+        ]
         service_charge_total = sum(
             (Decimal(str(item.get("amount") or 0)) for item in service_charge_lines),
             Decimal("0"),
         )
         service_charges = {
             "lines": service_charge_lines,
-            "total": f"{service_charge_total:.2f}",
+            "total": service_charge_total,
         }
 
         configured_tax_lines = [
-            item for item in snapshot.get("taxes", []) if not item.get("manual")
+            decimal_charge_rule(item)
+            for item in snapshot.get("taxes", []) if not item.get("manual")
         ]
         manual_tax_lines = [
-            item for item in snapshot.get("taxes", []) if item.get("manual")
+            decimal_charge_rule(item)
+            for item in snapshot.get("taxes", []) if item.get("manual")
         ]
         tax_lines = configured_tax_lines + manual_tax_lines
         taxes = {
@@ -1700,11 +1716,14 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "manual_taxes": manual_tax_lines,
             # Configured rules first, manually entered tax rows last.
             "lines": tax_lines,
-            "total": f"{sum((Decimal(str(item.get('amount') or 0)) for item in tax_lines), Decimal('0')):.2f}",
+            "total": sum(
+                (Decimal(str(item.get("amount") or 0)) for item in tax_lines),
+                Decimal("0"),
+            ),
         }
 
-        room_total = Decimal(room_group["total"])
-        additional_total = Decimal(additional_group["total"])
+        room_total = room_group["total"]
+        additional_total = additional_group["total"]
         return {
             "room_charges": room_group,
             "additional_charges": {
@@ -1719,7 +1738,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "adjustment": adjustment,
             "service_charges": service_charges,
             "taxes": taxes,
-            "charges_total": f"{room_total + additional_total:.2f}",
+            "charges_total": room_total + additional_total,
         }
 
     def get_invoice_details(self, obj):

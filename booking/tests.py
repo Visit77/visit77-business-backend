@@ -1651,10 +1651,10 @@ class BookingServiceTests(TestCase):
             booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
         ).data["charge_groups"]
         self.assertEqual(len(groups["room_charges"]["lines"]), 1)
-        self.assertEqual(groups["room_charges"]["total"], "320000.00")
+        self.assertEqual(groups["room_charges"]["total"], Decimal("320000.00"))
         self.assertEqual(len(groups["additional_charges"]["lines"]), 2)
-        self.assertEqual(groups["additional_charges"]["total"], "200000.00")
-        self.assertEqual(groups["charges_total"], "520000.00")
+        self.assertEqual(groups["additional_charges"]["total"], Decimal("200000.00"))
+        self.assertEqual(groups["charges_total"], Decimal("520000.00"))
 
     def test_duplicate_multiple_meal_plan_ids_are_rejected(self):
         meal_plan = MealPlan.objects.create(
@@ -4133,9 +4133,9 @@ class BookingApiTests(BookingServiceTests):
             [item["description"] for item in groups["additional_charges"]["manual_charges"]["lines"]],
             ["Airport Taxi"],
         )
-        self.assertEqual(groups["discount"]["amount"], "5000.00")
-        self.assertEqual(groups["adjustment"]["amount"], "2000.00")
-        self.assertEqual(groups["service_charges"]["total"], "0.00")
+        self.assertEqual(groups["discount"]["amount"], 5000.0)
+        self.assertEqual(groups["adjustment"]["amount"], 2000.0)
+        self.assertEqual(groups["service_charges"]["total"], 0.0)
         self.assertEqual(
             groups["taxes"]["lines"][-1]["title"],
             "Tourism Tax",
