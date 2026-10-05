@@ -2538,8 +2538,17 @@ def apply_check_in_invoice_adjustments(booking, adjustments=None):
         (line.total for line in invoice.lines.all()), Decimal("0"),
     )
 
-    charges = list(adjustments.get("charges") or [])
-    taxes = list(adjustments.get("taxes") or [])
+    def valid_manual_rows(items):
+        rows = []
+        for item in items or []:
+            description = str(item.get("description") or "").strip()
+            if not description or description.casefold() == "null":
+                continue
+            rows.append({**item, "description": description})
+        return rows
+
+    charges = valid_manual_rows(adjustments.get("charges"))
+    taxes = valid_manual_rows(adjustments.get("taxes"))
     discount = adjustments.get("discount")
     adjustment = adjustments.get("adjustment")
     manual_charge_total = sum(

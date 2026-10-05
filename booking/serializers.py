@@ -1795,6 +1795,44 @@ class BookingSerializer(serializers.ModelSerializer):
 
 class BookingDetailSerializer(BookingSerializer):
     rooms = BookingDetailRoomSerializer(many=True, read_only=True)
+    invoice_adjustments = serializers.SerializerMethodField()
+
+    @staticmethod
+    def get_invoice_adjustments(obj):
+        invoices = sorted(
+            (
+                invoice for invoice in obj.invoices.all()
+                if invoice.charge_scope == Invoice.ChargeScope.PMS
+                and (invoice.charge_snapshot or {}).get("manual_adjustments")
+            ),
+            key=lambda invoice: (invoice.issued_at, str(invoice.id)),
+            reverse=True,
+        )
+        if not invoices:
+            return {
+                "charges": [],
+                "discount": None,
+                "adjustment": None,
+                "taxes": [],
+            }
+        stored = (
+            (invoices[0].charge_snapshot or {})
+            .get("manual_adjustments", {})
+            .get("input", {})
+        )
+        def visible_rows(items):
+            return [
+                item for item in items or []
+                if str(item.get("description") or "").strip().casefold()
+                not in {"", "null"}
+            ]
+
+        return {
+            "charges": visible_rows(stored.get("charges")),
+            "discount": stored.get("discount"),
+            "adjustment": stored.get("adjustment"),
+            "taxes": visible_rows(stored.get("taxes")),
+        }
 
 
 class BookingHistorySerializer(BookingSerializer):
@@ -1979,11 +2017,28 @@ class CheckInAddOnUpdateSerializer(serializers.Serializer):
     configuration = serializers.JSONField(required=False, default=dict)
 
 
+class NonEmptyInvoiceDescriptionListSerializer(serializers.ListSerializer):
+    """Drop blank manual rows before validating their remaining fields."""
+
+    def to_internal_value(self, data):
+        if isinstance(data, (list, tuple)):
+            data = [
+                item for item in data
+                if isinstance(item, dict)
+                and str(item.get("description") or "").strip().casefold()
+                not in {"", "null"}
+            ]
+        return super().to_internal_value(data)
+
+
 class ManualInvoiceAmountSerializer(serializers.Serializer):
     description = serializers.CharField(max_length=255)
     amount = serializers.DecimalField(
         max_digits=14, decimal_places=2, min_value=Decimal("0.01"),
     )
+
+    class Meta:
+        list_serializer_class = NonEmptyInvoiceDescriptionListSerializer
 
 
 class ManualInvoiceDiscountSerializer(serializers.Serializer):

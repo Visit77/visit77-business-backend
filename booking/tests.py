@@ -2585,7 +2585,11 @@ class BookingApiTests(BookingServiceTests):
                 "title": "Tax", "mode": "included", "value": "0.00",
                 "calculation_basis": "per_booking_per_night",
                 "charge_kind": "tax",
-            }], "service_charges": []},
+            }], "service_charges": [{
+                "title": "Service Charge", "mode": "percentage", "value": "0.00",
+                "calculation_basis": "per_booking_per_night",
+                "charge_kind": "service_charge",
+            }]},
         )
 
         ota_crud_url = "/api/v1/admin/ota-invoice-charges/"
@@ -2666,7 +2670,18 @@ class BookingApiTests(BookingServiceTests):
             [item["title"] for item in pms_grouped.data["data"]["tax"]],
             ["Tax"],
         )
-        self.assertEqual(pms_grouped.data["data"]["service_charge"], [])
+        self.assertEqual(
+            [item["title"] for item in pms_grouped.data["data"]["service_charge"]],
+            ["Service Charge"],
+        )
+        self.assertEqual(
+            pms_grouped.data["data"]["service_charge"][0]["mode"],
+            "percentage",
+        )
+        self.assertEqual(
+            pms_grouped.data["data"]["service_charge"][0]["value"],
+            "0.00",
+        )
         self.assertEqual(pms_grouped.data["data"]["other_charge"], [])
         self.assertEqual(pms_grouped.data["data"]["other_tax"], [])
         self.assertEqual(self.client.get(setup_url, HTTP_X_BOOKING_ADMIN_KEY="test-admin-key").status_code, 403)
@@ -4048,6 +4063,8 @@ class BookingApiTests(BookingServiceTests):
             {
                 "invoice_adjustments[charges][0][description]": "Airport Taxi",
                 "invoice_adjustments[charges][0][amount]": "10000",
+                "invoice_adjustments[charges][1][description]": "",
+                "invoice_adjustments[charges][1][amount]": "99999",
                 "invoice_adjustments[discount][mode]": "fixed",
                 "invoice_adjustments[discount][value]": "5000",
                 "invoice_adjustments[adjustment][operation]": "add",
@@ -4056,6 +4073,8 @@ class BookingApiTests(BookingServiceTests):
                 "invoice_adjustments[adjustment][description]": "Manual Adjustment",
                 "invoice_adjustments[taxes][0][description]": "Tourism Tax",
                 "invoice_adjustments[taxes][0][amount]": "1000",
+                "invoice_adjustments[taxes][1][description]": "null",
+                "invoice_adjustments[taxes][1][amount]": "99999",
             },
             format="multipart",
             **headers,
@@ -4086,6 +4105,24 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(
             invoice.charge_snapshot["manual_adjustments"]["adjustment_amount"],
             "2000.00",
+        )
+        stored_adjustments = invoice.charge_snapshot["manual_adjustments"]["input"]
+        self.assertEqual(
+            stored_adjustments["charges"],
+            [{"description": "Airport Taxi", "amount": "10000.00"}],
+        )
+        self.assertEqual(
+            stored_adjustments["taxes"],
+            [{"description": "Tourism Tax", "amount": "1000.00"}],
+        )
+        detail = self.client.get(
+            f"/api/v1/admin/bookings/{booking.id}/",
+            **headers,
+        )
+        self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertEqual(
+            detail.data["data"]["invoice_adjustments"],
+            stored_adjustments,
         )
 
         preserved = self.client.patch(

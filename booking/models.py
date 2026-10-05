@@ -23,7 +23,13 @@ def default_invoice_charges():
             "calculation_basis": "per_booking_per_night",
             "charge_kind": "tax",
         }],
-        "service_charges": [],
+        "service_charges": [{
+            "title": "Service Charge",
+            "mode": "percentage",
+            "value": "0",
+            "calculation_basis": "per_booking_per_night",
+            "charge_kind": "service_charge",
+        }],
     }
 
 
