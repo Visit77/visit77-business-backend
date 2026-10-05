@@ -5595,6 +5595,12 @@ class BookingApiTests(BookingServiceTests):
                 "payment[provider]": "cash",
                 "payment[status]": "paid",
                 "payment[amount]": "50000.00",
+                "invoice_adjustments[charges][0][description]": "Laundry",
+                "invoice_adjustments[charges][0][amount]": "10000.00",
+                "invoice_adjustments[charges][1][description]": "",
+                "invoice_adjustments[charges][1][amount]": "99999.00",
+                "invoice_adjustments[taxes][0][description]": "Tourism Tax",
+                "invoice_adjustments[taxes][0][amount]": "1000.00",
             },
             format="multipart",
             HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
@@ -5605,6 +5611,19 @@ class BookingApiTests(BookingServiceTests):
         booking = Booking.objects.get(id=response.data["data"]["booking"]["id"])
         self.assertEqual(booking.guests.count(), 1)
         self.assertEqual(booking.payments.get().amount, Decimal("50000.00"))
+        invoice = booking.invoices.get(charge_scope=Invoice.ChargeScope.PMS)
+        self.assertEqual(
+            invoice.charge_snapshot["manual_adjustments"]["input"]["charges"],
+            [{"description": "Laundry", "amount": "10000.00"}],
+        )
+        self.assertEqual(
+            invoice.charge_snapshot["manual_adjustments"]["input"]["taxes"],
+            [{"description": "Tourism Tax", "amount": "1000.00"}],
+        )
+        self.assertEqual(
+            invoice.lines.get(metadata__line_type="manual_charge").description,
+            "Laundry",
+        )
         self.assertFalse(booking.rooms.get().breakfast_snapshot["selected"])
         self.assertEqual(
             booking.rooms.get().assignments.get().physical_room_id,

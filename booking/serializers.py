@@ -2179,6 +2179,7 @@ class AdminReservationCreateSerializer(BookingCreateSerializer):
     source_name = serializers.CharField(max_length=120, required=False, allow_blank=True)
     rooms = AdminReservationRoomSerializer(many=True, allow_empty=False)
     payment = InitialPaymentSerializer(required=False, allow_null=True)
+    invoice_adjustments = CheckInInvoiceAdjustmentsSerializer(required=False)
     # Backward compatibility for clients already sending the old field.
     deposit = InitialPaymentSerializer(required=False, allow_null=True, write_only=True)
 

@@ -3023,10 +3023,15 @@ def create_admin_reservation(data, idempotency_key=None, core_business_id=None):
         raise ValidationError({"core_business_id": "Does not match X-Booking-Business-ID."})
     booking_data = dict(data)
     payment_data = booking_data.pop("payment", None)
+    invoice_adjustments = booking_data.pop("invoice_adjustments", None)
     requested_rooms = booking_data["rooms"]
     physical_room_ids_by_index = [item.pop("physical_room_ids", []) for item in requested_rooms]
     booking, _created = create_booking(booking_data, idempotency_key=idempotency_key)
     booking = Booking.objects.select_for_update().prefetch_related("rooms").get(pk=booking.pk)
+
+    if invoice_adjustments is not None:
+        apply_check_in_invoice_adjustments(booking, invoice_adjustments)
+        booking.refresh_from_db()
 
     payment_payload = _initial_payment_payload(
         booking, payment_data, default_to_full_payment=False, source="admin_reservation",

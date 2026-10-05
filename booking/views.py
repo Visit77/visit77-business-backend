@@ -5684,6 +5684,7 @@ class AdminReservationView(APIView):
         identity_photos = {}
         nested_payment = {}
         nested_rooms = {}
+        nested_invoice_adjustments = {"charges": {}, "taxes": {}}
         guest_pattern = re.compile(
             r"^guests?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
         )
@@ -5695,6 +5696,14 @@ class AdminReservationView(APIView):
         )
         room_preference_pattern = re.compile(
             r"^rooms?\[(\d+)\]\[(?:['\"])?preferences(?:['\"])?\]"
+            r"\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+        )
+        invoice_amount_pattern = re.compile(
+            r"^invoice_adjustments\[(charges|taxes)\]\[(\d+)\]"
+            r"\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
+        )
+        invoice_rule_pattern = re.compile(
+            r"^invoice_adjustments\[(discount|adjustment)\]"
             r"\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
         )
 
@@ -5732,6 +5741,21 @@ class AdminReservationView(APIView):
                     except (TypeError, ValueError):
                         raise ValidationError({key: "Must be valid JSON."})
                 nested_rooms.setdefault(index, {})[field] = value
+                continue
+
+            invoice_amount_match = invoice_amount_pattern.match(key)
+            if invoice_amount_match:
+                category = invoice_amount_match.group(1)
+                index = int(invoice_amount_match.group(2))
+                field = invoice_amount_match.group(3)
+                nested_invoice_adjustments[category].setdefault(index, {})[field] = value
+                continue
+
+            invoice_rule_match = invoice_rule_pattern.match(key)
+            if invoice_rule_match:
+                category = invoice_rule_match.group(1)
+                field = invoice_rule_match.group(2)
+                nested_invoice_adjustments.setdefault(category, {})[field] = value
 
         if nested_guests:
             indexes = sorted(nested_guests)
@@ -5746,7 +5770,28 @@ class AdminReservationView(APIView):
                 raise ValidationError({"rooms": "Room indexes must start at 0 and be consecutive."})
             data["rooms"] = [nested_rooms[index] for index in indexes]
 
-        for field in ("guests", "payment", "rooms"):
+        has_nested_invoice_adjustments = any(
+            nested_invoice_adjustments.get(category)
+            for category in ("charges", "taxes", "discount", "adjustment")
+        )
+        if has_nested_invoice_adjustments:
+            normalized_adjustments = {}
+            for category in ("charges", "taxes"):
+                indexed = nested_invoice_adjustments[category]
+                indexes = sorted(indexed)
+                if indexes != list(range(len(indexes))):
+                    raise ValidationError({
+                        f"invoice_adjustments.{category}": (
+                            f"{category.title()} indexes must start at 0 and be consecutive."
+                        )
+                    })
+                normalized_adjustments[category] = [indexed[index] for index in indexes]
+            for category in ("discount", "adjustment"):
+                if nested_invoice_adjustments.get(category):
+                    normalized_adjustments[category] = nested_invoice_adjustments[category]
+            data["invoice_adjustments"] = normalized_adjustments
+
+        for field in ("guests", "payment", "rooms", "invoice_adjustments"):
             raw_value = data.get(field)
             if isinstance(raw_value, str):
                 try:
