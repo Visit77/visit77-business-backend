@@ -103,6 +103,27 @@ from config.response_formatter import success
 
 import logging
 logger = logging.getLogger(__name__)
+
+
+def _collect_unindexed_invoice_adjustments(request_data, nested_adjustments):
+    """Pair repeated multipart charge/tax keys that omit array indexes."""
+    if not hasattr(request_data, "getlist"):
+        return
+    for category in ("charges", "taxes"):
+        descriptions = request_data.getlist(
+            f"invoice_adjustments[{category}][description]"
+        )
+        amounts = request_data.getlist(
+            f"invoice_adjustments[{category}][amount]"
+        )
+        for index in range(max(len(descriptions), len(amounts))):
+            row = nested_adjustments[category].setdefault(index, {})
+            if index < len(descriptions):
+                row["description"] = descriptions[index]
+            if index < len(amounts):
+                row["amount"] = amounts[index]
+
+
 def _pluralize_day_label(days):
     return "Day" if days == 1 else "Days"
 
@@ -4822,6 +4843,9 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
             nested_add_ons = {}
             nested_payment = {}
             nested_invoice_adjustments = {"charges": {}, "taxes": {}}
+            _collect_unindexed_invoice_adjustments(
+                request.data, nested_invoice_adjustments,
+            )
             identity_photos = {}
             guest_field_pattern = re.compile(
                 r"^guests?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
@@ -5685,6 +5709,9 @@ class AdminReservationView(APIView):
         nested_payment = {}
         nested_rooms = {}
         nested_invoice_adjustments = {"charges": {}, "taxes": {}}
+        _collect_unindexed_invoice_adjustments(
+            request.data, nested_invoice_adjustments,
+        )
         guest_pattern = re.compile(
             r"^guests?\[(\d+)\]\[(?:['\"])?([a-zA-Z_][a-zA-Z0-9_]*)(?:['\"])?\]$"
         )

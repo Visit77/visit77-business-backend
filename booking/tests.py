@@ -4124,6 +4124,23 @@ class BookingApiTests(BookingServiceTests):
             detail.data["data"]["invoice_adjustments"],
             stored_adjustments,
         )
+        invoice_data = next(
+            item for item in detail.data["data"]["invoices"]
+            if item["id"] == str(invoice.id)
+        )
+        groups = invoice_data["charge_groups"]
+        self.assertEqual(
+            [item["description"] for item in groups["additional_charges"]["manual_charges"]["lines"]],
+            ["Airport Taxi"],
+        )
+        self.assertEqual(groups["discount"]["amount"], "5000.00")
+        self.assertEqual(groups["adjustment"]["amount"], "2000.00")
+        self.assertEqual(groups["service_charges"]["total"], "0.00")
+        self.assertEqual(
+            groups["taxes"]["lines"][-1]["title"],
+            "Tourism Tax",
+        )
+        self.assertTrue(groups["taxes"]["lines"][-1]["manual"])
 
         preserved = self.client.patch(
             f"/api/v1/admin/bookings/{booking.id}/check-in-form/",

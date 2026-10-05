@@ -1622,26 +1622,103 @@ class InvoiceSerializer(serializers.ModelSerializer):
 
     def get_charge_groups(self, obj):
         room_lines = []
-        additional_lines = []
-        room_total = Decimal("0")
-        additional_total = Decimal("0")
+        meal_plan_lines = []
+        other_service_lines = []
+        manual_charge_lines = []
         for line in obj.lines.all():
             line_type = (line.metadata or {}).get("line_type", "other")
             if line_type in {"room", "extra_bed"}:
                 room_lines.append(line)
-                room_total += line.total
-            elif line_type != "service_fee":
-                additional_lines.append(line)
-                additional_total += line.total
+            elif line_type in {"meal_plan", "breakfast"}:
+                meal_plan_lines.append(line)
+            elif line_type == "manual_charge":
+                manual_charge_lines.append(line)
+            elif line_type not in {
+                "service_fee", "invoice_service_charge", "adjustment",
+            }:
+                other_service_lines.append(line)
+
+        def line_group(lines):
+            total = sum((line.total for line in lines), Decimal("0"))
+            return {
+                "lines": InvoiceLineSerializer(lines, many=True).data,
+                "total": f"{total:.2f}",
+            }
+
+        room_group = line_group(room_lines)
+        meal_plan_group = line_group(meal_plan_lines)
+        other_service_group = line_group(other_service_lines)
+        manual_charge_group = line_group(manual_charge_lines)
+        additional_lines = (
+            meal_plan_lines + other_service_lines + manual_charge_lines
+        )
+        additional_group = line_group(additional_lines)
+
+        snapshot = obj.charge_snapshot or {}
+        manual_adjustments = snapshot.get("manual_adjustments") or {}
+        manual_input = manual_adjustments.get("input") or {}
+
+        discount_input = manual_input.get("discount")
+        discount = None
+        if discount_input:
+            discount = {
+                "mode": discount_input.get("mode"),
+                "value": str(discount_input.get("value")),
+                "amount": f"{Decimal(str(manual_adjustments.get('discount_amount') or 0)):.2f}",
+            }
+
+        adjustment_input = manual_input.get("adjustment")
+        adjustment = None
+        if adjustment_input:
+            adjustment = {
+                "operation": adjustment_input.get("operation"),
+                "mode": adjustment_input.get("mode"),
+                "value": str(adjustment_input.get("value")),
+                "description": adjustment_input.get("description") or "Adjustment",
+                "amount": f"{Decimal(str(manual_adjustments.get('adjustment_amount') or 0)):.2f}",
+            }
+
+        service_charge_lines = list(snapshot.get("service_charges") or [])
+        service_charge_total = sum(
+            (Decimal(str(item.get("amount") or 0)) for item in service_charge_lines),
+            Decimal("0"),
+        )
+        service_charges = {
+            "lines": service_charge_lines,
+            "total": f"{service_charge_total:.2f}",
+        }
+
+        configured_tax_lines = [
+            item for item in snapshot.get("taxes", []) if not item.get("manual")
+        ]
+        manual_tax_lines = [
+            item for item in snapshot.get("taxes", []) if item.get("manual")
+        ]
+        tax_lines = configured_tax_lines + manual_tax_lines
+        taxes = {
+            "configured_taxes": configured_tax_lines,
+            "manual_taxes": manual_tax_lines,
+            # Configured rules first, manually entered tax rows last.
+            "lines": tax_lines,
+            "total": f"{sum((Decimal(str(item.get('amount') or 0)) for item in tax_lines), Decimal('0')):.2f}",
+        }
+
+        room_total = Decimal(room_group["total"])
+        additional_total = Decimal(additional_group["total"])
         return {
-            "room_charges": {
-                "lines": InvoiceLineSerializer(room_lines, many=True).data,
-                "total": f"{room_total:.2f}",
-            },
+            "room_charges": room_group,
             "additional_charges": {
-                "lines": InvoiceLineSerializer(additional_lines, many=True).data,
-                "total": f"{additional_total:.2f}",
+                "meal_plans": meal_plan_group,
+                "other_services": other_service_group,
+                "manual_charges": manual_charge_group,
+                # Meal plans, other services, then manual rows for display.
+                "lines": additional_group["lines"],
+                "total": additional_group["total"],
             },
+            "discount": discount,
+            "adjustment": adjustment,
+            "service_charges": service_charges,
+            "taxes": taxes,
             "charges_total": f"{room_total + additional_total:.2f}",
         }
 
