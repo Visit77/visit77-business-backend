@@ -1652,6 +1652,14 @@ class BookingServiceTests(TestCase):
         ).data["charge_groups"]
         self.assertEqual(len(groups["room_charges"]["lines"]), 1)
         self.assertEqual(groups["room_charges"]["total"], Decimal("320000.00"))
+        self.assertEqual(
+            groups["room_charges"]["lines"][0]["title"],
+            "Double Room",
+        )
+        self.assertEqual(
+            groups["room_charges"]["lines"][0]["description"],
+            "2 x 2 Nights x MMK 80,000",
+        )
         self.assertEqual(len(groups["additional_charges"]["lines"]), 2)
         self.assertEqual(groups["additional_charges"]["total"], Decimal("200000.00"))
         self.assertEqual(groups["charges_total"], Decimal("520000.00"))
@@ -4139,6 +4147,8 @@ class BookingApiTests(BookingServiceTests):
             if item["id"] == str(invoice.id)
         )
         groups = invoice_data["charge_groups"]
+        self.assertEqual(invoice_data["subtotal"], 327000.0)
+        self.assertEqual(groups["subtotal"], 327000.0)
         self.assertEqual(
             invoice_data["charge_snapshot"]["manual_adjustments"]["input"]
             ["discount"]["value"],

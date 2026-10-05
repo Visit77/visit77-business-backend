@@ -2,6 +2,7 @@ from datetime import timedelta, timezone as datetime_timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit
 import json
+import re
 
 from django.db.models import Q
 from django.utils import timezone
@@ -1587,9 +1588,58 @@ class PaymentSerializer(serializers.ModelSerializer):
 
 
 class InvoiceLineSerializer(serializers.ModelSerializer):
+    title = serializers.SerializerMethodField()
+    description = serializers.SerializerMethodField()
+
+    @staticmethod
+    def _display_parts(obj):
+        metadata = obj.metadata or {}
+        title = metadata.get("display_title")
+        description = metadata.get("display_description")
+        if title:
+            return title, description
+
+        raw = obj.description or ""
+        included_match = re.match(
+            r"^(?P<title>.*?) x \d+ \(Included in Room Price\)$",
+            raw,
+            re.IGNORECASE,
+        )
+        if included_match:
+            return included_match.group("title"), "Included in Room Price"
+
+        match = re.match(
+            r"^(?P<title>.*?) x (?P<quantity>\d+) x (?P<nights>\d+) Nights?",
+            raw,
+            re.IGNORECASE,
+        )
+        if match:
+            quantity = int(match.group("quantity"))
+            nights = int(match.group("nights"))
+            unit_price = obj.total / Decimal(quantity * nights)
+            night_label = "Night" if nights == 1 else "Nights"
+            title = match.group("title")
+            if title.startswith("Extra Bed for "):
+                title = "Extra Bed"
+            return (
+                title,
+                f"{quantity} x {nights} {night_label} x "
+                f"{obj.invoice.currency} {unit_price:,.0f}",
+            )
+        return raw, None
+
+    def get_title(self, obj):
+        return self._display_parts(obj)[0]
+
+    def get_description(self, obj):
+        return self._display_parts(obj)[1]
+
     class Meta:
         model = InvoiceLine
-        fields = ["id", "description", "quantity", "unit_price", "total", "metadata", "created_at"]
+        fields = [
+            "id", "title", "description", "quantity", "unit_price", "total",
+            "metadata", "created_at",
+        ]
 
 
 class InvoiceSerializer(serializers.ModelSerializer):
@@ -1604,6 +1654,30 @@ class InvoiceSerializer(serializers.ModelSerializer):
     payment_breakdown = serializers.SerializerMethodField()
     is_closed = serializers.SerializerMethodField()
     charge_snapshot = serializers.SerializerMethodField()
+    subtotal = serializers.SerializerMethodField()
+
+    @staticmethod
+    def _display_subtotal(obj):
+        charge_total = sum(
+            (
+                line.total for line in obj.lines.all()
+                if (line.metadata or {}).get("line_type", "other") not in {
+                    "service_fee", "invoice_service_charge", "adjustment",
+                }
+            ),
+            Decimal("0"),
+        )
+        manual_adjustments = (
+            (obj.charge_snapshot or {}).get("manual_adjustments") or {}
+        )
+        adjustment_amount = Decimal(str(
+            manual_adjustments.get("adjustment_amount") or 0
+        ))
+        return charge_total - obj.discount_total + adjustment_amount
+
+    @classmethod
+    def get_subtotal(cls, obj):
+        return cls._display_subtotal(obj)
 
     @staticmethod
     def get_charge_snapshot(obj):
@@ -1752,6 +1826,10 @@ class InvoiceSerializer(serializers.ModelSerializer):
 
         room_total = room_group["total"]
         additional_total = additional_group["total"]
+        display_subtotal = (
+            room_total + additional_total - obj.discount_total
+            + Decimal(str(manual_adjustments.get("adjustment_amount") or 0))
+        )
         return {
             "room_charges": room_group,
             "additional_charges": {
@@ -1767,6 +1845,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "service_charges": service_charges,
             "taxes": taxes,
             "charges_total": room_total + additional_total,
+            "subtotal": display_subtotal,
         }
 
     def get_invoice_details(self, obj):
@@ -1784,7 +1863,10 @@ class InvoiceSerializer(serializers.ModelSerializer):
         additional_charge_total = sum(
             (
                 amount for line_type, amount in line_totals.items()
-                if line_type not in {"room", "extra_bed", "service_fee", "invoice_service_charge"}
+                if line_type not in {
+                    "room", "extra_bed", "service_fee",
+                    "invoice_service_charge", "adjustment",
+                }
             ),
             Decimal("0"),
         )
@@ -1818,7 +1900,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
                 line_totals.get("service_fee", Decimal("0"))
                 + line_totals.get("invoice_service_charge", Decimal("0"))
             ),
-            "subtotal": money(obj.subtotal),
+            "subtotal": money(self._display_subtotal(obj)),
             "tax_total": money(obj.tax_total),
             "tax_charges": decimalize_charge_snapshot(
                 (obj.charge_snapshot or {}).get("taxes", [])

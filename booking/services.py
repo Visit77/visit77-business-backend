@@ -2216,7 +2216,16 @@ def _booking_charge_lines(booking):
             "description": f"{room_name} x {group['quantity']} x {nights} Night{'s' if nights != 1 else ''}",
             "quantity": 1,
             "unit_price": room_total,
-            "metadata": {**common_metadata, "line_type": "room"},
+            "metadata": {
+                **common_metadata,
+                "line_type": "room",
+                "display_title": room_name,
+                "display_description": (
+                    f"{group['quantity']} x {nights} Night{'s' if nights != 1 else ''} "
+                    f"x {booking.currency} "
+                    f"{room_total / Decimal(group['quantity'] * nights):,.0f}"
+                ),
+            },
         })
         if group["extra_bed_total"]:
             lines.append({
@@ -2226,7 +2235,16 @@ def _booking_charge_lines(booking):
                 ),
                 "quantity": 1,
                 "unit_price": group["extra_bed_total"],
-                "metadata": {**common_metadata, "line_type": "extra_bed"},
+                "metadata": {
+                    **common_metadata,
+                    "line_type": "extra_bed",
+                    "display_title": "Extra Bed",
+                    "display_description": (
+                        f"{group['extra_bed_count']} x {nights} Night{'s' if nights != 1 else ''} "
+                        f"x {booking.currency} "
+                        f"{group['extra_bed_total'] / Decimal(group['extra_bed_count'] * nights):,.0f}"
+                    ),
+                },
             })
         if group["option_total"]:
             lines.append({
@@ -2251,6 +2269,14 @@ def _booking_charge_lines(booking):
                 "meal_plan_link_id": plan["meal_plan_link_id"],
                 "meal_plan_id": plan["meal_plan_id"],
                 "included_in_room_price": plan["included"],
+                "display_title": plan["name"],
+                "display_description": (
+                    "Included in Room Price"
+                    if plan["included"] else
+                    f"{plan['quantity']} x {nights} Night{'s' if nights != 1 else ''} "
+                    f"x {booking.currency} "
+                    f"{plan['total'] / Decimal(plan['quantity'] * nights):,.0f}"
+                ),
             },
         })
     for breakfast in breakfast_groups.values():
@@ -2268,6 +2294,14 @@ def _booking_charge_lines(booking):
                 "meal_plan_id": breakfast["meal_plan_id"],
                 "core_meal_plan_id": breakfast["core_meal_plan_id"],
                 "included_in_room_price": breakfast["included"],
+                "display_title": breakfast["name"],
+                "display_description": (
+                    "Included in Room Price"
+                    if breakfast["included"] else
+                    f"{breakfast['quantity']} x {nights} Night{'s' if nights != 1 else ''} "
+                    f"x {booking.currency} "
+                    f"{breakfast['total'] / Decimal(breakfast['quantity'] * nights):,.0f}"
+                ),
             },
         })
     lines.extend({
