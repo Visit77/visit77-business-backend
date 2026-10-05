@@ -1,5 +1,5 @@
 from datetime import timedelta, timezone as datetime_timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit
 import json
 
@@ -37,6 +37,29 @@ from booking.models import (
     RoomType,
     RoomTypeMealPlan,
 )
+
+
+_CHARGE_SNAPSHOT_MONEY_KEYS = {
+    "value", "amount", "calculation_base", "manual_charge_total",
+    "discount_amount", "adjustment_amount", "manual_tax_total",
+}
+
+
+def decimalize_charge_snapshot(value, key=None):
+    """Expose monetary snapshot values as decimals while keeping JSON storage stable."""
+    if isinstance(value, dict):
+        return {
+            item_key: decimalize_charge_snapshot(item, item_key)
+            for item_key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [decimalize_charge_snapshot(item, key) for item in value]
+    if key not in _CHARGE_SNAPSHOT_MONEY_KEYS or value is None:
+        return value
+    try:
+        return Decimal(str(value)).quantize(Decimal("0.01"))
+    except (InvalidOperation, TypeError, ValueError):
+        return value
 
 
 CANCELLATION_POLICY_NAMES = {
@@ -1580,6 +1603,11 @@ class InvoiceSerializer(serializers.ModelSerializer):
     invoice_pdf_url = serializers.SerializerMethodField()
     payment_breakdown = serializers.SerializerMethodField()
     is_closed = serializers.SerializerMethodField()
+    charge_snapshot = serializers.SerializerMethodField()
+
+    @staticmethod
+    def get_charge_snapshot(obj):
+        return decimalize_charge_snapshot(obj.charge_snapshot or {})
 
     @staticmethod
     def get_is_closed(obj):
@@ -1792,7 +1820,9 @@ class InvoiceSerializer(serializers.ModelSerializer):
             ),
             "subtotal": money(obj.subtotal),
             "tax_total": money(obj.tax_total),
-            "tax_charges": (obj.charge_snapshot or {}).get("taxes", []),
+            "tax_charges": decimalize_charge_snapshot(
+                (obj.charge_snapshot or {}).get("taxes", [])
+            ),
             "discount_total": money(obj.discount_total),
             "grand_total": money(obj.total),
             "deposit_amount": money(deposit_amount),
@@ -1834,6 +1864,11 @@ class BookingSerializer(serializers.ModelSerializer):
     hotel_id = serializers.IntegerField(source='hotel.id')
     hotel = serializers.SerializerMethodField()
     hotel_cancellation_policy = serializers.SerializerMethodField()
+    invoice_charge_snapshot = serializers.SerializerMethodField()
+
+    @staticmethod
+    def get_invoice_charge_snapshot(obj):
+        return decimalize_charge_snapshot(obj.invoice_charge_snapshot or {})
 
     @staticmethod
     def get_room_charge_total(obj):
@@ -1923,12 +1958,12 @@ class BookingDetailSerializer(BookingSerializer):
                 not in {"", "null"}
             ]
 
-        return {
+        return decimalize_charge_snapshot({
             "charges": visible_rows(stored.get("charges")),
             "discount": stored.get("discount"),
             "adjustment": stored.get("adjustment"),
             "taxes": visible_rows(stored.get("taxes")),
-        }
+        })
 
 
 class BookingHistorySerializer(BookingSerializer):

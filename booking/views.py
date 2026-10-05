@@ -106,7 +106,7 @@ logger = logging.getLogger(__name__)
 
 
 def _collect_unindexed_invoice_adjustments(request_data, nested_adjustments):
-    """Pair repeated multipart charge/tax keys that omit array indexes."""
+    """Pair repeated multipart charge/tax keys, including reused indexes."""
     if not hasattr(request_data, "getlist"):
         return
     for category in ("charges", "taxes"):
@@ -122,6 +122,42 @@ def _collect_unindexed_invoice_adjustments(request_data, nested_adjustments):
                 row["description"] = descriptions[index]
             if index < len(amounts):
                 row["amount"] = amounts[index]
+
+        indexed_fields = {}
+        pattern = re.compile(
+            rf"^invoice_adjustments\[{category}\]\[(\d+)\]"
+            r"\[(description|amount)\]$"
+        )
+        for key in request_data.keys():
+            match = pattern.match(key)
+            if not match:
+                continue
+            base_index = int(match.group(1))
+            field = match.group(2)
+            values = request_data.getlist(key)
+            if len(values) > 1:
+                indexed_fields.setdefault(base_index, {})[field] = values
+
+        for base_index, fields in indexed_fields.items():
+            descriptions = fields.get("description", [])
+            amounts = fields.get("amount", [])
+            for offset in range(max(len(descriptions), len(amounts))):
+                row = nested_adjustments[category].setdefault(
+                    base_index + offset, {}
+                )
+                if offset < len(descriptions):
+                    row["description"] = descriptions[offset]
+                if offset < len(amounts):
+                    row["amount"] = amounts[offset]
+
+
+def _is_repeated_indexed_invoice_adjustment(request_data, key):
+    """Return true when a multipart indexed field was submitted repeatedly."""
+    return (
+        hasattr(request_data, "getlist")
+        and key.startswith("invoice_adjustments[")
+        and len(request_data.getlist(key)) > 1
+    )
 
 
 def _pluralize_day_label(days):
@@ -4918,6 +4954,8 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
                     continue
                 invoice_amount_match = invoice_amount_field_pattern.match(key)
                 if invoice_amount_match:
+                    if _is_repeated_indexed_invoice_adjustment(request.data, key):
+                        continue
                     category = invoice_amount_match.group(1)
                     index = int(invoice_amount_match.group(2))
                     field = invoice_amount_match.group(3)
@@ -5772,6 +5810,8 @@ class AdminReservationView(APIView):
 
             invoice_amount_match = invoice_amount_pattern.match(key)
             if invoice_amount_match:
+                if _is_repeated_indexed_invoice_adjustment(request.data, key):
+                    continue
                 category = invoice_amount_match.group(1)
                 index = int(invoice_amount_match.group(2))
                 field = invoice_amount_match.group(3)

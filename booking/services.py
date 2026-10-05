@@ -2422,24 +2422,30 @@ def sync_booking_charge_invoices(booking):
             discount_total=booking.discount_total,
         )
 
+    non_system_line_types = {
+        "ota_other_charge", "invoice_other_charge", "invoice_service_charge",
+        "manual_charge", "adjustment",
+    }
     current_lines = [
         item for item in _booking_charge_lines(booking)
-        if item.get("metadata", {}).get("line_type") not in {
-            "ota_other_charge", "invoice_other_charge", "invoice_service_charge",
-        }
+        if item.get("metadata", {}).get("line_type") not in non_system_line_types
     ]
-    supplemental = booking.invoices.filter(
-        note="Additional stay charges",
-    ).exclude(status__in=[Invoice.Status.PAID, Invoice.Status.VOID]).order_by("-issued_at", "-id").first()
+    supplemental = next((
+        candidate
+        for candidate in booking.invoices.filter(
+            note="Additional stay charges",
+        ).exclude(
+            status__in=[Invoice.Status.PAID, Invoice.Status.VOID],
+        ).order_by("-issued_at", "-id")
+        if not (candidate.charge_snapshot or {}).get("manual_adjustments")
+    ), None)
     locked_invoices = booking.invoices.exclude(status=Invoice.Status.VOID)
     if supplemental:
         locked_invoices = locked_invoices.exclude(pk=supplemental.pk)
 
     invoiced_by_key = defaultdict(lambda: Decimal("0"))
     for line in InvoiceLine.objects.filter(invoice__in=locked_invoices).exclude(
-        metadata__line_type__in=[
-            "ota_other_charge", "invoice_other_charge", "invoice_service_charge",
-        ],
+        metadata__line_type__in=non_system_line_types,
     ):
         invoiced_by_key[_charge_line_key(line)] += line.total
 

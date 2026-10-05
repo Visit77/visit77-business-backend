@@ -4122,13 +4122,33 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(detail.status_code, 200, detail.data)
         self.assertEqual(
             detail.data["data"]["invoice_adjustments"],
-            stored_adjustments,
+            {
+                "charges": [{"description": "Airport Taxi", "amount": 10000.0}],
+                "discount": {"mode": "fixed", "value": 5000.0},
+                "adjustment": {
+                    "operation": "add",
+                    "mode": "fixed",
+                    "value": 2000.0,
+                    "description": "Manual Adjustment",
+                },
+                "taxes": [{"description": "Tourism Tax", "amount": 1000.0}],
+            },
         )
         invoice_data = next(
             item for item in detail.data["data"]["invoices"]
             if item["id"] == str(invoice.id)
         )
         groups = invoice_data["charge_groups"]
+        self.assertEqual(
+            invoice_data["charge_snapshot"]["manual_adjustments"]["input"]
+            ["discount"]["value"],
+            5000.0,
+        )
+        self.assertEqual(
+            invoice_data["charge_snapshot"]["manual_adjustments"]
+            ["manual_charge_total"],
+            10000.0,
+        )
         self.assertEqual(
             [item["description"] for item in groups["additional_charges"]["manual_charges"]["lines"]],
             ["Airport Taxi"],
@@ -4191,6 +4211,24 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(response.data["data"]["invoice"]["id"], str(pms_invoice.id))
         self.assertEqual(pms_invoice.status, Invoice.Status.OPEN)
         self.assertEqual(pms_invoice.total, Decimal("10000"))
+
+        repeated_update = self.client.patch(
+            f"/api/v1/admin/bookings/{booking.id}/check-in-form/",
+            {"contact_name": "Updated Guest"},
+            format="multipart",
+            **headers,
+        )
+        self.assertEqual(repeated_update.status_code, 200, repeated_update.data)
+        pms_invoice.refresh_from_db()
+        self.assertEqual(pms_invoice.status, Invoice.Status.OPEN)
+        self.assertEqual(pms_invoice.total, Decimal("10000"))
+        self.assertEqual(
+            booking.invoices.filter(charge_scope=Invoice.ChargeScope.PMS).count(),
+            1,
+        )
+        self.assertFalse(
+            booking.invoices.filter(status=Invoice.Status.VOID).exists(),
+        )
 
     def test_check_in_form_accepts_unchanged_current_room_even_if_marked_occupied(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-S")
@@ -5616,8 +5654,14 @@ class BookingApiTests(BookingServiceTests):
                 "invoice_adjustments[charges][0][amount]": "10000.00",
                 "invoice_adjustments[charges][1][description]": "",
                 "invoice_adjustments[charges][1][amount]": "99999.00",
-                "invoice_adjustments[taxes][0][description]": "Tourism Tax",
-                "invoice_adjustments[taxes][0][amount]": "1000.00",
+                # Some multipart clients repeat the same indexed key instead
+                # of incrementing the array index. Preserve every paired row.
+                "invoice_adjustments[taxes][0][description]": [
+                    "Tourism Tax", "Test Tax",
+                ],
+                "invoice_adjustments[taxes][0][amount]": [
+                    "1000.00", "2000.00",
+                ],
             },
             format="multipart",
             HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
@@ -5635,7 +5679,10 @@ class BookingApiTests(BookingServiceTests):
         )
         self.assertEqual(
             invoice.charge_snapshot["manual_adjustments"]["input"]["taxes"],
-            [{"description": "Tourism Tax", "amount": "1000.00"}],
+            [
+                {"description": "Tourism Tax", "amount": "1000.00"},
+                {"description": "Test Tax", "amount": "2000.00"},
+            ],
         )
         self.assertEqual(
             invoice.lines.get(metadata__line_type="manual_charge").description,
