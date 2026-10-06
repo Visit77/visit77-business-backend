@@ -1655,6 +1655,9 @@ class InvoiceSerializer(serializers.ModelSerializer):
     is_closed = serializers.SerializerMethodField()
     charge_snapshot = serializers.SerializerMethodField()
     subtotal = serializers.SerializerMethodField()
+    latest_receipt_summary = serializers.SerializerMethodField()
+    pending_charge_groups = serializers.SerializerMethodField()
+    payment_summary = serializers.SerializerMethodField()
 
     @staticmethod
     def _display_subtotal(obj):
@@ -1721,6 +1724,227 @@ class InvoiceSerializer(serializers.ModelSerializer):
         )
         request = self.context.get("request")
         return request.build_absolute_uri(path) if request else path
+
+    @staticmethod
+    def _latest_receipt(obj):
+        payments = [
+            payment for payment in obj.receipts.all()
+            if payment.receipt_number and payment.status in {
+                Payment.Status.PAID, Payment.Status.PARTIALLY_REFUNDED,
+            }
+        ]
+        if not payments:
+            return None
+        return max(
+            payments,
+            key=lambda item: (
+                item.paid_at or item.created_at, item.created_at, str(item.id),
+            ),
+        )
+
+    def get_latest_receipt_summary(self, obj):
+        payment = self._latest_receipt(obj)
+        if not payment:
+            return None
+        snapshot = payment.receipt_snapshot or {}
+        invoice_snapshot = snapshot.get("invoice") or {}
+        invoice_total = Decimal(str(invoice_snapshot.get("invoice_total") or 0))
+        remaining_balance = Decimal(str(snapshot.get("remaining_balance") or 0))
+        payment_amount = Decimal(str(snapshot.get("amount_paid") or payment.amount))
+        total_paid = max(invoice_total - remaining_balance, Decimal("0"))
+        receipt_url = PaymentSerializer(payment, context=self.context).data.get(
+            "receipt_pdf_url"
+        )
+        return {
+            "receipt_number": payment.receipt_number,
+            "invoice_total_at_payment": invoice_total,
+            "previously_paid": max(total_paid - payment_amount, Decimal("0")),
+            "payment_amount": payment_amount,
+            "total_paid_at_payment": total_paid,
+            "remaining_balance": remaining_balance,
+            "paid_at": payment.paid_at or payment.created_at,
+            "receipt_pdf_url": receipt_url,
+        }
+
+    @staticmethod
+    def _pending_line_key(item):
+        metadata = item.get("metadata") or {}
+        line_type = item.get("line_type") or metadata.get("line_type", "other")
+        identifiers = {
+            key: metadata.get(key) for key in (
+                "booking_room_id", "booking_room_ids", "room_type_id",
+                "room_type_ids", "meal_plan_id", "add_on_id",
+            ) if metadata.get(key) is not None
+        }
+        return (
+            line_type,
+            str(item.get("description") or "").strip().casefold(),
+            json.dumps(identifiers, sort_keys=True),
+        )
+
+    @staticmethod
+    def _pending_rule_deltas(current, previous):
+        def rule_key(item):
+            return (
+                str(item.get("title") or "").strip().casefold(),
+                item.get("charge_kind"), item.get("mode"),
+            )
+
+        previous_amounts = {
+            rule_key(item): Decimal(str(item.get("amount") or 0))
+            for item in previous
+        }
+        rows = []
+        for item in current:
+            delta = (
+                Decimal(str(item.get("amount") or 0))
+                - previous_amounts.pop(rule_key(item), Decimal("0"))
+            )
+            if delta:
+                row = decimalize_charge_snapshot(dict(item))
+                row["amount"] = delta
+                rows.append(row)
+        for key, amount in previous_amounts.items():
+            if amount:
+                rows.append({
+                    "title": key[0], "charge_kind": key[1],
+                    "mode": key[2], "amount": -amount,
+                })
+        return rows
+
+    def get_pending_charge_groups(self, obj):
+        payment = self._latest_receipt(obj)
+        receipt_snapshot = payment.receipt_snapshot if payment else {}
+        previous_invoice = (receipt_snapshot or {}).get("invoice") or {}
+        previous_lines = previous_invoice.get("lines") or []
+
+        current_by_key = {}
+        current_examples = {}
+        for line in obj.lines.all():
+            metadata = line.metadata or {}
+            line_type = metadata.get("line_type", "other")
+            if line_type in {"service_fee", "invoice_service_charge", "adjustment"}:
+                continue
+            raw = {
+                "description": line.description,
+                "line_type": line_type,
+                "metadata": metadata,
+            }
+            key = self._pending_line_key(raw)
+            current_by_key[key] = current_by_key.get(key, Decimal("0")) + line.total
+            current_examples[key] = line
+
+        previous_by_key = {}
+        previous_examples = {}
+        for line in previous_lines:
+            if line.get("line_type", "other") in {
+                "service_fee", "invoice_service_charge", "adjustment",
+            }:
+                continue
+            key = self._pending_line_key(line)
+            previous_by_key[key] = (
+                previous_by_key.get(key, Decimal("0"))
+                + Decimal(str(line.get("total") or 0))
+            )
+            previous_examples[key] = line
+
+        grouped = {
+            "room_charges": [], "meal_plans": [],
+            "other_services": [], "manual_charges": [],
+        }
+        for key in set(current_by_key) | set(previous_by_key):
+            delta = current_by_key.get(key, Decimal("0")) - previous_by_key.get(
+                key, Decimal("0")
+            )
+            if not delta:
+                continue
+            line_type = key[0]
+            current_line = current_examples.get(key)
+            if current_line:
+                title, description = InvoiceLineSerializer._display_parts(current_line)
+                metadata = current_line.metadata or {}
+            else:
+                previous_line = previous_examples[key]
+                title = previous_line.get("description") or "Charge adjustment"
+                description = None
+                metadata = previous_line.get("metadata") or {}
+            row = {
+                "title": title,
+                "description": description,
+                "quantity": Decimal("1.00"),
+                "unit_price": delta,
+                "total": delta,
+                "metadata": metadata,
+            }
+            if line_type in {"room", "extra_bed"}:
+                grouped["room_charges"].append(row)
+            elif line_type in {"meal_plan", "breakfast"}:
+                grouped["meal_plans"].append(row)
+            elif line_type == "manual_charge":
+                grouped["manual_charges"].append(row)
+            else:
+                grouped["other_services"].append(row)
+
+        def line_group(lines):
+            return {
+                "lines": lines,
+                "total": sum((item["total"] for item in lines), Decimal("0")),
+            }
+
+        room_group = line_group(grouped["room_charges"])
+        meal_group = line_group(grouped["meal_plans"])
+        other_group = line_group(grouped["other_services"])
+        manual_group = line_group(grouped["manual_charges"])
+        additional_lines = (
+            grouped["meal_plans"] + grouped["other_services"]
+            + grouped["manual_charges"]
+        )
+        additional_group = line_group(additional_lines)
+
+        current_snapshot = obj.charge_snapshot or {}
+        service_lines = self._pending_rule_deltas(
+            current_snapshot.get("service_charges", []),
+            previous_invoice.get("service_charges", []),
+        )
+        tax_lines = self._pending_rule_deltas(
+            current_snapshot.get("taxes", []),
+            previous_invoice.get("tax_charges", []),
+        )
+        previous_total = Decimal(str(previous_invoice.get("invoice_total") or 0))
+        return {
+            "room_charges": room_group,
+            "additional_charges": {
+                "meal_plans": meal_group,
+                "other_services": other_group,
+                "manual_charges": manual_group,
+                "lines": additional_group["lines"],
+                "total": additional_group["total"],
+            },
+            "service_charges": {
+                "lines": service_lines,
+                "total": sum(
+                    (item["amount"] for item in service_lines), Decimal("0")
+                ),
+            },
+            "taxes": {
+                "lines": tax_lines,
+                "total": sum((item["amount"] for item in tax_lines), Decimal("0")),
+            },
+            "grand_total": obj.total - previous_total,
+        }
+
+    def get_payment_summary(self, obj):
+        latest = self.get_latest_receipt_summary(obj)
+        previous_balance = (
+            latest["remaining_balance"] if latest else Decimal("0")
+        )
+        pending_total = self.get_pending_charge_groups(obj)["grand_total"]
+        return {
+            "previous_balance": previous_balance,
+            "pending_charges_total": pending_total,
+            "amount_paid": obj.paid_amount,
+            "amount_due": obj.balance,
+        }
 
     def get_charge_groups(self, obj):
         room_lines = []

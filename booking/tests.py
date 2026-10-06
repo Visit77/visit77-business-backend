@@ -4161,7 +4161,7 @@ class BookingApiTests(BookingServiceTests):
             10000.0,
         )
         self.assertEqual(
-            [item["description"] for item in groups["additional_charges"]["manual_charges"]["lines"]],
+            [item["title"] for item in groups["additional_charges"]["manual_charges"]["lines"]],
             ["Airport Taxi"],
         )
         self.assertEqual(groups["discount"]["amount"], 5000.0)
@@ -4185,6 +4185,100 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(
             invoice.lines.get(metadata__line_type="manual_charge").description,
             "Airport Taxi",
+        )
+
+    def test_partially_paid_invoice_reprices_configured_charges_after_manual_charge(self):
+        self.hotel.pms_invoice_charges = {
+            "service_charges": [{
+                "title": "Service Charge",
+                "mode": "fixed",
+                "value": "500.00",
+                "calculation_basis": "per_room_per_night",
+            }],
+            "taxes": [{
+                "title": "Tax",
+                "mode": "percentage",
+                "value": "10.00",
+            }],
+        }
+        self.hotel.save(update_fields=["pms_invoice_charges"])
+        booking, _ = create_booking({**self.payload(), "source": "pms"})
+        invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
+        payment = record_payment(booking, {
+            "invoice_id": invoice.id,
+            "payment_type": Payment.Type.DEPOSIT,
+            "provider": Payment.Provider.CASH,
+            "amount": Decimal("1000"),
+            "status": Payment.Status.PAID,
+        }, auto_assign=False)
+
+        response = self.client.patch(
+            f"/api/v1/admin/bookings/{booking.id}/check-in-form/",
+            {
+                "invoice_adjustments[charges][0][description]": "Airport Taxi",
+                "invoice_adjustments[charges][0][amount]": "10000",
+            },
+            format="multipart",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        invoice.refresh_from_db()
+        booking.refresh_from_db()
+        self.assertEqual(booking.invoices.count(), 1)
+        self.assertEqual(booking.payments.count(), 1)
+        self.assertEqual(booking.payments.get().id, payment.id)
+        self.assertEqual(invoice.subtotal, Decimal("332000.00"))
+        self.assertEqual(invoice.tax_total, Decimal("33000.00"))
+        self.assertEqual(invoice.total, Decimal("365000.00"))
+        self.assertEqual(invoice.paid_amount, Decimal("1000.00"))
+        self.assertEqual(invoice.balance, Decimal("364000.00"))
+        self.assertEqual(invoice.status, Invoice.Status.PARTIALLY_PAID)
+        self.assertEqual(booking.grand_total, Decimal("365000.00"))
+        self.assertEqual(
+            invoice.lines.get(metadata__line_type="invoice_service_charge").total,
+            Decimal("2000.00"),
+        )
+        serialized = InvoiceSerializer(invoice).data
+        details = serialized["invoice_details"]
+        self.assertEqual(details["amount_paid"], "1000.00")
+        self.assertEqual(details["amount_due"], "364000.00")
+        self.assertEqual(
+            serialized["latest_receipt_summary"]["invoice_total_at_payment"],
+            Decimal("354000.00"),
+        )
+        self.assertEqual(
+            serialized["latest_receipt_summary"]["remaining_balance"],
+            Decimal("353000.00"),
+        )
+        pending = serialized["pending_charge_groups"]
+        self.assertEqual(pending["additional_charges"]["total"], Decimal("10000.00"))
+        self.assertEqual(pending["service_charges"]["total"], Decimal("0.00"))
+        self.assertEqual(pending["taxes"]["total"], Decimal("1000.00"))
+        self.assertEqual(pending["grand_total"], Decimal("11000.00"))
+        self.assertEqual(serialized["payment_summary"]["amount_due"], Decimal("364000.00"))
+
+        record_payment(booking, {
+            "invoice_id": invoice.id,
+            "payment_type": Payment.Type.BALANCE,
+            "provider": Payment.Provider.CASH,
+            "amount": Decimal("9000"),
+            "status": Payment.Status.PAID,
+        }, auto_assign=False)
+        invoice.refresh_from_db()
+        after_receipt = InvoiceSerializer(invoice).data
+        self.assertEqual(
+            after_receipt["latest_receipt_summary"]["payment_amount"],
+            Decimal("9000.00"),
+        )
+        self.assertEqual(
+            after_receipt["latest_receipt_summary"]["previously_paid"],
+            Decimal("1000.00"),
+        )
+        self.assertEqual(
+            after_receipt["pending_charge_groups"]["grand_total"],
+            Decimal("0.00"),
         )
 
     def test_check_in_form_keeps_paid_ota_invoice_locked_and_creates_pms_invoice(self):

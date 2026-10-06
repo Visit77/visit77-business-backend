@@ -2572,8 +2572,13 @@ def apply_check_in_invoice_adjustments(booking, adjustments=None):
         raise ValidationError({"invoice": "Only an open or partially-paid PMS invoice can be updated."})
 
     previous_total = invoice.total
-    manual_line_types = {"manual_charge", "adjustment"}
-    invoice.lines.filter(metadata__line_type__in=manual_line_types).delete()
+    # Rebuild every mutable line. Configured service-charge lines must be
+    # replaced as well, otherwise a partially-paid invoice would keep the old
+    # service amount and then add taxes for the new manual charges on top of it.
+    mutable_line_types = {
+        "manual_charge", "adjustment", "invoice_service_charge",
+    }
+    invoice.lines.filter(metadata__line_type__in=mutable_line_types).delete()
     system_subtotal = sum(
         (line.total for line in invoice.lines.all()), Decimal("0"),
     )
@@ -2606,6 +2611,33 @@ def apply_check_in_invoice_adjustments(booking, adjustments=None):
         (Decimal(str(item["amount"])) for item in taxes), Decimal("0"),
     )
 
+    taxable_base = calculation_base + adjustment_signed - discount_amount
+    if taxable_base < 0:
+        raise ValidationError({
+            "invoice_adjustments": "Discount cannot exceed the current invoice charges."
+        })
+
+    # Use the rules frozen on the invoice, but recalculate their amounts once
+    # against the updated charge base. This keeps the original rates while
+    # ensuring new additional charges receive the configured service/tax.
+    previous_snapshot = invoice.charge_snapshot or {}
+    frozen_config = {
+        "service_charges": [
+            item for item in previous_snapshot.get("service_charges", [])
+            if not item.get("manual")
+        ],
+        "taxes": [
+            item for item in previous_snapshot.get("taxes", [])
+            if not item.get("manual")
+        ],
+    }
+    recalculated = calculate_invoice_charges(
+        frozen_config,
+        taxable_base,
+        **booking_charge_dimensions(booking),
+    )
+    service_charge_total, auto_tax_total = charge_totals(recalculated)
+
     new_lines = [
         InvoiceLine(
             invoice=invoice,
@@ -2617,6 +2649,21 @@ def apply_check_in_invoice_adjustments(booking, adjustments=None):
         )
         for item in charges
     ]
+    new_lines.extend(
+        InvoiceLine(
+            invoice=invoice,
+            description=item["title"],
+            quantity=Decimal("1"),
+            unit_price=Decimal(str(item["amount"])),
+            total=Decimal(str(item["amount"])),
+            metadata={
+                "line_type": "invoice_service_charge",
+                "charge_index": index,
+            },
+        )
+        for index, item in enumerate(recalculated["service_charges"])
+        if Decimal(str(item["amount"]))
+    )
     if adjustment and adjustment_amount:
         new_lines.append(InvoiceLine(
             invoice=invoice,
@@ -2634,14 +2681,9 @@ def apply_check_in_invoice_adjustments(booking, adjustments=None):
         ))
     InvoiceLine.objects.bulk_create(new_lines)
 
-    snapshot = dict(invoice.charge_snapshot or {})
-    auto_taxes = [
-        item for item in snapshot.get("taxes", [])
-        if not item.get("manual")
-    ]
-    auto_tax_total = sum(
-        (Decimal(str(item.get("amount") or 0)) for item in auto_taxes), Decimal("0"),
-    )
+    snapshot = dict(previous_snapshot)
+    snapshot["service_charges"] = recalculated["service_charges"]
+    auto_taxes = recalculated["taxes"]
     manual_tax_rows = [{
         "title": item["description"],
         "mode": "fixed",
@@ -2681,7 +2723,9 @@ def apply_check_in_invoice_adjustments(booking, adjustments=None):
         "manual_tax_total": str(manual_tax_total),
     }
 
-    invoice.subtotal = calculation_base + adjustment_signed
+    invoice.subtotal = (
+        calculation_base + adjustment_signed + service_charge_total
+    )
     invoice.discount_total = discount_amount
     invoice.tax_total = auto_tax_total + manual_tax_total
     invoice.total = invoice.subtotal + invoice.tax_total - invoice.discount_total
