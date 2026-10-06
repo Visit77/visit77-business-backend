@@ -459,11 +459,9 @@ class BookingCodeTests(TestCase):
             self.assertIn("Reservation ID", pdf_text)
             self.assertIn(booking.reservation_code, pdf_text)
             self.assertNotIn("Booking ID", pdf_text)
-            if render is render_invoice_pdf:
-                self.assertIn("Payment Status", pdf_text)
-                self.assertNotIn("Amount Due", pdf_text)
-            else:
-                self.assertIn("Amount Due", pdf_text)
+            self.assertNotIn("Payment Status", pdf_text)
+            self.assertIn("Amount Paid", pdf_text)
+            self.assertIn("Amount Due", pdf_text)
 
     def test_receipt_groups_same_room_type_and_sums_quantity(self):
         booking = self.create_booking("TEST-GROUPED-ROOM-RECEIPT")
@@ -618,7 +616,7 @@ class BookingCodeTests(TestCase):
         adjusted_snapshot["invoice"]["lines"].append({
             "description": "Adjustment", "total": "50", "line_type": "adjustment",
         })
-        adjusted_snapshot["invoice"]["subtotal"] = "1050"
+        adjusted_snapshot["invoice"]["subtotal"] = "950"
         adjusted_snapshot["invoice"]["discount_total"] = "100"
         adjusted_snapshot["invoice"]["invoice_total"] = "950"
         adjusted_snapshot["invoice"]["tax_charges"] = [

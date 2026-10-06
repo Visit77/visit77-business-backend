@@ -4046,6 +4046,7 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(details["check_out"], self.check_out.isoformat())
         self.assertEqual(details["room_charge_total"], "320000.00")
         self.assertEqual(details["grand_total"], "320000.00")
+        self.assertEqual(details["amount_paid"], "0.00")
         self.assertEqual(details["amount_due"], "320000.00")
 
     def test_check_in_form_updates_same_partially_paid_pms_invoice_with_manual_items(self):

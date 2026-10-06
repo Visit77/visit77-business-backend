@@ -1908,6 +1908,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "discount_total": money(obj.discount_total),
             "grand_total": money(obj.total),
             "deposit_amount": money(deposit_amount),
+            "amount_paid": money(obj.paid_amount),
             "amount_due": money(obj.balance),
             "refund_policy": booking.cancellation_policy_snapshot,
         }

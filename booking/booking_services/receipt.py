@@ -38,6 +38,18 @@ def _percentage_label(value):
 
 def _charge_display_rows(line, currency):
     """Render a charge as a title row followed by its calculation row."""
+    metadata = line.get("metadata") or {}
+    display_title = str(metadata.get("display_title") or "").strip()
+    display_description = str(metadata.get("display_description") or "").strip()
+    if display_title:
+        return [
+            (f"<b>{escape(display_title)}</b>", ""),
+            (
+                escape(display_description) if display_description else "-",
+                _money(line.get("total"), currency),
+            ),
+        ]
+
     description = str(line.get("description") or "Charge").strip()
     total = Decimal(str(line.get("total") or 0))
     quantity = Decimal(str(line.get("quantity") or 1))
@@ -170,7 +182,9 @@ def _build_document_snapshot(*, booking, invoice, payment=None):
                 room_charge += line.total
             elif line_type == "extra_bed":
                 extra_bed_charge += line.total
-            elif line_type != "service_fee":
+            elif line_type not in {
+                "service_fee", "invoice_service_charge", "adjustment",
+            }:
                 additional_charge += line.total
             lines.append({
                 "description": line.description,
@@ -205,6 +219,18 @@ def _build_document_snapshot(*, booking, invoice, payment=None):
             }
         grouped_rooms[room_key]["quantity"] += room.quantity
         grouped_rooms[room_key]["extra_beds"] += room.extra_beds
+    adjustment_total = sum(
+        (
+            Decimal(str(line["total"])) for line in lines
+            if line["line_type"] == "adjustment"
+        ),
+        Decimal("0"),
+    )
+    discount_total = invoice.discount_total if invoice else booking.discount_total
+    display_subtotal = (
+        room_charge + extra_bed_charge + additional_charge
+        - discount_total + adjustment_total
+    )
     return {
         "version": 2,
         "receipt_number": payment.receipt_number if payment is not None else "",
@@ -249,7 +275,7 @@ def _build_document_snapshot(*, booking, invoice, payment=None):
             "room_charge_total": str(room_charge),
             "extra_bed_total": str(extra_bed_charge),
             "additional_charge_total": str(additional_charge),
-            "subtotal": str(invoice.subtotal if invoice else booking.grand_total),
+            "subtotal": str(display_subtotal),
             "tax_total": str(invoice.tax_total if invoice else booking.tax_total),
             "discount_total": str(invoice.discount_total if invoice else booking.discount_total),
             "invoice_total": str(invoice.total if invoice else booking.grand_total),
@@ -599,8 +625,11 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     )
     discount_total = Decimal(str(invoice["discount_total"]))
     if is_pms:
-        total_charges = Decimal(str(invoice["subtotal"])) - service_charge_total - adjustment_total
-        display_subtotal = total_charges - discount_total + adjustment_total
+        total_charges = room_total + sum(
+            (Decimal(str(line["total"])) for line in additional_lines),
+            Decimal("0"),
+        )
+        display_subtotal = Decimal(str(invoice["subtotal"]))
         amount_rows.extend([
             ("<b>Total Charges</b>", f"<b>{_money(total_charges, currency)}</b>"),
             ("Discount", f"-{_money(discount_total, currency)}" if discount_total else "0"),
@@ -608,7 +637,7 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
         ])
     else:
         # OTA documents have no Total Charges/discount/adjustment section.
-        display_subtotal = Decimal(str(invoice["subtotal"])) - service_charge_total - discount_total
+        display_subtotal = Decimal(str(invoice["subtotal"]))
         section_ends.pop()
     section_ends.append(len(amount_rows) + 1)
     amount_rows.append(("<b>Subtotal</b>", f"<b>{_money(display_subtotal, currency)}</b>"))
@@ -661,18 +690,13 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     amount_rows.append(
         ("<b>Grand Total</b>", f"<b>{_money(invoice['invoice_total'], currency)}</b>"),
     )
-    if is_pms and document_title == "Invoice":
+    if document_title == "Invoice":
         invoice_total = Decimal(str(invoice["invoice_total"]))
         remaining_balance = Decimal(str(snapshot["remaining_balance"]))
         paid_total = max(invoice_total - remaining_balance, Decimal("0"))
-        payment_status = (
-            "Paid" if remaining_balance == 0
-            else "Partially Paid" if paid_total > 0
-            else "Unpaid"
-        )
         for row in (
             ("<b>Amount Paid</b>", f"<b>{_money(paid_total, currency)}</b>"),
-            ("<b>Payment Status</b>", f"<b>{payment_status}</b>"),
+            ("<b>Amount Due</b>", f"<b>{_money(remaining_balance, currency)}</b>"),
         ):
             centered_label_rows.add(len(amount_rows))
             amount_rows.append(row)
@@ -698,8 +722,8 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
         ("BACKGROUND", (0, 0), (-1, 0), pale), ("GRID", (0, 0), (-1, 0), 0.8, border),
         ("BOX", (0, 0), (-1, -1), 0.8, border), ("LINEBEFORE", (1, 0), (1, -1), 0.8, border),
         *(("LINEABOVE", (0, row), (-1, row), 0.8, border) for row in section_ends),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ]))
     story.append(amount_table)
 
