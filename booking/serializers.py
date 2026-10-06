@@ -1594,12 +1594,15 @@ class InvoiceLineSerializer(serializers.ModelSerializer):
     @staticmethod
     def _display_parts(obj):
         metadata = obj.metadata or {}
+        raw = obj.description or ""
+        if metadata.get("line_type") == "manual_charge":
+            return None, raw
+
         title = metadata.get("display_title")
         description = metadata.get("display_description")
         if title:
             return title, description
 
-        raw = obj.description or ""
         included_match = re.match(
             r"^(?P<title>.*?) x \d+ \(Included in Room Price\)$",
             raw,

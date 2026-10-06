@@ -4161,8 +4161,11 @@ class BookingApiTests(BookingServiceTests):
             10000.0,
         )
         self.assertEqual(
-            [item["title"] for item in groups["additional_charges"]["manual_charges"]["lines"]],
+            [item["description"] for item in groups["additional_charges"]["manual_charges"]["lines"]],
             ["Airport Taxi"],
+        )
+        self.assertIsNone(
+            groups["additional_charges"]["manual_charges"]["lines"][0]["title"]
         )
         self.assertEqual(groups["discount"]["amount"], 5000.0)
         self.assertEqual(groups["adjustment"]["amount"], 2000.0)
@@ -4254,6 +4257,9 @@ class BookingApiTests(BookingServiceTests):
         )
         pending = serialized["pending_charge_groups"]
         self.assertEqual(pending["additional_charges"]["total"], Decimal("10000.00"))
+        pending_manual_line = pending["additional_charges"]["manual_charges"]["lines"][0]
+        self.assertIsNone(pending_manual_line["title"])
+        self.assertEqual(pending_manual_line["description"], "Airport Taxi")
         self.assertEqual(pending["service_charges"]["total"], Decimal("0.00"))
         self.assertEqual(pending["taxes"]["total"], Decimal("1000.00"))
         self.assertEqual(pending["grand_total"], Decimal("11000.00"))
