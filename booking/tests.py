@@ -4252,6 +4252,9 @@ class BookingApiTests(BookingServiceTests):
             Decimal("354000.00"),
         )
         self.assertEqual(
+            serialized["latest_receipt_summary"]["receipt_id"], str(payment.id)
+        )
+        self.assertEqual(
             serialized["latest_receipt_summary"]["remaining_balance"],
             Decimal("353000.00"),
         )
@@ -4272,7 +4275,7 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(pending["grand_total"], Decimal("11000.00"))
         self.assertEqual(serialized["payment_summary"]["amount_due"], Decimal("364000.00"))
 
-        record_payment(booking, {
+        second_payment = record_payment(booking, {
             "invoice_id": invoice.id,
             "payment_type": Payment.Type.BALANCE,
             "provider": Payment.Provider.CASH,
@@ -4293,6 +4296,40 @@ class BookingApiTests(BookingServiceTests):
             after_receipt["pending_charge_groups"]["grand_total"],
             Decimal("0.00"),
         )
+        self.assertEqual(
+            Decimal(second_payment.receipt_snapshot["pending_charge_groups"]["grand_total"]),
+            Decimal("11000.00"),
+        )
+
+        receipt_response = self.client.get(
+            f"/api/v1/admin/receipts/{second_payment.id}/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(receipt_response.status_code, 200, receipt_response.data)
+        receipt_data = receipt_response.data["data"]
+        self.assertEqual(receipt_data["receipt_id"], str(second_payment.id))
+        self.assertEqual(receipt_data["receipt_number"], second_payment.receipt_number)
+        self.assertEqual(receipt_data["payment_amount"], 9000.0)
+        self.assertEqual(receipt_data["amount_due"], 355000.0)
+        self.assertEqual(receipt_data["pending_charge_groups"]["grand_total"], 11000.0)
+        self.assertEqual(
+            receipt_data["previous_receipt_summary"]["receipt_number"],
+            payment.receipt_number,
+        )
+
+        other_hotel = Hotel.objects.create(core_business_id=999001, name="Other Hotel")
+        forbidden_response = self.client.get(
+            f"/api/v1/admin/receipts/{second_payment.id}/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(other_hotel.core_business_id),
+        )
+        self.assertEqual(forbidden_response.status_code, 404)
+        missing_business_response = self.client.get(
+            f"/api/v1/admin/receipts/{second_payment.id}/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+        )
+        self.assertEqual(missing_business_response.status_code, 403)
 
     def test_pending_groups_expose_removed_meal_plan_as_positive_credit(self):
         booking, _ = create_booking({**self.payload(), "source": "pms"})

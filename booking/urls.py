@@ -38,6 +38,7 @@ from booking.views import (
     PublicBookingEstimateView,
     PublicBookingDetailView,
     PublicReceiptPDFView,
+    AdminReceiptDetailView,
     PublicInvoicePDFView,
     PublicDemoPaymentView,
     PublicGlobalAvailabilityView,
@@ -104,6 +105,10 @@ urlpatterns = [
     path("admin/walk-in-bookings/", WalkInBookingView.as_view()),
     path("admin/walk-in-booking-v2/", WalkInBookingV2View.as_view()),
     path("admin/reservations/", AdminReservationView.as_view()),
+    path(
+        "admin/receipts/<uuid:receipt_id>/",
+        AdminReceiptDetailView.as_view(),
+    ),
     path("public/search/availability/", PublicGlobalAvailabilityView.as_view()),
     path("admin/availability/hotel-ids/", AdminAvailableHotelIdsView.as_view()),
     path("admin/ota/hotel-ids/", AdminOTAHotelIdsView.as_view()),

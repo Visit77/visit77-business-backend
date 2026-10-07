@@ -164,7 +164,19 @@ def _hotel_logo(logo_url):
         return None
 
 
-def _build_document_snapshot(*, booking, invoice, payment=None):
+def _snapshot_json_value(value):
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _snapshot_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_snapshot_json_value(item) for item in value]
+    return value
+
+
+def _build_document_snapshot(
+    *, booking, invoice, payment=None, pending_charge_groups=None,
+):
     """Build the shared immutable data used to render invoices and receipts."""
     is_pms = booking.source == booking.Source.PMS
     primary_guest = next(
@@ -231,7 +243,7 @@ def _build_document_snapshot(*, booking, invoice, payment=None):
         room_charge + extra_bed_charge + additional_charge
         - discount_total + adjustment_total
     )
-    return {
+    snapshot = {
         "version": 2,
         "receipt_number": payment.receipt_number if payment is not None else "",
         "invoice_number": invoice.invoice_number if invoice else payment.invoice_number,
@@ -310,9 +322,14 @@ def _build_document_snapshot(*, booking, invoice, payment=None):
             "footer_text": "Powered by Visit77" if is_pms else "",
         },
     }
+    if payment is not None:
+        snapshot["pending_charge_groups"] = _snapshot_json_value(
+            pending_charge_groups or {}
+        )
+    return snapshot
 
 
-def build_receipt_snapshot(payment):
+def build_receipt_snapshot(payment, pending_charge_groups=None):
     """Capture immutable financial and booking data used by the receipt."""
     payment = Payment.objects.select_related("booking__hotel", "invoice").prefetch_related(
         "booking__guests", "booking__rooms__room_type", "invoice__lines", "invoice__receipts",
@@ -321,6 +338,7 @@ def build_receipt_snapshot(payment):
         booking=payment.booking,
         invoice=payment.invoice,
         payment=payment,
+        pending_charge_groups=pending_charge_groups,
     )
 
 
@@ -335,10 +353,12 @@ def build_invoice_snapshot(invoice):
     )
 
 
-def finalize_receipt_snapshot(payment):
+def finalize_receipt_snapshot(payment, pending_charge_groups=None):
     if not payment.receipt_number or payment.receipt_snapshot:
         return payment
-    payment.receipt_snapshot = build_receipt_snapshot(payment)
+    payment.receipt_snapshot = build_receipt_snapshot(
+        payment, pending_charge_groups=pending_charge_groups
+    )
     payment.save(update_fields=["receipt_snapshot"])
     return payment
 

@@ -2779,6 +2779,12 @@ def record_payment(booking, data, auto_assign=True):
         amount_due = invoice.balance
         if data["amount"] > amount_due:
             raise ValidationError({"amount": f"Payment exceeds invoice {invoice.invoice_number} balance of {amount_due} {booking.currency}."})
+        from booking.serializers import InvoiceSerializer
+        pending_charge_groups = InvoiceSerializer(invoice).get_pending_charge_groups(
+            invoice
+        )
+    else:
+        pending_charge_groups = None
     payment = Payment.objects.create(
         booking=booking,
         invoice=invoice,
@@ -2802,7 +2808,9 @@ def record_payment(booking, data, auto_assign=True):
             booking.hold_expires_at = None
         booking.save(update_fields=["amount_paid", "status", "hold_expires_at", "updated_at"])
         from booking.booking_services.receipt import finalize_receipt_snapshot
-        finalize_receipt_snapshot(payment)
+        finalize_receipt_snapshot(
+            payment, pending_charge_groups=pending_charge_groups
+        )
         if auto_assign and payment.amount > 0 and was_pending and booking.status == Booking.Status.CONFIRMED:
             auto_assign_physical_rooms_for_booking(booking)
     _sync_invoice_status(invoice)

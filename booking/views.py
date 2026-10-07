@@ -61,6 +61,7 @@ from booking.serializers import (
     HotelSerializer,
     InvoiceCreateSerializer,
     InvoiceSerializer,
+    decimalize_charge_snapshot,
     OTAInvoiceChargeSerializer,
     GuestIdentityDocumentSerializer,
     GuestIdentityDocumentUploadSerializer,
@@ -780,6 +781,58 @@ class PublicReceiptPDFView(APIView):
             as_attachment=False,
             filename=f"{payment.receipt_number}.pdf",
         )
+
+
+class AdminReceiptDetailView(APIView):
+    permission_classes = [HasBookingAdminKey]
+    business_scoped = True
+
+    def get(self, request, receipt_id):
+        if request.booking_core_business_id is None:
+            raise PermissionDenied("X-Booking-Business-ID is required.")
+        payment = Payment.objects.select_related(
+            "booking__hotel", "invoice"
+        ).prefetch_related(
+            "invoice__receipts", "invoice__lines"
+        ).filter(
+            id=receipt_id,
+            receipt_number__isnull=False,
+            booking__hotel__core_business_id=request.booking_core_business_id,
+        ).first()
+        if not payment:
+            raise NotFound("Receipt not found.")
+
+        invoice_serializer = InvoiceSerializer(
+            payment.invoice, context={"request": request}
+        )
+        receipts = [
+            item for item in payment.invoice.receipts.all()
+            if item.receipt_number and item.status in {
+                Payment.Status.PAID,
+                Payment.Status.PARTIALLY_REFUNDED,
+                Payment.Status.REFUNDED,
+            }
+        ]
+        receipts.sort(
+            key=lambda item: (
+                item.paid_at or item.created_at, item.created_at, str(item.id),
+            )
+        )
+        payment_index = next(
+            index for index, item in enumerate(receipts) if item.pk == payment.pk
+        )
+        previous_receipt = receipts[payment_index - 1] if payment_index else None
+        data = invoice_serializer.receipt_summary(payment)
+        data.update({
+            "previous_receipt_summary": (
+                invoice_serializer.receipt_summary(previous_receipt)
+                if previous_receipt else None
+            ),
+            "pending_charge_groups": decimalize_charge_snapshot(
+                (payment.receipt_snapshot or {}).get("pending_charge_groups") or {}
+            ),
+        })
+        return success(data)
 
 
 class PublicInvoicePDFView(APIView):

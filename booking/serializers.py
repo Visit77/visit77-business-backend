@@ -1749,10 +1749,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             ),
         )
 
-    def get_latest_receipt_summary(self, obj):
-        payment = self._latest_receipt(obj)
-        if not payment:
-            return None
+    def receipt_summary(self, payment):
         snapshot = payment.receipt_snapshot or {}
         invoice_snapshot = snapshot.get("invoice") or {}
         invoice_total = Decimal(str(invoice_snapshot.get("invoice_total") or 0))
@@ -1763,15 +1760,23 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "receipt_pdf_url"
         )
         return {
+            "receipt_id": str(payment.id),
             "receipt_number": payment.receipt_number,
             "invoice_total_at_payment": invoice_total,
             "previously_paid": max(total_paid - payment_amount, Decimal("0")),
             "payment_amount": payment_amount,
             "total_paid_at_payment": total_paid,
             "remaining_balance": remaining_balance,
+            "amount_due": remaining_balance,
             "paid_at": payment.paid_at or payment.created_at,
             "receipt_pdf_url": receipt_url,
         }
+
+    def get_latest_receipt_summary(self, obj):
+        payment = self._latest_receipt(obj)
+        if not payment:
+            return None
+        return self.receipt_summary(payment)
 
     @staticmethod
     def _pending_line_key(item):
