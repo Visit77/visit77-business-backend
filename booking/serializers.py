@@ -1932,13 +1932,49 @@ class InvoiceSerializer(serializers.ModelSerializer):
         additional_group = line_group(additional_lines)
 
         current_snapshot = obj.charge_snapshot or {}
+        previous_service_rules = [
+            dict(item) for item in previous_invoice.get("service_charges", [])
+        ]
+        previous_service_amounts = {}
+        for line in previous_lines:
+            if line.get("line_type") != "invoice_service_charge":
+                continue
+            charge_index = (line.get("metadata") or {}).get("charge_index")
+            if isinstance(charge_index, int):
+                previous_service_amounts[charge_index] = (
+                    previous_service_amounts.get(charge_index, Decimal("0"))
+                    + Decimal(str(line.get("total") or 0))
+                )
+        for index, item in enumerate(previous_service_rules):
+            if index in previous_service_amounts:
+                item["amount"] = str(previous_service_amounts[index])
+
+        previous_tax_rules = [
+            dict(item) for item in previous_invoice.get("tax_charges", [])
+        ]
+        previous_tax_total = Decimal(str(previous_invoice.get("tax_total") or 0))
+        detailed_tax_total = sum(
+            (Decimal(str(item.get("amount") or 0)) for item in previous_tax_rules),
+            Decimal("0"),
+        )
+        # Older receipts could freeze the correct tax_total while retaining
+        # stale per-rule amounts. Rebuild percentage rows from the frozen
+        # pre-charge subtotal so pending tax shows only the real difference.
+        if previous_tax_rules and detailed_tax_total != previous_tax_total:
+            previous_base = Decimal(str(previous_invoice.get("subtotal") or 0))
+            for item in previous_tax_rules:
+                if item.get("mode") == "percentage":
+                    item["amount"] = str(
+                        (previous_base * Decimal(str(item.get("value") or 0)) / 100)
+                        .quantize(Decimal("0.01"))
+                    )
         service_deltas = self._pending_rule_deltas(
             current_snapshot.get("service_charges", []),
-            previous_invoice.get("service_charges", []),
+            previous_service_rules,
         )
         tax_deltas = self._pending_rule_deltas(
             current_snapshot.get("taxes", []),
-            previous_invoice.get("tax_charges", []),
+            previous_tax_rules,
         )
         service_lines = [item for item in service_deltas if item["amount"] > 0]
         tax_lines = [item for item in tax_deltas if item["amount"] > 0]

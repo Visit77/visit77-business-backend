@@ -2394,14 +2394,17 @@ def _charge_line_key(line):
 
 def _replace_invoice_lines(
     invoice, lines, *, tax_total=Decimal("0"), discount_total=Decimal("0"),
-    apply_config=False,
+    apply_config=False, charge_snapshot=None,
 ):
     invoice.lines.all().delete()
     subtotal = sum(
         (Decimal(str(item["quantity"])) * Decimal(str(item["unit_price"])) for item in lines),
         Decimal("0"),
     )
-    charge_snapshot = invoice.charge_snapshot or {"taxes": [], "service_charges": []}
+    charge_snapshot = (
+        charge_snapshot if charge_snapshot is not None
+        else invoice.charge_snapshot or {"taxes": [], "service_charges": []}
+    )
     if apply_config:
         config = (
             invoice.booking.hotel.ota_invoice_charges
@@ -2454,6 +2457,7 @@ def sync_booking_charge_invoices(booking):
             _booking_charge_lines(booking),
             tax_total=booking.tax_total,
             discount_total=booking.discount_total,
+            charge_snapshot=booking.invoice_charge_snapshot,
         )
 
     non_system_line_types = {

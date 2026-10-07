@@ -4354,6 +4354,97 @@ class BookingApiTests(BookingServiceTests):
 
         assert_no_negative_numbers(pending)
 
+    def test_meal_plan_replacement_refreshes_invoice_percentage_charge_snapshot(self):
+        self.hotel.pms_invoice_charges = {
+            "service_charges": [{
+                "title": "Service Charge",
+                "mode": "percentage",
+                "value": "10.00",
+            }],
+            "taxes": [{
+                "title": "Tax",
+                "mode": "percentage",
+                "value": "10.00",
+            }],
+        }
+        self.hotel.save(update_fields=["pms_invoice_charges"])
+        old_plan = MealPlan.objects.create(
+            hotel=self.hotel,
+            core_meal_plan_id=92001,
+            name="Lunch Test",
+            local_base_price=Decimal("1000"),
+        )
+        new_plan = MealPlan.objects.create(
+            hotel=self.hotel,
+            core_meal_plan_id=92002,
+            name="Other Meal Plan",
+            local_base_price=Decimal("2000"),
+        )
+        payload = {**self.payload(), "source": "pms"}
+        payload["rooms"] = [{
+            **payload["rooms"][0],
+            "extra_beds": 0,
+            "meal_plan_id": old_plan.id,
+        }]
+        booking, _ = create_booking(payload)
+        invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
+        payment = record_payment(booking, {
+            "invoice_id": invoice.id,
+            "payment_type": Payment.Type.DEPOSIT,
+            "provider": Payment.Provider.CASH,
+            "amount": Decimal("1000"),
+            "status": Payment.Status.PAID,
+        }, auto_assign=False)
+        stale_snapshot = dict(payment.receipt_snapshot)
+        stale_snapshot["invoice"] = dict(stale_snapshot["invoice"])
+        stale_snapshot["invoice"]["tax_charges"] = [
+            {**item, "amount": "1.00"}
+            for item in stale_snapshot["invoice"]["tax_charges"]
+        ]
+        stale_snapshot["invoice"]["service_charges"] = [
+            {**item, "amount": "1.00"}
+            for item in stale_snapshot["invoice"]["service_charges"]
+        ]
+        payment.receipt_snapshot = stale_snapshot
+        payment.save(update_fields=["receipt_snapshot"])
+
+        response = self.client.patch(
+            f"/api/v1/admin/bookings/{booking.id}/check-in-form/",
+            {"rooms": [{
+                "core_room_type_id": self.room_type.core_room_type_id,
+                "rate_plan_id": self.rate_plan.id,
+                "meal_plan_id": new_plan.id,
+                "quantity": 2,
+                "adults": 4,
+                "children": 0,
+                "extra_beds": 0,
+            }]},
+            format="json",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        invoice.refresh_from_db()
+        self.assertEqual(
+            Decimal(invoice.charge_snapshot["taxes"][0]["amount"]),
+            invoice.tax_total,
+        )
+        service_line = invoice.lines.get(metadata__line_type="invoice_service_charge")
+        self.assertEqual(
+            Decimal(invoice.charge_snapshot["service_charges"][0]["amount"]),
+            service_line.total,
+        )
+        serialized = InvoiceSerializer(invoice).data
+        self.assertEqual(
+            serialized["pending_charge_groups"]["taxes"]["total"],
+            Decimal("400.00"),
+        )
+        self.assertEqual(
+            serialized["pending_charge_groups"]["service_charges"]["total"],
+            Decimal("400.00"),
+        )
+
     def test_check_in_form_keeps_paid_ota_invoice_locked_and_creates_pms_invoice(self):
         booking, _ = create_booking(self.payload())
         ota_invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
