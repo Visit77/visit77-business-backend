@@ -2070,6 +2070,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
                 "lines": credit_lines,
                 "total": credit_total,
             },
+            "total_charges": subtotal,
             "subtotal": subtotal,
             "grand_total": positive_total,
         }
