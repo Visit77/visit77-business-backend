@@ -2046,6 +2046,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
                     "source_type": "invoice_recalculation",
                     "metadata": {},
                 })
+        subtotal = room_group["total"] + additional_group["total"]
         return {
             "room_charges": room_group,
             "additional_charges": {
@@ -2069,6 +2070,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
                 "lines": credit_lines,
                 "total": credit_total,
             },
+            "subtotal": subtotal,
             "grand_total": positive_total,
         }
 
