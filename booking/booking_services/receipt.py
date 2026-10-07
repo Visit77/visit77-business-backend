@@ -259,6 +259,7 @@ def _build_document_snapshot(
         "remaining_balance": str(remaining),
         "booking": {
             "id": str(booking.id),
+            "core_business_id": booking.hotel.core_business_id,
             "source": booking.source,
             "booking_code": booking.booking_code,
             "reservation_code": booking.reservation_code,
@@ -269,6 +270,7 @@ def _build_document_snapshot(
             "hotel_address": _hotel_address(booking.hotel),
             "hotel_phone": _hotel_phone(booking.hotel),
             "hotel_email": _hotel_email(booking.hotel),
+            "hotel_cover_image_url": booking.hotel.cover_image_url,
             "rooms": list(grouped_rooms.values()),
         },
         "guest": {

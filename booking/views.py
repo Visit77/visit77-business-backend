@@ -822,8 +822,63 @@ class AdminReceiptDetailView(APIView):
             index for index, item in enumerate(receipts) if item.pk == payment.pk
         )
         previous_receipt = receipts[payment_index - 1] if payment_index else None
+        snapshot = payment.receipt_snapshot or {}
+        booking_snapshot = snapshot.get("booking") or {}
+        guest_snapshot = snapshot.get("guest") or {}
+        invoice_snapshot = snapshot.get("invoice") or {}
+        booking = payment.booking
+        hotel = booking.hotel
         data = invoice_serializer.receipt_summary(payment)
         data.update({
+            "booking": {
+                "id": booking_snapshot.get("id") or str(booking.id),
+                "booking_code": (
+                    booking_snapshot.get("booking_code") or booking.booking_code
+                ),
+                "reservation_code": (
+                    booking_snapshot.get("reservation_code")
+                    or booking.reservation_code
+                ),
+                "source": booking_snapshot.get("source") or booking.source,
+                "check_in": (
+                    booking_snapshot.get("check_in")
+                    or booking.check_in.isoformat()
+                ),
+                "check_out": (
+                    booking_snapshot.get("check_out")
+                    or booking.check_out.isoformat()
+                ),
+                "nights": booking_snapshot.get("nights", booking.nights),
+            },
+            "hotel": {
+                "core_business_id": (
+                    booking_snapshot.get("core_business_id")
+                    or hotel.core_business_id
+                ),
+                "name": booking_snapshot.get("hotel_name") or hotel.name,
+                "address": booking_snapshot.get("hotel_address") or "",
+                "phone": booking_snapshot.get("hotel_phone") or "",
+                "email": booking_snapshot.get("hotel_email") or "",
+                "cover_image_url": (
+                    booking_snapshot.get("hotel_cover_image_url")
+                    or hotel.cover_image_url
+                ),
+            },
+            "guest": {
+                "name": guest_snapshot.get("name") or booking.contact_name,
+                "phone": guest_snapshot.get("phone") or booking.contact_phone,
+                "email": guest_snapshot.get("email") or booking.contact_email,
+                "billing_address": guest_snapshot.get("billing_address") or "",
+            },
+            "invoice": {
+                "id": str(payment.invoice_id),
+                "invoice_number": (
+                    snapshot.get("invoice_number")
+                    or payment.invoice.invoice_number
+                ),
+                "currency": snapshot.get("currency") or payment.currency,
+                "grand_total": invoice_snapshot.get("invoice_total") or 0,
+            },
             "previous_receipt_summary": (
                 invoice_serializer.receipt_summary(previous_receipt)
                 if previous_receipt else None

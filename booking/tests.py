@@ -4310,6 +4310,19 @@ class BookingApiTests(BookingServiceTests):
         receipt_data = receipt_response.data["data"]
         self.assertEqual(receipt_data["receipt_id"], str(second_payment.id))
         self.assertEqual(receipt_data["receipt_number"], second_payment.receipt_number)
+        self.assertEqual(receipt_data["booking"]["id"], str(booking.id))
+        self.assertEqual(receipt_data["booking"]["check_in"], self.check_in.isoformat())
+        self.assertEqual(receipt_data["booking"]["check_out"], self.check_out.isoformat())
+        self.assertEqual(
+            receipt_data["hotel"]["core_business_id"],
+            self.hotel.core_business_id,
+        )
+        self.assertEqual(receipt_data["hotel"]["name"], self.hotel.name)
+        self.assertEqual(receipt_data["guest"]["name"], "Myo Myo")
+        self.assertEqual(receipt_data["invoice"]["id"], str(invoice.id))
+        self.assertEqual(
+            receipt_data["invoice"]["invoice_number"], invoice.invoice_number
+        )
         self.assertEqual(receipt_data["payment_amount"], 9000.0)
         self.assertEqual(receipt_data["amount_due"], 355000.0)
         self.assertEqual(
