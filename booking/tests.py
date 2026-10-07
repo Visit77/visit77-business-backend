@@ -4312,6 +4312,9 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(receipt_data["receipt_number"], second_payment.receipt_number)
         self.assertEqual(receipt_data["payment_amount"], 9000.0)
         self.assertEqual(receipt_data["amount_due"], 355000.0)
+        self.assertEqual(
+            receipt_data["pending_charge_groups"]["total_charges"], 10000.0
+        )
         self.assertEqual(receipt_data["pending_charge_groups"]["grand_total"], 11000.0)
         self.assertEqual(
             receipt_data["previous_receipt_summary"]["receipt_number"],

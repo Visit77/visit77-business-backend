@@ -10,6 +10,7 @@ _MONEY_EXACT_KEYS = {
     "price", "amount", "subtotal", "balance", "amount_due",
     "amount_paid", "usd_display", "discount", "taxes", "service_fee",
     "already_refunded", "refundable_remaining", "deposit", "tax", "fee",
+    "total_charges",
 }
 _MONEY_KEY_SUFFIXES = (
     "_price", "_prices", "_amount", "_total", "_subtotal", "_balance",
