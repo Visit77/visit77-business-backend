@@ -13,7 +13,7 @@ from rest_framework.test import APIClient
 from rest_framework.exceptions import ValidationError
 from rest_framework_simplejwt.backends import TokenBackend
 
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, MealPlan, OTABookingNotification, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, InvoiceLine, MealPlan, OTABookingNotification, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import CoreIntegrationError, sync_business_from_core
 from booking.booking_services.invoice_charges import calculate_invoice_charges
 from booking.serializers import BookingRoomSerializer, InvoiceSerializer, PublicHotelSerializer
@@ -4286,6 +4286,73 @@ class BookingApiTests(BookingServiceTests):
             after_receipt["pending_charge_groups"]["grand_total"],
             Decimal("0.00"),
         )
+
+    def test_pending_groups_expose_removed_meal_plan_as_positive_credit(self):
+        booking, _ = create_booking({**self.payload(), "source": "pms"})
+        invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
+        meal_line = InvoiceLine.objects.create(
+            invoice=invoice,
+            description="Lunch Test x 1 x 2 Nights",
+            quantity=Decimal("1"),
+            unit_price=Decimal("2000"),
+            total=Decimal("2000"),
+            metadata={
+                "line_type": "meal_plan",
+                "meal_plan_id": 111,
+                "room_type_ids": [self.room_type.id],
+                "booking_room_ids": [booking.rooms.first().id],
+                "display_title": "Lunch Test",
+                "display_description": "1 x 2 Nights x MMK 1,000",
+            },
+        )
+        invoice.subtotal += meal_line.total
+        invoice.total += meal_line.total
+        invoice.save(update_fields=["subtotal", "total", "updated_at"])
+        booking.grand_total += meal_line.total
+        booking.save(update_fields=["grand_total", "updated_at"])
+        record_payment(booking, {
+            "invoice_id": invoice.id,
+            "payment_type": Payment.Type.DEPOSIT,
+            "provider": Payment.Provider.CASH,
+            "amount": Decimal("1000"),
+            "status": Payment.Status.PAID,
+        }, auto_assign=False)
+
+        room_line = invoice.lines.get(metadata__line_type="room")
+        room_metadata = dict(room_line.metadata)
+        room_metadata["booking_room_id"] = room_metadata["booking_room_id"] + 999
+        room_metadata["booking_room_ids"] = [room_metadata["booking_room_id"]]
+        room_line.metadata = room_metadata
+        room_line.save(update_fields=["metadata"])
+        meal_line.delete()
+        invoice.subtotal -= Decimal("2000")
+        invoice.total -= Decimal("2000")
+        invoice.save(update_fields=["subtotal", "total", "updated_at"])
+        invoice.refresh_from_db()
+
+        serialized = InvoiceSerializer(invoice).data
+        pending = serialized["pending_charge_groups"]
+        self.assertEqual(pending["room_charges"]["lines"], [])
+        self.assertEqual(pending["additional_charges"]["lines"], [])
+        self.assertEqual(pending["grand_total"], Decimal("0"))
+        self.assertEqual(pending["credits"]["total"], Decimal("2000"))
+        self.assertEqual(pending["credits"]["lines"][0]["title"], "Lunch Test")
+        self.assertEqual(
+            serialized["payment_summary"]["credit_adjustments_total"],
+            Decimal("2000"),
+        )
+
+        def assert_no_negative_numbers(value):
+            if isinstance(value, dict):
+                for item in value.values():
+                    assert_no_negative_numbers(item)
+            elif isinstance(value, list):
+                for item in value:
+                    assert_no_negative_numbers(item)
+            elif isinstance(value, (int, float, Decimal)):
+                self.assertGreaterEqual(value, 0)
+
+        assert_no_negative_numbers(pending)
 
     def test_check_in_form_keeps_paid_ota_invoice_locked_and_creates_pms_invoice(self):
         booking, _ = create_booking(self.payload())

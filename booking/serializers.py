@@ -1773,11 +1773,22 @@ class InvoiceSerializer(serializers.ModelSerializer):
     def _pending_line_key(item):
         metadata = item.get("metadata") or {}
         line_type = item.get("line_type") or metadata.get("line_type", "other")
+        # BookingRoom rows may be recreated by check-in-form updates. Use
+        # catalog identifiers, not transient booking_room ids, so an unchanged
+        # room/meal line does not appear once as a removal and once as an add.
+        identifier_keys = {
+            "room": ("core_room_type_id", "room_type_id"),
+            "extra_bed": ("core_room_type_id", "room_type_id"),
+            "meal_plan": (
+                "core_meal_plan_id", "meal_plan_id", "room_type_ids",
+            ),
+            "breakfast": (
+                "core_meal_plan_id", "meal_plan_id", "room_type_ids",
+            ),
+        }.get(line_type, ("add_on_id", "meal_plan_id", "room_type_ids"))
         identifiers = {
-            key: metadata.get(key) for key in (
-                "booking_room_id", "booking_room_ids", "room_type_id",
-                "room_type_ids", "meal_plan_id", "add_on_id",
-            ) if metadata.get(key) is not None
+            key: metadata.get(key) for key in identifier_keys
+            if metadata.get(key) is not None
         }
         return (
             line_type,
@@ -1855,6 +1866,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "room_charges": [], "meal_plans": [],
             "other_services": [], "manual_charges": [],
         }
+        credit_candidates = []
         for key in set(current_by_key) | set(previous_by_key):
             delta = current_by_key.get(key, Decimal("0")) - previous_by_key.get(
                 key, Decimal("0")
@@ -1868,9 +1880,24 @@ class InvoiceSerializer(serializers.ModelSerializer):
                 metadata = current_line.metadata or {}
             else:
                 previous_line = previous_examples[key]
-                title = previous_line.get("description") or "Charge adjustment"
-                description = None
                 metadata = previous_line.get("metadata") or {}
+                title = metadata.get("display_title")
+                description = (
+                    metadata.get("display_description")
+                    or previous_line.get("description")
+                    or "Removed charge"
+                )
+                if key[0] != "manual_charge" and not title:
+                    title, description = description, None
+            if delta < 0:
+                credit_candidates.append({
+                    "title": title,
+                    "description": description,
+                    "amount": -delta,
+                    "source_type": key[0],
+                    "metadata": metadata,
+                })
+                continue
             row = {
                 "title": title,
                 "description": description,
@@ -1905,15 +1932,80 @@ class InvoiceSerializer(serializers.ModelSerializer):
         additional_group = line_group(additional_lines)
 
         current_snapshot = obj.charge_snapshot or {}
-        service_lines = self._pending_rule_deltas(
+        service_deltas = self._pending_rule_deltas(
             current_snapshot.get("service_charges", []),
             previous_invoice.get("service_charges", []),
         )
-        tax_lines = self._pending_rule_deltas(
+        tax_deltas = self._pending_rule_deltas(
             current_snapshot.get("taxes", []),
             previous_invoice.get("tax_charges", []),
         )
+        service_lines = [item for item in service_deltas if item["amount"] > 0]
+        tax_lines = [item for item in tax_deltas if item["amount"] > 0]
+        credit_candidates.extend({
+            "title": item.get("title") or "Service charge credit",
+            "description": None,
+            "amount": -item["amount"],
+            "source_type": "service_charge",
+            "metadata": {},
+        } for item in service_deltas if item["amount"] < 0)
+        credit_candidates.extend({
+            "title": item.get("title") or "Tax credit",
+            "description": None,
+            "amount": -item["amount"],
+            "source_type": "tax",
+            "metadata": {},
+        } for item in tax_deltas if item["amount"] < 0)
+
         previous_total = Decimal(str(previous_invoice.get("invoice_total") or 0))
+        invoice_delta = obj.total - previous_total
+        positive_total = (
+            room_group["total"] + additional_group["total"]
+            + sum((item["amount"] for item in service_lines), Decimal("0"))
+            + sum((item["amount"] for item in tax_lines), Decimal("0"))
+        )
+        if invoice_delta > positive_total:
+            residual = invoice_delta - positive_total
+            residual_line = {
+                "title": "Invoice recalculation",
+                "description": None,
+                "quantity": Decimal("1.00"),
+                "unit_price": residual,
+                "total": residual,
+                "metadata": {"line_type": "invoice_recalculation"},
+            }
+            grouped["other_services"].append(residual_line)
+            other_group = line_group(grouped["other_services"])
+            additional_lines = (
+                grouped["meal_plans"] + grouped["other_services"]
+                + grouped["manual_charges"]
+            )
+            additional_group = line_group(additional_lines)
+            positive_total += residual
+
+        credit_total = max(positive_total - invoice_delta, Decimal("0"))
+        candidate_total = sum(
+            (item["amount"] for item in credit_candidates), Decimal("0")
+        )
+        if candidate_total > credit_total:
+            credit_lines = [{
+                "title": "Updated charges credit",
+                "description": None,
+                "amount": credit_total,
+                "source_type": "invoice_recalculation",
+                "metadata": {},
+            }] if credit_total else []
+        else:
+            credit_lines = credit_candidates
+            residual_credit = credit_total - candidate_total
+            if residual_credit:
+                credit_lines.append({
+                    "title": "Invoice recalculation credit",
+                    "description": None,
+                    "amount": residual_credit,
+                    "source_type": "invoice_recalculation",
+                    "metadata": {},
+                })
         return {
             "room_charges": room_group,
             "additional_charges": {
@@ -1933,7 +2025,11 @@ class InvoiceSerializer(serializers.ModelSerializer):
                 "lines": tax_lines,
                 "total": sum((item["amount"] for item in tax_lines), Decimal("0")),
             },
-            "grand_total": obj.total - previous_total,
+            "credits": {
+                "lines": credit_lines,
+                "total": credit_total,
+            },
+            "grand_total": positive_total,
         }
 
     def get_payment_summary(self, obj):
@@ -1941,10 +2037,11 @@ class InvoiceSerializer(serializers.ModelSerializer):
         previous_balance = (
             latest["remaining_balance"] if latest else Decimal("0")
         )
-        pending_total = self.get_pending_charge_groups(obj)["grand_total"]
+        pending_groups = self.get_pending_charge_groups(obj)
         return {
             "previous_balance": previous_balance,
-            "pending_charges_total": pending_total,
+            "pending_charges_total": pending_groups["grand_total"],
+            "credit_adjustments_total": pending_groups["credits"]["total"],
             "amount_paid": obj.paid_amount,
             "amount_due": obj.balance,
         }
