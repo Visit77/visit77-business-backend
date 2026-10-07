@@ -1590,6 +1590,7 @@ class PaymentSerializer(serializers.ModelSerializer):
 class InvoiceLineSerializer(serializers.ModelSerializer):
     title = serializers.SerializerMethodField()
     description = serializers.SerializerMethodField()
+    quantity = serializers.SerializerMethodField()
 
     @staticmethod
     def _display_parts(obj):
@@ -1636,6 +1637,9 @@ class InvoiceLineSerializer(serializers.ModelSerializer):
 
     def get_description(self, obj):
         return self._display_parts(obj)[1]
+
+    def get_quantity(self, obj):
+        return str(int(obj.quantity))
 
     class Meta:
         model = InvoiceLine
@@ -1901,7 +1905,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             row = {
                 "title": title,
                 "description": description,
-                "quantity": Decimal("1.00"),
+                "quantity": "1",
                 "unit_price": delta,
                 "total": delta,
                 "metadata": metadata,
@@ -2005,7 +2009,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             residual_line = {
                 "title": "Invoice recalculation",
                 "description": None,
-                "quantity": Decimal("1.00"),
+                "quantity": "1",
                 "unit_price": residual,
                 "total": residual,
                 "metadata": {"line_type": "invoice_recalculation"},

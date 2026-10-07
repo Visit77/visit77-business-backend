@@ -4260,6 +4260,11 @@ class BookingApiTests(BookingServiceTests):
         pending_manual_line = pending["additional_charges"]["manual_charges"]["lines"][0]
         self.assertIsNone(pending_manual_line["title"])
         self.assertEqual(pending_manual_line["description"], "Airport Taxi")
+        self.assertEqual(pending_manual_line["quantity"], "1")
+        current_manual_line = serialized["charge_groups"]["additional_charges"][
+            "manual_charges"
+        ]["lines"][0]
+        self.assertEqual(current_manual_line["quantity"], "1")
         self.assertEqual(pending["service_charges"]["total"], Decimal("0.00"))
         self.assertEqual(pending["taxes"]["total"], Decimal("1000.00"))
         self.assertEqual(pending["grand_total"], Decimal("11000.00"))
