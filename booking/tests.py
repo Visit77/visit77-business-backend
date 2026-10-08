@@ -4465,6 +4465,47 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(pending["grand_total"], Decimal("7000"))
         self.assertEqual(pending["credits"]["total"], Decimal("0"))
 
+    def test_pending_credits_keep_discount_and_adjustment_sources(self):
+        self.hotel.pms_invoice_charges = {
+            "service_charges": [],
+            "taxes": [],
+        }
+        self.hotel.save(update_fields=["pms_invoice_charges"])
+        booking, _ = create_booking({**self.payload(), "source": "pms"})
+        invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
+        record_payment(booking, {
+            "invoice_id": invoice.id,
+            "payment_type": Payment.Type.DEPOSIT,
+            "provider": Payment.Provider.CASH,
+            "amount": Decimal("1000"),
+            "status": Payment.Status.PAID,
+        }, auto_assign=False)
+
+        apply_check_in_invoice_adjustments(booking, {
+            "charges": [],
+            "discount": {"mode": "fixed", "value": Decimal("5000")},
+            "adjustment": {
+                "operation": "subtract",
+                "mode": "fixed",
+                "value": Decimal("2000"),
+                "description": "Guest compensation",
+            },
+            "taxes": [],
+        })
+        invoice.refresh_from_db()
+
+        pending = InvoiceSerializer(invoice).data["pending_charge_groups"]
+        self.assertEqual(pending["grand_total"], Decimal("0"))
+        self.assertEqual(pending["credits"]["total"], Decimal("7000"))
+        self.assertEqual(
+            [(line["source_type"], line["title"], line["amount"])
+             for line in pending["credits"]["lines"]],
+            [
+                ("discount", "Discount", Decimal("5000")),
+                ("adjustment", "Guest compensation", Decimal("2000")),
+            ],
+        )
+
     def test_meal_plan_replacement_refreshes_invoice_percentage_charge_snapshot(self):
         self.hotel.pms_invoice_charges = {
             "service_charges": [{

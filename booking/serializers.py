@@ -2109,28 +2109,23 @@ class InvoiceSerializer(serializers.ModelSerializer):
             line_delta_total += residual
 
         credit_total = max(-invoice_delta, Decimal("0"))
-        candidate_total = sum(
-            (item["amount"] for item in credit_candidates), Decimal("0")
-        )
-        if candidate_total > credit_total:
-            credit_lines = [{
-                "title": "Updated charges credit",
+        credit_lines = []
+        remaining_credit = credit_total
+        for candidate in credit_candidates:
+            if remaining_credit <= 0:
+                break
+            applied_amount = min(candidate["amount"], remaining_credit)
+            if applied_amount:
+                credit_lines.append({**candidate, "amount": applied_amount})
+                remaining_credit -= applied_amount
+        if remaining_credit:
+            credit_lines.append({
+                "title": "Invoice recalculation credit",
                 "description": None,
-                "amount": credit_total,
+                "amount": remaining_credit,
                 "source_type": "invoice_recalculation",
                 "metadata": {},
-            }] if credit_total else []
-        else:
-            credit_lines = credit_candidates
-            residual_credit = credit_total - candidate_total
-            if residual_credit:
-                credit_lines.append({
-                    "title": "Invoice recalculation credit",
-                    "description": None,
-                    "amount": residual_credit,
-                    "source_type": "invoice_recalculation",
-                    "metadata": {},
-                })
+            })
         total_charges = room_group["total"] + additional_group["total"]
         subtotal = max(
             line_delta_total + adjustment_delta - discount_delta,
