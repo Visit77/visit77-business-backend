@@ -1782,27 +1782,37 @@ class InvoiceSerializer(serializers.ModelSerializer):
     def _pending_line_key(item):
         metadata = item.get("metadata") or {}
         line_type = item.get("line_type") or metadata.get("line_type", "other")
+        canonical_line_type = (
+            "meal_plan" if line_type in {"meal_plan", "breakfast"} else line_type
+        )
         # BookingRoom rows may be recreated by check-in-form updates. Use
         # catalog identifiers, not transient booking_room ids, so an unchanged
         # room/meal line does not appear once as a removal and once as an add.
         identifier_keys = {
             "room": ("core_room_type_id", "room_type_id"),
             "extra_bed": ("core_room_type_id", "room_type_id"),
-            "meal_plan": (
-                "core_meal_plan_id", "meal_plan_id", "room_type_ids",
+            # Older receipt snapshots may not contain core_meal_plan_id, while
+            # current breakfast lines do. meal_plan_id is shared by both the
+            # generic meal-plan and breakfast representations.
+            "meal_plan": ("meal_plan_id", "core_meal_plan_id"),
+        }.get(canonical_line_type, ("add_on_id", "meal_plan_id"))
+        identifier = next(
+            (
+                (key, metadata.get(key))
+                for key in identifier_keys
+                if metadata.get(key) is not None
             ),
-            "breakfast": (
-                "core_meal_plan_id", "meal_plan_id", "room_type_ids",
-            ),
-        }.get(line_type, ("add_on_id", "meal_plan_id", "room_type_ids"))
-        identifiers = {
-            key: metadata.get(key) for key in identifier_keys
-            if metadata.get(key) is not None
-        }
+            None,
+        )
+        # Catalog-backed lines can be renamed without becoming new charges.
+        # Free-form/manual lines still use their description as identity.
+        description = "" if identifier else str(
+            item.get("description") or ""
+        ).strip().casefold()
         return (
-            line_type,
-            str(item.get("description") or "").strip().casefold(),
-            json.dumps(identifiers, sort_keys=True),
+            canonical_line_type,
+            description,
+            json.dumps(identifier, sort_keys=True),
         )
 
     @staticmethod

@@ -4416,6 +4416,55 @@ class BookingApiTests(BookingServiceTests):
 
         assert_no_negative_numbers(pending)
 
+    def test_pending_groups_ignore_same_meal_plan_representation_update(self):
+        booking, _ = create_booking({**self.payload(), "source": "pms"})
+        invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
+        meal_line = InvoiceLine.objects.create(
+            invoice=invoice,
+            description="Bf x 1 x 1 Night",
+            quantity=Decimal("1"),
+            unit_price=Decimal("20000"),
+            total=Decimal("20000"),
+            metadata={
+                "line_type": "meal_plan",
+                "meal_plan_id": 62,
+                "room_type_ids": [self.room_type.id],
+                "booking_room_ids": [booking.rooms.first().id],
+                "display_title": "Bf",
+                "display_description": "1 x 1 Night x MMK 20,000",
+            },
+        )
+        invoice.subtotal += meal_line.total
+        invoice.total += meal_line.total
+        invoice.save(update_fields=["subtotal", "total", "updated_at"])
+        record_payment(booking, {
+            "invoice_id": invoice.id,
+            "payment_type": Payment.Type.DEPOSIT,
+            "provider": Payment.Provider.CASH,
+            "amount": Decimal("1000"),
+            "status": Payment.Status.PAID,
+        }, auto_assign=False)
+
+        meal_line.description = "Breakfast x 1 x 1 Night"
+        meal_line.metadata = {
+            "line_type": "breakfast",
+            "meal_plan_id": 62,
+            "core_meal_plan_id": 52,
+            "room_type_ids": [self.room_type.id],
+            "booking_room_ids": [booking.rooms.first().id + 999],
+            "display_title": "Breakfast",
+            "display_description": "1 x 1 Night x MMK 20,000",
+        }
+        meal_line.save(update_fields=["description", "metadata"])
+
+        pending = InvoiceSerializer(invoice).data["pending_charge_groups"]
+        self.assertEqual(pending["additional_charges"]["lines"], [])
+        self.assertEqual(pending["additional_charges"]["total"], Decimal("0"))
+        self.assertEqual(pending["credits"]["lines"], [])
+        self.assertEqual(pending["credits"]["total"], Decimal("0"))
+        self.assertEqual(pending["total_charges"], Decimal("0"))
+        self.assertEqual(pending["grand_total"], Decimal("0"))
+
     def test_pending_groups_include_discount_and_adjustment_deltas(self):
         self.hotel.pms_invoice_charges = {
             "service_charges": [],
