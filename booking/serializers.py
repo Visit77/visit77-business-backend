@@ -2179,8 +2179,9 @@ class InvoiceSerializer(serializers.ModelSerializer):
             },
             "total_charges": total_charges,
             "subtotal": subtotal,
-            "gross_additions_total": gross_additions_total,
-            "grand_total": max(invoice_delta, Decimal("0")),
+            # Total of the new charge section before separately displayed
+            # removed-charge credits are applied.
+            "grand_total": gross_additions_total,
         }
 
     def get_payment_summary(self, obj):
@@ -2191,7 +2192,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
         pending_groups = self.get_pending_charge_groups(obj)
         return {
             "previous_balance": previous_balance,
-            "pending_charges_total": pending_groups["gross_additions_total"],
+            "pending_charges_total": pending_groups["grand_total"],
             "credit_adjustments_total": pending_groups["credits"]["total"],
             "amount_paid": obj.paid_amount,
             "amount_due": obj.balance,
