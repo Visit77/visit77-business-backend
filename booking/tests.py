@@ -17,7 +17,7 @@ from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, 
 from booking.integrations.core import CoreIntegrationError, sync_business_from_core
 from booking.booking_services.invoice_charges import calculate_invoice_charges
 from booking.serializers import BookingRoomSerializer, InvoiceSerializer, PublicHotelSerializer
-from booking.services import auto_assign_physical_rooms_for_booking, auto_cancel_no_show_reservations, availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, estimate_booking, record_payment, refund_payment, refund_quote, sync_guest_profile
+from booking.services import apply_check_in_invoice_adjustments, auto_assign_physical_rooms_for_booking, auto_cancel_no_show_reservations, availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, estimate_booking, record_payment, refund_payment, refund_quote, sync_guest_profile
 
 
 class BookingServiceTests(TestCase):
@@ -4415,6 +4415,55 @@ class BookingApiTests(BookingServiceTests):
                 self.assertGreaterEqual(value, 0)
 
         assert_no_negative_numbers(pending)
+
+    def test_pending_groups_include_discount_and_adjustment_deltas(self):
+        self.hotel.pms_invoice_charges = {
+            "service_charges": [],
+            "taxes": [],
+        }
+        self.hotel.save(update_fields=["pms_invoice_charges"])
+        booking, _ = create_booking({**self.payload(), "source": "pms"})
+        invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
+        record_payment(booking, {
+            "invoice_id": invoice.id,
+            "payment_type": Payment.Type.DEPOSIT,
+            "provider": Payment.Provider.CASH,
+            "amount": Decimal("1000"),
+            "status": Payment.Status.PAID,
+        }, auto_assign=False)
+
+        apply_check_in_invoice_adjustments(booking, {
+            "charges": [{"description": "Airport Taxi", "amount": Decimal("10000")}],
+            "discount": {"mode": "fixed", "value": Decimal("5000")},
+            "adjustment": {
+                "operation": "add",
+                "mode": "fixed",
+                "value": Decimal("2000"),
+                "description": "Late checkout",
+            },
+            "taxes": [],
+        })
+        invoice.refresh_from_db()
+
+        pending = InvoiceSerializer(invoice).data["pending_charge_groups"]
+        self.assertEqual(pending["total_charges"], Decimal("10000"))
+        self.assertEqual(pending["discount"], {
+            "mode": "fixed",
+            "value": Decimal("5000"),
+            "amount": Decimal("5000"),
+            "change": "increased",
+        })
+        self.assertEqual(pending["adjustment"], {
+            "operation": "add",
+            "mode": "fixed",
+            "value": Decimal("2000"),
+            "description": "Late checkout",
+            "amount": Decimal("2000"),
+            "change": "increased",
+        })
+        self.assertEqual(pending["subtotal"], Decimal("7000"))
+        self.assertEqual(pending["grand_total"], Decimal("7000"))
+        self.assertEqual(pending["credits"]["total"], Decimal("0"))
 
     def test_meal_plan_replacement_refreshes_invoice_percentage_charge_snapshot(self):
         self.hotel.pms_invoice_charges = {

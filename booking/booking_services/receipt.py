@@ -293,6 +293,9 @@ def _build_document_snapshot(
             "tax_total": str(invoice.tax_total if invoice else booking.tax_total),
             "discount_total": str(invoice.discount_total if invoice else booking.discount_total),
             "invoice_total": str(invoice.total if invoice else booking.grand_total),
+            "manual_adjustments": (
+                (invoice.charge_snapshot or {}).get("manual_adjustments") or {}
+            ) if invoice else {},
         },
         "issuer": {
             "name": (

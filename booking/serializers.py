@@ -1941,6 +1941,79 @@ class InvoiceSerializer(serializers.ModelSerializer):
         additional_group = line_group(additional_lines)
 
         current_snapshot = obj.charge_snapshot or {}
+        current_manual = current_snapshot.get("manual_adjustments") or {}
+        current_manual_input = current_manual.get("input") or {}
+        previous_manual = previous_invoice.get("manual_adjustments") or {}
+        previous_manual_input = previous_manual.get("input") or {}
+
+        current_discount = Decimal(str(obj.discount_total or 0))
+        previous_discount = Decimal(str(previous_invoice.get("discount_total") or 0))
+        discount_delta = current_discount - previous_discount
+        discount_input = (
+            current_manual_input.get("discount")
+            or previous_manual_input.get("discount")
+            or {}
+        )
+        discount_group = None
+        if discount_delta:
+            discount_group = {
+                "mode": discount_input.get("mode"),
+                "value": Decimal(str(discount_input.get("value") or 0)),
+                "amount": abs(discount_delta),
+                "change": "increased" if discount_delta > 0 else "decreased",
+            }
+
+        current_adjustment = sum(
+            (
+                line.total for line in obj.lines.all()
+                if (line.metadata or {}).get("line_type") == "adjustment"
+            ),
+            Decimal("0"),
+        )
+        previous_adjustment_lines = [
+            line for line in previous_lines
+            if line.get("line_type") == "adjustment"
+        ]
+        previous_adjustment = sum(
+            (Decimal(str(line.get("total") or 0)) for line in previous_adjustment_lines),
+            Decimal("0"),
+        )
+        adjustment_delta = current_adjustment - previous_adjustment
+        adjustment_input = (
+            current_manual_input.get("adjustment")
+            or previous_manual_input.get("adjustment")
+            or {}
+        )
+        adjustment_group = None
+        if adjustment_delta:
+            adjustment_group = {
+                "operation": adjustment_input.get("operation"),
+                "mode": adjustment_input.get("mode"),
+                "value": Decimal(str(adjustment_input.get("value") or 0)),
+                "description": (
+                    adjustment_input.get("description") or "Adjustment"
+                ),
+                "amount": abs(adjustment_delta),
+                "change": "increased" if adjustment_delta > 0 else "decreased",
+            }
+
+        if discount_delta > 0:
+            credit_candidates.append({
+                "title": "Discount",
+                "description": None,
+                "amount": discount_delta,
+                "source_type": "discount",
+                "metadata": {},
+            })
+        if adjustment_delta < 0:
+            credit_candidates.append({
+                "title": adjustment_group["description"],
+                "description": None,
+                "amount": -adjustment_delta,
+                "source_type": "adjustment",
+                "metadata": {},
+            })
+
         previous_service_rules = [
             dict(item) for item in previous_invoice.get("service_charges", [])
         ]
@@ -2004,8 +2077,14 @@ class InvoiceSerializer(serializers.ModelSerializer):
 
         previous_total = Decimal(str(previous_invoice.get("invoice_total") or 0))
         invoice_delta = obj.total - previous_total
+        line_delta_total = (
+            sum(current_by_key.values(), Decimal("0"))
+            - sum(previous_by_key.values(), Decimal("0"))
+        )
         positive_total = (
             room_group["total"] + additional_group["total"]
+            + max(-discount_delta, Decimal("0"))
+            + max(adjustment_delta, Decimal("0"))
             + sum((item["amount"] for item in service_lines), Decimal("0"))
             + sum((item["amount"] for item in tax_lines), Decimal("0"))
         )
@@ -2027,8 +2106,9 @@ class InvoiceSerializer(serializers.ModelSerializer):
             )
             additional_group = line_group(additional_lines)
             positive_total += residual
+            line_delta_total += residual
 
-        credit_total = max(positive_total - invoice_delta, Decimal("0"))
+        credit_total = max(-invoice_delta, Decimal("0"))
         candidate_total = sum(
             (item["amount"] for item in credit_candidates), Decimal("0")
         )
@@ -2051,7 +2131,11 @@ class InvoiceSerializer(serializers.ModelSerializer):
                     "source_type": "invoice_recalculation",
                     "metadata": {},
                 })
-        subtotal = room_group["total"] + additional_group["total"]
+        total_charges = room_group["total"] + additional_group["total"]
+        subtotal = max(
+            line_delta_total + adjustment_delta - discount_delta,
+            Decimal("0"),
+        )
         return {
             "room_charges": room_group,
             "additional_charges": {
@@ -2061,6 +2145,8 @@ class InvoiceSerializer(serializers.ModelSerializer):
                 "lines": additional_group["lines"],
                 "total": additional_group["total"],
             },
+            "discount": discount_group,
+            "adjustment": adjustment_group,
             "service_charges": {
                 "lines": service_lines,
                 "total": sum(
@@ -2075,9 +2161,9 @@ class InvoiceSerializer(serializers.ModelSerializer):
                 "lines": credit_lines,
                 "total": credit_total,
             },
-            "total_charges": subtotal,
+            "total_charges": total_charges,
             "subtotal": subtotal,
-            "grand_total": positive_total,
+            "grand_total": max(invoice_delta, Decimal("0")),
         }
 
     def get_payment_summary(self, obj):
