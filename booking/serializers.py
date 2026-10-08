@@ -2087,10 +2087,6 @@ class InvoiceSerializer(serializers.ModelSerializer):
 
         previous_total = Decimal(str(previous_invoice.get("invoice_total") or 0))
         invoice_delta = obj.total - previous_total
-        line_delta_total = (
-            sum(current_by_key.values(), Decimal("0"))
-            - sum(previous_by_key.values(), Decimal("0"))
-        )
         positive_total = (
             room_group["total"] + additional_group["total"]
             + max(-discount_delta, Decimal("0"))
@@ -2116,9 +2112,24 @@ class InvoiceSerializer(serializers.ModelSerializer):
             )
             additional_group = line_group(additional_lines)
             positive_total += residual
-            line_delta_total += residual
 
-        credit_total = max(-invoice_delta, Decimal("0"))
+        # Keep additions and removals gross in the response.  For example,
+        # adding a 10,000 manual charge while removing a 15,000 meal plan is
+        # +10,000 pending charges and +15,000 credits (net -5,000), not zero
+        # pending charges and a 5,000 credit.
+        structural_credit_total = sum(
+            (
+                item["amount"] for item in credit_candidates
+                if item.get("source_type") not in {"discount", "adjustment"}
+            ),
+            Decimal("0"),
+        )
+        credit_total = max(
+            structural_credit_total,
+            -invoice_delta,
+            Decimal("0"),
+        )
+        gross_additions_total = max(invoice_delta + credit_total, Decimal("0"))
         credit_lines = []
         remaining_credit = credit_total
         for candidate in credit_candidates:
@@ -2138,7 +2149,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             })
         total_charges = room_group["total"] + additional_group["total"]
         subtotal = max(
-            line_delta_total + adjustment_delta - discount_delta,
+            total_charges + adjustment_delta - discount_delta,
             Decimal("0"),
         )
         return {
@@ -2168,6 +2179,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             },
             "total_charges": total_charges,
             "subtotal": subtotal,
+            "gross_additions_total": gross_additions_total,
             "grand_total": max(invoice_delta, Decimal("0")),
         }
 
@@ -2179,7 +2191,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
         pending_groups = self.get_pending_charge_groups(obj)
         return {
             "previous_balance": previous_balance,
-            "pending_charges_total": pending_groups["grand_total"],
+            "pending_charges_total": pending_groups["gross_additions_total"],
             "credit_adjustments_total": pending_groups["credits"]["total"],
             "amount_paid": obj.paid_amount,
             "amount_due": obj.balance,

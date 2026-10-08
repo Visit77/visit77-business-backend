@@ -4416,6 +4416,73 @@ class BookingApiTests(BookingServiceTests):
 
         assert_no_negative_numbers(pending)
 
+    def test_pending_groups_keep_additions_and_credits_gross(self):
+        self.hotel.pms_invoice_charges = {
+            "service_charges": [],
+            "taxes": [],
+        }
+        self.hotel.save(update_fields=["pms_invoice_charges"])
+        booking, _ = create_booking({**self.payload(), "source": "pms"})
+        invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
+        meal_line = InvoiceLine.objects.create(
+            invoice=invoice,
+            description="Happy Lunch Buffet x 1 x 1 Night",
+            quantity=Decimal("1"),
+            unit_price=Decimal("15000"),
+            total=Decimal("15000"),
+            metadata={
+                "line_type": "meal_plan",
+                "meal_plan_id": 141,
+                "room_type_ids": [self.room_type.id],
+                "booking_room_ids": [booking.rooms.first().id],
+                "display_title": "Happy Lunch Buffet",
+                "display_description": "1 x 1 Night x MMK 15,000",
+            },
+        )
+        invoice.subtotal += meal_line.total
+        invoice.total += meal_line.total
+        invoice.save(update_fields=["subtotal", "total", "updated_at"])
+        record_payment(booking, {
+            "invoice_id": invoice.id,
+            "payment_type": Payment.Type.DEPOSIT,
+            "provider": Payment.Provider.CASH,
+            "amount": Decimal("100"),
+            "status": Payment.Status.PAID,
+        }, auto_assign=False)
+
+        meal_line.delete()
+        manual_line = InvoiceLine.objects.create(
+            invoice=invoice,
+            description="Test",
+            quantity=Decimal("1"),
+            unit_price=Decimal("10000"),
+            total=Decimal("10000"),
+            metadata={"manual": True, "line_type": "manual_charge"},
+        )
+        invoice.subtotal = invoice.subtotal - Decimal("15000") + manual_line.total
+        invoice.total = invoice.total - Decimal("15000") + manual_line.total
+        invoice.save(update_fields=["subtotal", "total", "updated_at"])
+
+        serialized = InvoiceSerializer(invoice).data
+        pending = serialized["pending_charge_groups"]
+        self.assertEqual(pending["total_charges"], Decimal("10000"))
+        self.assertEqual(pending["subtotal"], Decimal("10000"))
+        self.assertEqual(pending["gross_additions_total"], Decimal("10000"))
+        self.assertEqual(pending["grand_total"], Decimal("0"))
+        self.assertEqual(pending["credits"]["total"], Decimal("15000"))
+        self.assertEqual(
+            pending["credits"]["lines"][0]["title"],
+            "Happy Lunch Buffet",
+        )
+        self.assertEqual(
+            serialized["payment_summary"]["pending_charges_total"],
+            Decimal("10000"),
+        )
+        self.assertEqual(
+            serialized["payment_summary"]["credit_adjustments_total"],
+            Decimal("15000"),
+        )
+
     def test_pending_groups_ignore_same_meal_plan_representation_update(self):
         booking, _ = create_booking({**self.payload(), "source": "pms"})
         invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
