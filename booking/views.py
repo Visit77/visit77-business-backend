@@ -5481,6 +5481,7 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
     @action(detail=True, methods=["post"], url_path="check-in")
     @transaction.atomic
     def check_in(self, request, pk=None):
+        logger.info("Booking check-in request data: %s", request.data)
         serializer = CheckInConfirmSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         if not serializer.validated_data["verification_confirmed"]:
