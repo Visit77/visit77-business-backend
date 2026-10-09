@@ -13,7 +13,7 @@ from rest_framework.test import APIClient
 from rest_framework.exceptions import ValidationError
 from rest_framework_simplejwt.backends import TokenBackend
 
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, InvoiceLine, MealPlan, OTABookingNotification, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, InvoiceLine, MealPlan, OTABookingFollowUp, OTABookingNotification, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import CoreIntegrationError, sync_business_from_core
 from booking.booking_services.invoice_charges import calculate_invoice_charges
 from booking.serializers import BookingRoomSerializer, InvoiceSerializer, PublicHotelSerializer
@@ -8380,6 +8380,101 @@ class BookingApiTests(BookingServiceTests):
         self.assertNotIn(occupied.id, {
             room["id"] for group in check_in.data["data"]["groups"] for room in group["rooms"]
         })
+
+
+    def test_superadmin_ota_booking_list_groups_dates_and_uses_page_number_offset(self):
+        now = timezone.now()
+        bookings = []
+        for index, amount in enumerate((Decimal("10000"), Decimal("20000"), Decimal("30000"))):
+            booking = Booking.objects.create(
+                reference=f"OTA-MONITOR-{index}",
+                hotel=self.hotel,
+                source=Booking.Source.OTA,
+                check_in=self.check_in,
+                check_out=self.check_out,
+                contact_name=f"Guest {index}",
+                contact_phone="091111111",
+                currency="MMK",
+                grand_total=amount,
+            )
+            Booking.objects.filter(id=booking.id).update(created_at=now - timedelta(days=index))
+            bookings.append(booking)
+
+        headers = {"HTTP_AUTHORIZATION": f"Bearer {self.core_access_token()}"}
+        first = self.client.get(
+            "/api/v1/superadmin/ota-bookings/?offset=1&limit=1",
+            **headers,
+        )
+        second = self.client.get(
+            "/api/v1/superadmin/ota-bookings/?offset=2&limit=1",
+            **headers,
+        )
+
+        self.assertEqual(first.status_code, 200, first.data)
+        self.assertEqual(first.data["data"]["total_count"], 3)
+        self.assertEqual(first.data["data"]["total_pages"], 3)
+        self.assertEqual(len(first.data["data"]["results"][0]["bookings"]), 1)
+        self.assertIn("created_time", first.data["data"]["results"][0]["bookings"][0])
+        self.assertEqual(
+            str(first.data["data"]["results"][0]["bookings"][0]["id"]),
+            str(bookings[0].id),
+        )
+        self.assertEqual(
+            str(second.data["data"]["results"][0]["bookings"][0]["id"]),
+            str(bookings[1].id),
+        )
+
+    def test_superadmin_can_update_ota_follow_up_without_history_table(self):
+        booking = Booking.objects.create(
+            reference="OTA-FOLLOW-UP",
+            hotel=self.hotel,
+            source=Booking.Source.OTA,
+            check_in=self.check_in,
+            check_out=self.check_out,
+            contact_name="Follow Up Guest",
+            contact_phone="092222222",
+            grand_total=Decimal("80000"),
+        )
+        response = self.client.patch(
+            f"/api/v1/superadmin/ota-bookings/{booking.id}/follow-up/",
+            {"status": "informed", "contact_channel": "phone", "note": "Hotel called."},
+            format="json",
+            HTTP_AUTHORIZATION=f"Bearer {self.core_access_token()}",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        follow_up = OTABookingFollowUp.objects.get(booking=booking)
+        self.assertEqual(follow_up.status, OTABookingFollowUp.Status.INFORMED)
+        self.assertEqual(follow_up.note, "Hotel called.")
+        self.assertEqual(follow_up.informed_by_core_user_id, 9001)
+        self.assertIsNotNone(follow_up.informed_at)
+
+    def test_superadmin_ota_dashboard_has_daily_counts_amounts_and_pagination(self):
+        Booking.objects.create(
+            reference="OTA-DASHBOARD",
+            hotel=self.hotel,
+            source=Booking.Source.OTA,
+            check_in=self.check_in,
+            check_out=self.check_out,
+            contact_name="Dashboard Guest",
+            contact_phone="093333333",
+            currency="MMK",
+            grand_total=Decimal("125000"),
+        )
+        response = self.client.get(
+            "/api/v1/superadmin/ota-booking-dashboard/?offset=1&limit=20",
+            HTTP_AUTHORIZATION=f"Bearer {self.core_access_token()}",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.data["data"]
+        self.assertEqual(data["offset"], 1)
+        self.assertEqual(data["limit"], 20)
+        row = next(item for item in data["results"] if item["hotel"]["id"] == self.hotel.id)
+        self.assertEqual(row["period_count"], 1)
+        self.assertEqual(row["period_amounts_by_currency"]["MMK"], 125000.0)
+        self.assertEqual(row["daily"][-1]["count"], 1)
+        self.assertEqual(row["daily"][-1]["amounts_by_currency"]["MMK"], 125000.0)
 
 
 class DemoSeedCommandTests(TestCase):

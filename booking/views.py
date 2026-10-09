@@ -29,7 +29,7 @@ from booking.booking_services.invoice_charges import (
     sync_hotel_charge_config,
 )
 from booking.integrations.core import CoreClient, sync_business_from_core
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, GuestProfile, Hotel, Invoice, MealPlan, OTABookingNotification, OTAInvoiceCharge, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, PMSInvoiceCharge, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, GuestProfile, Hotel, Invoice, MealPlan, OTABookingFollowUp, OTABookingNotification, OTARemittance, OTAInvoiceCharge, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, PMSInvoiceCharge, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
 from booking.tasks import create_and_queue_ota_booking_notification, ota_notification_payload, queue_booking_confirmation_notifications
 
@@ -4898,6 +4898,421 @@ class SuperAdminAddOnTemplateRequestViewSet(FormattedResponseMixin, mixins.ListM
             "status", "reviewed_by_core_user_id", "reviewed_at", "admin_note", "updated_at",
         ])
         return success(self.get_serializer(template_request).data)
+
+
+def _positive_query_int(request, name, default, maximum=None):
+    try:
+        value = int(request.query_params.get(name, default))
+    except (TypeError, ValueError):
+        raise ValidationError({name: "Must be a positive integer."})
+    if value < 1 or (maximum is not None and value > maximum):
+        message = f"Must be between 1 and {maximum}." if maximum else "Must be a positive integer."
+        raise ValidationError({name: message})
+    return value
+
+
+def _page_payload(items, offset, limit, total_count):
+    total_pages = (total_count + limit - 1) // limit if total_count else 0
+    return {
+        "offset": offset,
+        "limit": limit,
+        "total_count": total_count,
+        "total_pages": total_pages,
+        "has_previous": offset > 1,
+        "has_next": offset < total_pages,
+        "results": items,
+    }
+
+
+def _snapshot_location(hotel):
+    snapshot = hotel.core_snapshot or {}
+
+    def pick(*names):
+        for name in names:
+            value = snapshot.get(name)
+            if value not in (None, ""):
+                if isinstance(value, dict):
+                    return {
+                        "id": value.get("id"),
+                        "name": value.get("name") or value.get("title"),
+                    }
+                return value
+        return None
+
+    return {
+        "state": pick("state", "state_region", "state_name", "state_id"),
+        "city": pick("city", "city_name", "city_id"),
+        "township": pick("township", "tsp", "township_name", "tsp_name", "township_id", "tsp_id"),
+    }
+
+
+def _hotel_matches_location(hotel, field, expected):
+    if not expected:
+        return True
+    value = _snapshot_location(hotel).get(field)
+    if isinstance(value, dict):
+        candidates = [value.get("id"), value.get("name")]
+    else:
+        candidates = [value]
+    expected = str(expected).strip().lower()
+    return any(str(candidate).strip().lower() == expected for candidate in candidates if candidate is not None)
+
+
+def _follow_up_payload(booking):
+    try:
+        follow_up = booking.ota_follow_up
+    except OTABookingFollowUp.DoesNotExist:
+        follow_up = None
+    if not follow_up:
+        return {
+            "status": OTABookingFollowUp.Status.PENDING,
+            "status_display": OTABookingFollowUp.Status.PENDING.label,
+            "note": "",
+            "contact_channel": "",
+            "informed_at": None,
+            "informed_by_core_user_id": None,
+            "updated_at": None,
+        }
+    return {
+        "status": follow_up.status,
+        "status_display": follow_up.get_status_display(),
+        "note": follow_up.note,
+        "contact_channel": follow_up.contact_channel,
+        "informed_at": follow_up.informed_at,
+        "informed_by_core_user_id": follow_up.informed_by_core_user_id,
+        "updated_at": follow_up.updated_at,
+    }
+
+
+def _ota_booking_payload(booking):
+    hotel = booking.hotel
+    try:
+        hotel_tz = ZoneInfo(hotel.timezone or settings.TIME_ZONE)
+    except ZoneInfoNotFoundError:
+        hotel_tz = timezone.get_current_timezone()
+    created_at = timezone.localtime(booking.created_at, hotel_tz)
+    room_lines = []
+    adults = children = room_quantity = 0
+    for room in booking.rooms.all():
+        snapshot = room.room_type_snapshot or {}
+        room_lines.append({
+            "room_type_id": room.room_type_id,
+            "room_type_name": snapshot.get("name") or room.room_type.name,
+            "quantity": room.quantity,
+            "adults": room.adults,
+            "children": room.children,
+        })
+        room_quantity += room.quantity
+        adults += room.adults
+        children += room.children
+    snapshot = hotel.core_snapshot or {}
+    return {
+        "id": booking.id,
+        "reference": booking.reference,
+        "booking_code": booking.booking_code,
+        "status": booking.status,
+        "source": booking.source,
+        "created_at": created_at,
+        "created_date": created_at.date(),
+        "created_time": created_at.strftime("%H:%M"),
+        "hotel": {
+            "id": hotel.id,
+            "core_business_id": hotel.core_business_id,
+            "name": hotel.name,
+            "phone": hotel.phone,
+            "email": snapshot.get("email") or snapshot.get("business_email") or "",
+            "address": hotel.address,
+            "package": hotel.package,
+            "location": _snapshot_location(hotel),
+        },
+        "guest": {
+            "name": booking.contact_name,
+            "phone": booking.contact_phone,
+            "email": booking.contact_email,
+            "adults": adults,
+            "children": children,
+            "total_guests": adults + children,
+        },
+        "stay": {
+            "check_in": booking.check_in,
+            "check_out": booking.check_out,
+            "nights": booking.nights,
+            "room_quantity": room_quantity,
+            "rooms": room_lines,
+        },
+        "currency": booking.currency,
+        "amount": booking.grand_total,
+        "amount_paid": booking.amount_paid,
+        "amount_due": max(booking.grand_total - booking.amount_paid, Decimal("0")),
+        "follow_up": _follow_up_payload(booking),
+    }
+
+
+def _filter_superadmin_hotels(request):
+    hotels = list(Hotel.objects.filter(is_active=True))
+    hotel_value = request.query_params.get("hotel_id") or request.query_params.get("core_business_id")
+    search = (request.query_params.get("search") or request.query_params.get("hotel") or "").strip().lower()
+    if hotel_value:
+        hotels = [hotel for hotel in hotels if str(hotel.id) == str(hotel_value) or str(hotel.core_business_id) == str(hotel_value)]
+    if search:
+        hotels = [hotel for hotel in hotels if search in hotel.name.lower()]
+    for field in ("state", "city", "township"):
+        expected = request.query_params.get(f"{field}_id") or request.query_params.get(field)
+        hotels = [hotel for hotel in hotels if _hotel_matches_location(hotel, field, expected)]
+    return hotels
+
+
+def _date_param(request, name, default=None):
+    raw = request.query_params.get(name)
+    if not raw:
+        return default
+    value = parse_date(raw)
+    if value is None:
+        raise ValidationError({name: "Use YYYY-MM-DD format."})
+    return value
+
+
+class SuperAdminOTABookingListView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
+    permission_classes = [IsCoreSuperAdmin]
+
+    def get(self, request):
+        offset = _positive_query_int(request, "offset", 1)
+        limit = _positive_query_int(request, "limit", 20, maximum=200)
+        hotels = _filter_superadmin_hotels(request)
+        queryset = Booking.objects.filter(
+            source=Booking.Source.OTA,
+            hotel_id__in=[hotel.id for hotel in hotels],
+        ).select_related("hotel", "ota_follow_up").prefetch_related("rooms__room_type")
+        date_from = _date_param(request, "date_from")
+        date_to = _date_param(request, "date_to")
+        if date_from:
+            queryset = queryset.filter(created_at__date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(created_at__date__lte=date_to)
+        booking_status = request.query_params.get("booking_status")
+        if booking_status:
+            queryset = queryset.filter(status=booking_status)
+        follow_up_status = request.query_params.get("follow_up_status")
+        if follow_up_status == OTABookingFollowUp.Status.PENDING:
+            queryset = queryset.filter(Q(ota_follow_up__isnull=True) | Q(ota_follow_up__status=follow_up_status))
+        elif follow_up_status:
+            queryset = queryset.filter(ota_follow_up__status=follow_up_status)
+        queryset = queryset.order_by("-created_at", "-id")
+        total_count = queryset.count()
+
+        daily_totals = defaultdict(lambda: {"count": 0, "amounts": defaultdict(Decimal)})
+        for created_at, currency, amount in queryset.values_list("created_at", "currency", "grand_total"):
+            day = timezone.localtime(created_at).date().isoformat()
+            daily_totals[day]["count"] += 1
+            daily_totals[day]["amounts"][currency] += amount
+
+        start = (offset - 1) * limit
+        page_bookings = list(queryset[start:start + limit])
+        groups = []
+        group_map = {}
+        today = timezone.localdate()
+        for booking in page_bookings:
+            payload = _ota_booking_payload(booking)
+            day = payload["created_date"].isoformat()
+            if day not in group_map:
+                stats = daily_totals[day]
+                group = {
+                    "date": day,
+                    "label": "Today" if payload["created_date"] == today else day,
+                    "count": stats["count"],
+                    "amounts_by_currency": dict(stats["amounts"]),
+                    "currency": next(iter(stats["amounts"])) if len(stats["amounts"]) == 1 else None,
+                    "total_amount": next(iter(stats["amounts"].values())) if len(stats["amounts"]) == 1 else None,
+                    "bookings": [],
+                }
+                group_map[day] = group
+                groups.append(group)
+            group_map[day]["bookings"].append(payload)
+        return success(_page_payload(groups, offset, limit, total_count))
+
+
+class SuperAdminOTABookingDetailView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
+    permission_classes = [IsCoreSuperAdmin]
+
+    def get(self, request, booking_id):
+        booking = (
+            Booking.objects.filter(id=booking_id, source=Booking.Source.OTA)
+            .select_related("hotel", "ota_follow_up")
+            .prefetch_related("rooms__room_type")
+            .first()
+        )
+        if not booking:
+            raise NotFound("OTA booking not found.")
+        return success(_ota_booking_payload(booking))
+
+
+class SuperAdminOTABookingFollowUpView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
+    permission_classes = [IsCoreSuperAdmin]
+
+    def patch(self, request, booking_id):
+        booking = Booking.objects.filter(id=booking_id, source=Booking.Source.OTA).first()
+        if not booking:
+            raise NotFound("OTA booking not found.")
+        allowed_statuses = {choice for choice, _ in OTABookingFollowUp.Status.choices}
+        allowed_channels = {choice for choice, _ in OTABookingFollowUp.ContactChannel.choices}
+        follow_up_status = request.data.get("status", OTABookingFollowUp.Status.PENDING)
+        channel = request.data.get("contact_channel", "")
+        if follow_up_status not in allowed_statuses:
+            raise ValidationError({"status": "Invalid follow-up status."})
+        if channel and channel not in allowed_channels:
+            raise ValidationError({"contact_channel": "Invalid contact channel."})
+        core_user_id = _core_user_id(request)
+        existing = OTABookingFollowUp.objects.filter(booking=booking).first()
+        defaults = {
+            "status": follow_up_status,
+            "note": request.data.get("note", ""),
+            "contact_channel": channel,
+            "updated_by_core_user_id": core_user_id,
+        }
+        if follow_up_status == OTABookingFollowUp.Status.INFORMED:
+            defaults.update(
+                informed_at=(existing.informed_at if existing and existing.informed_at else timezone.now()),
+                informed_by_core_user_id=(
+                    existing.informed_by_core_user_id
+                    if existing and existing.informed_by_core_user_id
+                    else core_user_id
+                ),
+            )
+        else:
+            defaults.update(informed_at=None, informed_by_core_user_id=None)
+        OTABookingFollowUp.objects.update_or_create(booking=booking, defaults=defaults)
+        booking = Booking.objects.select_related("hotel", "ota_follow_up").prefetch_related("rooms__room_type").get(id=booking.id)
+        return success(_ota_booking_payload(booking))
+
+
+class SuperAdminOTABookingDashboardView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
+    permission_classes = [IsCoreSuperAdmin]
+
+    def get(self, request):
+        offset = _positive_query_int(request, "offset", 1)
+        limit = _positive_query_int(request, "limit", 20, maximum=200)
+        today = timezone.localdate()
+        date_to = _date_param(request, "date_to", today)
+        date_from = _date_param(request, "date_from", date_to - timedelta(days=6))
+        if date_from > date_to:
+            raise ValidationError({"date_from": "Must not be after date_to."})
+        hotels = [hotel for hotel in _filter_superadmin_hotels(request) if hotel.package in {Hotel.Package.OTA, Hotel.Package.OTA_PMS}]
+        summary_hotels = list(hotels)
+        quick_filter = request.query_params.get("filter") or request.query_params.get("quick_filter")
+        if quick_filter == "ota_only":
+            hotels = [hotel for hotel in hotels if hotel.package == Hotel.Package.OTA]
+        elif quick_filter == "ota_pms":
+            hotels = [hotel for hotel in hotels if hotel.package == Hotel.Package.OTA_PMS]
+
+        hotel_ids = [hotel.id for hotel in summary_hotels]
+        all_bookings = list(Booking.objects.filter(source=Booking.Source.OTA, hotel_id__in=hotel_ids).only("hotel_id", "created_at", "currency", "grand_total"))
+        daily = defaultdict(lambda: {"count": 0, "amounts": defaultdict(Decimal)})
+        period = defaultdict(lambda: {"count": 0, "amounts": defaultdict(Decimal)})
+        lifetime = defaultdict(lambda: {"count": 0, "amounts": defaultdict(Decimal)})
+        latest_date = {}
+        for booking in all_bookings:
+            day = timezone.localtime(booking.created_at).date()
+            lifetime[booking.hotel_id]["count"] += 1
+            lifetime[booking.hotel_id]["amounts"][booking.currency] += booking.grand_total
+            latest_date[booking.hotel_id] = max(latest_date.get(booking.hotel_id, day), day)
+            if date_from <= day <= date_to:
+                daily[(booking.hotel_id, day)]["count"] += 1
+                daily[(booking.hotel_id, day)]["amounts"][booking.currency] += booking.grand_total
+                period[booking.hotel_id]["count"] += 1
+                period[booking.hotel_id]["amounts"][booking.currency] += booking.grand_total
+
+        inactive_days = _positive_query_int(request, "inactive_days", 60)
+        inactive_cutoff = today - timedelta(days=inactive_days)
+        if quick_filter == "today":
+            hotels = [hotel for hotel in hotels if daily[(hotel.id, today)]["count"]]
+        elif quick_filter == "last_7_days":
+            hotels = [hotel for hotel in hotels if period[hotel.id]["count"]]
+        elif quick_filter == "inactive":
+            hotels = [hotel for hotel in hotels if latest_date.get(hotel.id) is None or latest_date[hotel.id] < inactive_cutoff]
+        elif quick_filter == "refund":
+            refunded_hotel_ids = set(Payment.objects.filter(booking__source=Booking.Source.OTA, refunded_amount__gt=0).values_list("booking__hotel_id", flat=True))
+            hotels = [hotel for hotel in hotels if hotel.id in refunded_hotel_ids]
+
+        ordering = request.query_params.get("ordering", "hotel_asc")
+        if ordering == "hotel_desc":
+            hotels.sort(key=lambda hotel: hotel.name.lower(), reverse=True)
+        elif ordering == "most_total":
+            hotels.sort(key=lambda hotel: lifetime[hotel.id]["count"], reverse=True)
+        elif ordering == "most_last_7_days":
+            hotels.sort(key=lambda hotel: period[hotel.id]["count"], reverse=True)
+        else:
+            hotels.sort(key=lambda hotel: hotel.name.lower())
+
+        total_count = len(hotels)
+        start = (offset - 1) * limit
+        page_hotels = hotels[start:start + limit]
+        page_ids = [hotel.id for hotel in page_hotels]
+        pending_counts = dict(
+            Booking.objects.filter(source=Booking.Source.OTA, hotel_id__in=page_ids)
+            .filter(Q(ota_follow_up__isnull=True) | Q(ota_follow_up__status=OTABookingFollowUp.Status.PENDING))
+            .values("hotel_id").annotate(total=Count("id")).values_list("hotel_id", "total")
+        )
+        refund_counts = dict(
+            Payment.objects.filter(booking__source=Booking.Source.OTA, booking__hotel_id__in=page_ids, refunded_amount__gt=0)
+            .values("booking__hotel_id").annotate(total=Count("id")).values_list("booking__hotel_id", "total")
+        )
+        remittances = {}
+        for remittance in OTARemittance.objects.filter(hotel_id__in=page_ids, period_from__lte=date_to, period_to__gte=date_from).order_by("hotel_id", "-period_to"):
+            remittances.setdefault(remittance.hotel_id, remittance)
+
+        rows = []
+        day_count = (date_to - date_from).days + 1
+        for hotel in page_hotels:
+            days = []
+            for index in range(day_count):
+                day = date_from + timedelta(days=index)
+                stats = daily[(hotel.id, day)]
+                days.append({
+                    "date": day,
+                    "count": stats["count"],
+                    "amounts_by_currency": dict(stats["amounts"]),
+                    "currency": next(iter(stats["amounts"])) if len(stats["amounts"]) == 1 else None,
+                    "total_amount": next(iter(stats["amounts"].values())) if len(stats["amounts"]) == 1 else None,
+                })
+            remittance = remittances.get(hotel.id)
+            rows.append({
+                "hotel": {
+                    "id": hotel.id,
+                    "core_business_id": hotel.core_business_id,
+                    "name": hotel.name,
+                    "package": hotel.package,
+                    "location": _snapshot_location(hotel),
+                },
+                "daily": days,
+                "period_count": period[hotel.id]["count"],
+                "period_amounts_by_currency": dict(period[hotel.id]["amounts"]),
+                "total_booking_count": lifetime[hotel.id]["count"],
+                "total_amounts_by_currency": dict(lifetime[hotel.id]["amounts"]),
+                "refund_count": refund_counts.get(hotel.id, 0),
+                "pending_follow_up_count": pending_counts.get(hotel.id, 0),
+                "remittance": None if not remittance else {
+                    "id": remittance.id,
+                    "period_from": remittance.period_from,
+                    "period_to": remittance.period_to,
+                    "currency": remittance.currency,
+                    "net_remittance_amount": remittance.net_remittance_amount,
+                    "status": remittance.status,
+                },
+            })
+        payload = _page_payload(rows, offset, limit, total_count)
+        payload["date_from"] = date_from
+        payload["date_to"] = date_to
+        payload["summary"] = {
+            "today_ota": sum(daily[(hotel.id, today)]["count"] for hotel in summary_hotels),
+            "period_ota": sum(period[hotel.id]["count"] for hotel in summary_hotels),
+            "ota_only_hotels": sum(hotel.package == Hotel.Package.OTA for hotel in summary_hotels),
+            "ota_pms_hotels": sum(hotel.package == Hotel.Package.OTA_PMS for hotel in summary_hotels),
+        }
+        return success(payload)
 
 
 class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):

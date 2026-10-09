@@ -1227,3 +1227,98 @@ class OTABookingNotification(models.Model):
                 name="ota_noti_hotel_filter_idx",
             )
         ]
+
+
+class OTABookingFollowUp(models.Model):
+    """Current Visit77 follow-up state for an OTA booking.
+
+    This intentionally stores only the latest state.  A history/log table can be
+    introduced later without duplicating the booking itself.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Not contacted yet"
+        INFORMED = "informed", "Hotel informed"
+        UNREACHABLE = "unreachable", "Hotel unreachable"
+        NO_ACTION_REQUIRED = "no_action_required", "No action required"
+
+    class ContactChannel(models.TextChoices):
+        PHONE = "phone", "Phone"
+        EMAIL = "email", "Email"
+        MESSAGE = "message", "Message"
+        OTHER = "other", "Other"
+
+    booking = models.OneToOneField(
+        Booking,
+        on_delete=models.CASCADE,
+        related_name="ota_follow_up",
+    )
+    status = models.CharField(
+        max_length=24,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    note = models.TextField(blank=True)
+    contact_channel = models.CharField(
+        max_length=16,
+        choices=ContactChannel.choices,
+        blank=True,
+    )
+    informed_at = models.DateTimeField(null=True, blank=True)
+    informed_by_core_user_id = models.PositiveBigIntegerField(null=True, blank=True)
+    updated_by_core_user_id = models.PositiveBigIntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at", "-id"]
+
+
+class OTARemittance(models.Model):
+    """Settlement summary for one hotel and accounting period."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        PROCESSING = "processing", "Processing"
+        PAID = "paid", "Paid"
+        FAILED = "failed", "Failed"
+
+    hotel = models.ForeignKey(
+        Hotel,
+        on_delete=models.PROTECT,
+        related_name="ota_remittances",
+    )
+    period_from = models.DateField()
+    period_to = models.DateField()
+    currency = models.CharField(max_length=3, default="MMK")
+    gross_booking_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    refund_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    commission_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    net_remittance_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    reference = models.CharField(max_length=120, blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
+    processed_by_core_user_id = models.PositiveBigIntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-period_to", "-id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["hotel", "period_from", "period_to", "currency"],
+                name="uniq_ota_remittance_period_currency",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=["hotel", "period_from", "period_to", "status"],
+                name="ota_remit_hotel_period_idx",
+            )
+        ]

@@ -54,6 +54,7 @@ output/
 postman/*
 !postman/Visit77-Unified-Reservation-CheckIn.postman_collection.json
 !postman/Visit77-Unified-Reservation-CheckIn.postman_environment.json
+!postman/Visit77_Superadmin_OTA_Monitoring.postman_collection.json
 *.bak.*
 *.bak
 config/settings/*.bak.*

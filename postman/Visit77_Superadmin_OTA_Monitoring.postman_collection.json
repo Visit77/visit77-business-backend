@@ -1,0 +1,145 @@
+{
+  "info": {
+    "_postman_id": "5c56c9f4-c3aa-4a03-bdec-e23a34aa83dd",
+    "name": "Visit77 - Superadmin OTA Monitoring",
+    "description": "Superadmin APIs for OTA booking monitoring, daily hotel summaries, and direct booking follow-up updates. Pagination uses page-number semantics: offset=1 is page 1, offset=2 is page 2.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{superadmin_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "https://uat.api.business.visit77.com",
+      "type": "string"
+    },
+    {
+      "key": "superadmin_token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "booking_id",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "OTA Booking List",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/v1/superadmin/ota-bookings/?offset=1&limit=20",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "superadmin", "ota-bookings", ""],
+          "query": [
+            {"key": "offset", "value": "1", "description": "Page number, starting at 1"},
+            {"key": "limit", "value": "20", "description": "Rows per page; maximum 200"},
+            {"key": "search", "value": "", "disabled": true},
+            {"key": "hotel_id", "value": "", "description": "Hotel DB id or Core business id", "disabled": true},
+            {"key": "state_id", "value": "", "disabled": true},
+            {"key": "city_id", "value": "", "disabled": true},
+            {"key": "township_id", "value": "", "disabled": true},
+            {"key": "date_from", "value": "2026-10-01", "disabled": true},
+            {"key": "date_to", "value": "2026-10-09", "disabled": true},
+            {"key": "booking_status", "value": "confirmed", "disabled": true},
+            {"key": "follow_up_status", "value": "pending", "description": "pending | informed | unreachable | no_action_required", "disabled": true}
+          ]
+        },
+        "description": "OTA bookings grouped by booking-created date. Each date group includes count, total_amount and amounts_by_currency. Results are ordered newest first."
+      },
+      "response": []
+    },
+    {
+      "name": "OTA Booking Detail",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/v1/superadmin/ota-bookings/{{booking_id}}/",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "superadmin", "ota-bookings", "{{booking_id}}", ""]
+        },
+        "description": "Returns hotel, guest, room/stay, amount and current follow-up data for one OTA booking."
+      },
+      "response": []
+    },
+    {
+      "name": "Update OTA Booking Follow-up",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {"key": "Content-Type", "value": "application/json", "type": "text"}
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"status\": \"informed\",\n  \"contact_channel\": \"phone\",\n  \"note\": \"Hotel ကို ဖုန်းဆက်ပြီး OTA booking အကြောင်း inform လုပ်ပြီးပါပြီ။\"\n}",
+          "options": {"raw": {"language": "json"}}
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/superadmin/ota-bookings/{{booking_id}}/follow-up/",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "superadmin", "ota-bookings", "{{booking_id}}", "follow-up", ""]
+        },
+        "description": "Creates or directly updates the current OTABookingFollowUp row. No follow-up log/history row is created. Status: pending, informed, unreachable, no_action_required. Contact channel: phone, email, message, other."
+      },
+      "response": []
+    },
+    {
+      "name": "OTA Hotel Dashboard",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/v1/superadmin/ota-booking-dashboard/?offset=1&limit=20",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "superadmin", "ota-booking-dashboard", ""],
+          "query": [
+            {"key": "offset", "value": "1", "description": "Page number, starting at 1"},
+            {"key": "limit", "value": "20", "description": "Hotels per page; maximum 200"},
+            {"key": "date_from", "value": "2026-10-03", "disabled": true},
+            {"key": "date_to", "value": "2026-10-09", "disabled": true},
+            {"key": "search", "value": "", "disabled": true},
+            {"key": "hotel_id", "value": "", "disabled": true},
+            {"key": "state_id", "value": "", "disabled": true},
+            {"key": "city_id", "value": "", "disabled": true},
+            {"key": "township_id", "value": "", "disabled": true},
+            {"key": "quick_filter", "value": "today", "description": "today | last_7_days | refund | inactive | ota_only | ota_pms", "disabled": true},
+            {"key": "inactive_days", "value": "60", "disabled": true},
+            {"key": "ordering", "value": "hotel_asc", "description": "hotel_asc | hotel_desc | most_total | most_last_7_days"}
+          ]
+        },
+        "description": "Hotel-level OTA summary. Defaults to the latest 7-day period and includes daily booking count and amount, period/lifetime totals, refund count, pending follow-up count, and remittance summary."
+      },
+      "response": []
+    },
+    {
+      "name": "OTA Hotel Dashboard - Page 2",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/api/v1/superadmin/ota-booking-dashboard/?offset=2&limit=20&ordering=hotel_asc",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "superadmin", "ota-booking-dashboard", ""],
+          "query": [
+            {"key": "offset", "value": "2"},
+            {"key": "limit", "value": "20"},
+            {"key": "ordering", "value": "hotel_asc"}
+          ]
+        }
+      },
+      "response": []
+    }
+  ]
+}

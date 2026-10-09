@@ -56,6 +56,10 @@ from booking.views import (
     RoomTypeViewSet,
     SuperAdminAddOnTemplateRequestViewSet,
     SuperAdminAddOnTemplateViewSet,
+    SuperAdminOTABookingDashboardView,
+    SuperAdminOTABookingDetailView,
+    SuperAdminOTABookingFollowUpView,
+    SuperAdminOTABookingListView,
     WalkInBookingView,
     WalkInBookingV2View,
 )
@@ -82,6 +86,16 @@ router.register("superadmin/add-on-templates", SuperAdminAddOnTemplateViewSet, b
 router.register("superadmin/add-on-template-requests", SuperAdminAddOnTemplateRequestViewSet, basename="superadmin-add-on-template-request")
 
 urlpatterns = [
+    path("superadmin/ota-bookings/", SuperAdminOTABookingListView.as_view()),
+    path(
+        "superadmin/ota-bookings/<uuid:booking_id>/",
+        SuperAdminOTABookingDetailView.as_view(),
+    ),
+    path(
+        "superadmin/ota-bookings/<uuid:booking_id>/follow-up/",
+        SuperAdminOTABookingFollowUpView.as_view(),
+    ),
+    path("superadmin/ota-booking-dashboard/", SuperAdminOTABookingDashboardView.as_view()),
     path("admin/integration-status/", IntegrationStatusView.as_view()),
     path("admin/add-on-templates/", AddOnTemplateView.as_view()),
     path("admin/room-board/", RoomBoardView.as_view()),
