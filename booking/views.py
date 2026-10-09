@@ -4946,6 +4946,44 @@ def _snapshot_location(hotel):
     }
 
 
+def _hotel_merchant_contact(hotel):
+    """Return Merchant Verification contact fields from the Core projection."""
+    snapshot = hotel.core_snapshot or {}
+    verification = (
+        snapshot.get("merchant_verification")
+        or snapshot.get("business_verification")
+        or snapshot.get("verification")
+        or {}
+    )
+    if not isinstance(verification, dict):
+        verification = {}
+    return {
+        "phone": (
+            verification.get("business_contact_phone_number")
+            or snapshot.get("business_contact_phone_number")
+            or snapshot.get("phone")
+            or snapshot.get("phone_no")
+            or hotel.phone
+            or ""
+        ),
+        "email": (
+            verification.get("business_contact_email")
+            or snapshot.get("business_contact_email")
+            or snapshot.get("email")
+            or snapshot.get("business_email")
+            or ""
+        ),
+        "address": (
+            verification.get("hotel_address")
+            or snapshot.get("hotel_address")
+            or snapshot.get("address")
+            or snapshot.get("address_info")
+            or hotel.address
+            or ""
+        ),
+    }
+
+
 def _hotel_matches_location(hotel, field, expected):
     if not expected:
         return True
@@ -5005,7 +5043,7 @@ def _ota_booking_payload(booking):
         room_quantity += room.quantity
         adults += room.adults
         children += room.children
-    snapshot = hotel.core_snapshot or {}
+    merchant_contact = _hotel_merchant_contact(hotel)
     return {
         "id": booking.id,
         "reference": booking.reference,
@@ -5019,9 +5057,9 @@ def _ota_booking_payload(booking):
             "id": hotel.id,
             "core_business_id": hotel.core_business_id,
             "name": hotel.name,
-            "phone": hotel.phone,
-            "email": snapshot.get("email") or snapshot.get("business_email") or "",
-            "address": hotel.address,
+            "phone": merchant_contact["phone"],
+            "email": merchant_contact["email"],
+            "address": merchant_contact["address"],
             "package": hotel.package,
             "location": _snapshot_location(hotel),
         },
@@ -5267,6 +5305,7 @@ class SuperAdminOTABookingDashboardView(APIView):
         rows = []
         day_count = (date_to - date_from).days + 1
         for hotel in page_hotels:
+            merchant_contact = _hotel_merchant_contact(hotel)
             days = []
             for index in range(day_count):
                 day = date_from + timedelta(days=index)
@@ -5285,6 +5324,9 @@ class SuperAdminOTABookingDashboardView(APIView):
                     "core_business_id": hotel.core_business_id,
                     "name": hotel.name,
                     "package": hotel.package,
+                    "phone": merchant_contact["phone"],
+                    "email": merchant_contact["email"],
+                    "address": merchant_contact["address"],
                     "location": _snapshot_location(hotel),
                 },
                 "daily": days,

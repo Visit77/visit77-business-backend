@@ -8450,6 +8450,16 @@ class BookingApiTests(BookingServiceTests):
         self.assertIsNotNone(follow_up.informed_at)
 
     def test_superadmin_ota_dashboard_has_daily_counts_amounts_and_pagination(self):
+        self.hotel.phone = "stale-phone"
+        self.hotel.address = "stale-address"
+        self.hotel.core_snapshot = {
+            "merchant_verification": {
+                "business_contact_phone_number": "+959222222222",
+                "business_contact_email": "merchant-contact@example.com",
+                "hotel_address": "Merchant Hotel Address, Yangon",
+            }
+        }
+        self.hotel.save(update_fields=["phone", "address", "core_snapshot"])
         Booking.objects.create(
             reference="OTA-DASHBOARD",
             hotel=self.hotel,
@@ -8471,6 +8481,9 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(data["offset"], 1)
         self.assertEqual(data["limit"], 20)
         row = next(item for item in data["results"] if item["hotel"]["id"] == self.hotel.id)
+        self.assertEqual(row["hotel"]["phone"], "+959222222222")
+        self.assertEqual(row["hotel"]["email"], "merchant-contact@example.com")
+        self.assertEqual(row["hotel"]["address"], "Merchant Hotel Address, Yangon")
         self.assertEqual(row["period_count"], 1)
         self.assertEqual(row["period_amounts_by_currency"]["MMK"], 125000.0)
         self.assertEqual(row["daily"][-1]["count"], 1)
