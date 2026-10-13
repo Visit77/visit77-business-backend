@@ -3713,6 +3713,85 @@ class BookingApiTests(BookingServiceTests):
                 "issued_at", "created_at", "updated_at", "booking",
             }.issubset(invoice_data.keys()))
 
+    def test_check_in_meal_plan_reuses_open_invoice_with_manual_charges(self):
+        meal_plan = MealPlan.objects.create(
+            hotel=self.hotel,
+            core_meal_plan_id=99002,
+            name="Dinner Package",
+            plan_type=MealPlan.PlanType.PACKAGE,
+            local_base_price=Decimal("15000"),
+            foreign_base_price=Decimal("20000"),
+        )
+        booking = create_admin_reservation({
+            **self.payload(),
+            "source": Booking.Source.PMS,
+            "payment": {
+                "payment_type": Payment.Type.FULL_PAYMENT,
+                "provider": Payment.Provider.CASH,
+                "status": Payment.Status.PAID,
+            },
+        })
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        manual_response = self.client.patch(
+            f"/api/v1/admin/bookings/{booking.id}/check-in-form/",
+            {
+                "invoice_adjustments": {
+                    "charges": [{"description": "Test", "amount": "25000"}],
+                },
+            },
+            format="json",
+            **headers,
+        )
+        self.assertEqual(manual_response.status_code, 200, manual_response.data)
+        editable = booking.invoices.get(
+            charge_scope=Invoice.ChargeScope.PMS,
+            status=Invoice.Status.OPEN,
+        )
+
+        room = booking.rooms.select_related("room_type", "rate_plan").get()
+        response = self.client.patch(
+            f"/api/v1/admin/bookings/{booking.id}/check-in-form/",
+            {
+                "rooms": [{
+                    "core_room_type_id": room.room_type.core_room_type_id,
+                    "rate_plan_id": room.rate_plan_id,
+                    "meal_plan_ids": [meal_plan.id],
+                    "quantity": room.quantity,
+                    "adults": room.adults,
+                    "children": room.children,
+                    "extra_beds": room.extra_beds,
+                }],
+            },
+            format="json",
+            **headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            booking.invoices.filter(
+                charge_scope=Invoice.ChargeScope.PMS,
+                status__in=[Invoice.Status.OPEN, Invoice.Status.PARTIALLY_PAID],
+            ).count(),
+            1,
+        )
+        editable.refresh_from_db()
+        self.assertTrue(editable.lines.filter(
+            metadata__line_type="meal_plan",
+            metadata__meal_plan_id=meal_plan.id,
+        ).exists())
+        self.assertEqual(
+            editable.lines.get(metadata__line_type="manual_charge").description,
+            "Test",
+        )
+        self.assertEqual(
+            editable.charge_snapshot["manual_adjustments"]["input"]["charges"],
+            [{"description": "Test", "amount": "25000.00"}],
+        )
+
     def test_check_in_form_updates_reservation_dates_capacity_and_guests(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-U")
         self.rate_plan.extra_bed_base_price = Decimal("10000")
@@ -7187,6 +7266,133 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(event["booking_code"], booking.booking_code)
         self.assertIn("invoice_url", event)
         self.assertIn("receipt_url", event)
+
+    def test_room_history_invoice_url_tracks_activity_for_each_milestone(self):
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="PMS-HIST-INVOICE",
+            core_physical_room_id=99103,
+        )
+        booking = create_admin_reservation({
+            **self.payload(),
+            "source": Booking.Source.PMS,
+            "rooms": [{
+                "core_room_type_id": self.room_type.core_room_type_id,
+                "rate_plan_id": self.rate_plan.id,
+                "quantity": 1,
+                "adults": 1,
+                "children": 0,
+                "extra_beds": 0,
+            }],
+            "payment": {
+                "payment_type": Payment.Type.DEPOSIT,
+                "provider": Payment.Provider.CASH,
+                "status": Payment.Status.PAID,
+                "amount": Decimal("50000"),
+            },
+        })
+        original = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
+        PhysicalRoomActionHistory.objects.create(
+            physical_room=room,
+            booking=booking,
+            action=PhysicalRoomActionHistory.Action.RESERVED,
+        )
+        record_payment(booking, {
+            "invoice_id": original.id,
+            "payment_type": Payment.Type.BALANCE,
+            "provider": Payment.Provider.CASH,
+            "status": Payment.Status.PAID,
+            "amount": original.balance,
+        }, auto_assign=False)
+        PhysicalRoomActionHistory.objects.create(
+            physical_room=room,
+            booking=booking,
+            action=PhysicalRoomActionHistory.Action.CHECKED_IN,
+        )
+        damage = create_invoice(
+            booking,
+            Invoice.Type.DAMAGE,
+            [{
+                "description": "Broken lamp",
+                "quantity": 1,
+                "unit_price": Decimal("20000"),
+            }],
+            note="Checkout damage",
+            charge_scope=Invoice.ChargeScope.PMS,
+        )
+        PhysicalRoomActionHistory.objects.create(
+            physical_room=room,
+            booking=booking,
+            action=PhysicalRoomActionHistory.Action.CHECKED_OUT,
+            metadata={"_history_invoice_id": str(damage.id)},
+        )
+
+        response = self.client.get(
+            f"/api/v1/admin/physical-rooms/{room.core_physical_room_id}/history/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        events = {item["raw_action"]: item for item in response.data["data"]}
+        original_url = (
+            f"/api/v1/public/bookings/{booking.public_token}/"
+            f"invoices/{original.id}/pdf/"
+        )
+        self.assertEqual(events["reserved"]["invoice_url"], original_url)
+        self.assertEqual(events["checked_in"]["invoice_url"], original_url)
+        self.assertEqual(
+            events["checked_out"]["invoice_url"],
+            f"/api/v1/public/bookings/{booking.public_token}/invoices/{damage.id}/pdf/",
+        )
+        self.assertNotIn("_history_invoice_id", events["checked_out"]["metadata"])
+
+    def test_room_history_check_in_has_no_invoice_url_without_invoice_activity(self):
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="PMS-HIST-NO-ACTIVITY",
+            core_physical_room_id=99104,
+        )
+        booking = create_admin_reservation({
+            **self.payload(),
+            "source": Booking.Source.PMS,
+            "rooms": [{
+                "core_room_type_id": self.room_type.core_room_type_id,
+                "rate_plan_id": self.rate_plan.id,
+                "quantity": 1,
+                "adults": 1,
+                "children": 0,
+                "extra_beds": 0,
+            }],
+            "payment": {
+                "payment_type": Payment.Type.FULL_PAYMENT,
+                "provider": Payment.Provider.CASH,
+                "status": Payment.Status.PAID,
+            },
+        })
+        PhysicalRoomActionHistory.objects.create(
+            physical_room=room,
+            booking=booking,
+            action=PhysicalRoomActionHistory.Action.RESERVED,
+        )
+        PhysicalRoomActionHistory.objects.create(
+            physical_room=room,
+            booking=booking,
+            action=PhysicalRoomActionHistory.Action.CHECKED_IN,
+        )
+
+        response = self.client.get(
+            f"/api/v1/admin/physical-rooms/{room.core_physical_room_id}/history/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        events = {item["raw_action"]: item for item in response.data["data"]}
+        self.assertIsNotNone(events["reserved"]["invoice_url"])
+        self.assertIsNone(events["checked_in"]["invoice_url"])
 
     def test_physical_room_active_invoices_are_sorted_by_check_in(self):
         room = PhysicalRoom.objects.create(

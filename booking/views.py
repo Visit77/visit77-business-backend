@@ -185,11 +185,59 @@ def _room_history_actor_type(request=None, booking=None):
     return PhysicalRoomActionHistory.ActorType.SYSTEM
 
 
+def _room_history_invoice(booking, room, action):
+    """Return the invoice changed by this room milestone, if any."""
+    if not booking:
+        return None
+    invoices = list(booking.invoices.prefetch_related("receipts").all())
+    if action == PhysicalRoomActionHistory.Action.RESERVED:
+        return next((
+            invoice for invoice in invoices
+            if invoice.invoice_type == Invoice.Type.ROOM_BOOKING
+            and invoice.status != Invoice.Status.VOID
+        ), None)
+    previous_action = {
+        PhysicalRoomActionHistory.Action.CHECKED_IN: PhysicalRoomActionHistory.Action.RESERVED,
+        PhysicalRoomActionHistory.Action.CHECKED_OUT: PhysicalRoomActionHistory.Action.CHECKED_IN,
+    }.get(action)
+    if not previous_action:
+        return None
+    previous_event = PhysicalRoomActionHistory.objects.filter(
+        physical_room=room,
+        booking=booking,
+        action=previous_action,
+    ).order_by("-created_at", "-id").first()
+    cutoff = previous_event.created_at if previous_event else booking.created_at
+    now = timezone.now()
+    candidates = []
+    for invoice in invoices:
+        if invoice.status == Invoice.Status.VOID:
+            continue
+        activity_times = [invoice.issued_at, invoice.updated_at]
+        activity_times.extend(
+            payment.created_at
+            for payment in invoice.receipts.all()
+            if payment.receipt_number
+        )
+        relevant_times = [
+            activity_time for activity_time in activity_times
+            if cutoff < activity_time <= now
+        ]
+        if relevant_times:
+            candidates.append((max(relevant_times), invoice))
+    return max(candidates, key=lambda item: (item[0], str(item[1].id)))[1] if candidates else None
+
+
 def _record_room_history(
     room, action, *, request=None, booking=None, block=None,
     old_status="", new_status="", note="", metadata=None,
 ):
     event_metadata = dict(metadata or {})
+    history_invoice = _room_history_invoice(booking, room, action)
+    if history_invoice:
+        # Internal snapshot used to keep the invoice link tied to the event.
+        # The serializer intentionally omits this key from the public metadata.
+        event_metadata["_history_invoice_id"] = str(history_invoice.id)
     if request is not None:
         actor_name = request.headers.get("X-Core-User-Name", "").strip()
         actor_email = request.headers.get("X-Core-User-Email", "").strip()

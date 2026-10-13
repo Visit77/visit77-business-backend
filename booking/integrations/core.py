@@ -157,6 +157,13 @@ def sync_business_from_core(core_business_id: int, client=None, *, preserve_acce
         or "MMK"
     )
     hotel_policies = bundle.get("hotel_policies", []) or []
+    hotel_check_in_out_policy = next((
+        policy.get("config") or {}
+        for policy in hotel_policies
+        if policy.get("policy_type") == "check_in_out"
+        and policy.get("is_active", True)
+        and (policy.get("is_configured", True) or bool(policy.get("config")))
+    ), {})
     hotel_cancellation_policy = next((
         policy.get("config") or {}
         for policy in hotel_policies
@@ -165,6 +172,7 @@ def sync_business_from_core(core_business_id: int, client=None, *, preserve_acce
         and (policy.get("is_configured", True) or bool(policy.get("config")))
     ), {})
     business_snapshot = dict(business_data)
+    business_snapshot["hotel_check_in_out_policy"] = hotel_check_in_out_policy
     business_snapshot["hotel_cancellation_policy"] = hotel_cancellation_policy or {
         "type": "non_refundable",
         "name": "Non-Refundable",

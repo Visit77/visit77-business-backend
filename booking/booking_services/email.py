@@ -70,6 +70,17 @@ def _hotel_phone_numbers(value):
     return _contact_values(value)
 
 
+def _hotel_map_url(hotel, hotel_snapshot):
+    latitude = str(hotel_snapshot.get("latitude") or "").strip()
+    longitude = str(hotel_snapshot.get("longitude") or "").strip()
+    map_query = (
+        f"{latitude},{longitude}"
+        if latitude and longitude
+        else (hotel.address or hotel.name)
+    )
+    return f"https://www.google.com/maps/search/?api=1&query={quote_plus(map_query)}"
+
+
 def _booking_cancellation_policy(snapshot):
     """Return the first effective rate-plan policy from a booking snapshot."""
     if not isinstance(snapshot, dict):
@@ -123,6 +134,7 @@ def build_booking_confirmation_context(booking, primary_guest):
             meals.append("Breakfast")
     meals = list(dict.fromkeys(meals))
     hotel_snapshot = booking.hotel.core_snapshot or {}
+    check_in_out_policy = hotel_snapshot.get("hotel_check_in_out_policy") or {}
     # Core projects the active Merchant Verification contact into these fields.
     # Do not mix in legacy business/main-branch or Visit77 issuer contacts.
     hotel_emails = _contact_values(hotel_snapshot.get("email"))
@@ -148,11 +160,19 @@ def build_booking_confirmation_context(booking, primary_guest):
         "hotel_phone": hotel_phones[0] if hotel_phones else "",
         "hotel_emails": hotel_emails,
         "hotel_email": hotel_emails[0] if hotel_emails else "",
-        "map_url": f"https://www.google.com/maps/search/?api=1&query={quote_plus(booking.hotel.address or booking.hotel.name)}",
+        "map_url": _hotel_map_url(booking.hotel, hotel_snapshot),
         "check_in_date": booking.check_in.strftime("%d %b %Y, %A"),
-        "check_in_time": f"After {booking.hotel.check_in_time.strftime('%I:%M %p')}" if booking.hotel.check_in_time else "Check with hotel",
+        "check_in_time": (
+            f"After {booking.hotel.check_in_time.strftime('%I:%M %p')}"
+            if check_in_out_policy.get("check_in_time") and booking.hotel.check_in_time
+            else ""
+        ),
         "check_out_date": booking.check_out.strftime("%d %b %Y, %A"),
-        "check_out_time": f"Before {booking.hotel.check_out_time.strftime('%I:%M %p')}" if booking.hotel.check_out_time else "Check with hotel",
+        "check_out_time": (
+            f"Before {booking.hotel.check_out_time.strftime('%I:%M %p')}"
+            if check_in_out_policy.get("check_out_time") and booking.hotel.check_out_time
+            else ""
+        ),
         "room_details": room_details,
         "occupancy": occupancy,
         "guest_name": primary_guest.name or booking.contact_name,

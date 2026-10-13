@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone as datetime_timezone
+from datetime import date, datetime, time, timezone as datetime_timezone
 from copy import deepcopy
 from decimal import Decimal
 from unittest.mock import call, patch
@@ -753,6 +753,7 @@ class BookingCodeTests(TestCase):
         message = email_class_mock.call_args.kwargs["body"]
         html_message = email_class_mock.return_value.attach_alternative.call_args.args[0]
         self.assertIn(f"Booking ID: {booking.booking_code}", message)
+
         self.assertIn(booking.booking_code, html_message)
         self.assertIn('src="cid:visit77-logo"', html_message)
         logo_attachment = email_class_mock.return_value.attach.call_args.args[0]
@@ -776,6 +777,64 @@ class BookingCodeTests(TestCase):
         self.assertIn("Room: Standard Twin Room x 2", message)
         self.assertIn("Room: Deluxe Room x 1", message)
         self.assertNotIn(booking.reference, message)
+
+    def test_confirmation_only_shows_times_configured_in_hotel_policy(self):
+        booking = self.create_booking("TEST-CONFIRMATION-POLICY-TIMES")
+        guest = Guest.objects.create(
+            booking=booking,
+            name="Policy Guest",
+            email="policy@example.com",
+            is_primary=True,
+        )
+        self.hotel.check_in_time = time(14, 0)
+        self.hotel.check_out_time = time(12, 0)
+        self.hotel.core_snapshot = {}
+        self.hotel.save(update_fields=["check_in_time", "check_out_time", "core_snapshot"])
+
+        context = build_booking_confirmation_context(booking, guest)
+        self.assertEqual(context["check_in_time"], "")
+        self.assertEqual(context["check_out_time"], "")
+
+        self.hotel.core_snapshot = {
+            "hotel_check_in_out_policy": {
+                "check_in_time": "14:00",
+                "check_out_time": "12:00",
+            },
+        }
+        self.hotel.save(update_fields=["core_snapshot"])
+
+        context = build_booking_confirmation_context(booking, guest)
+        self.assertEqual(context["check_in_time"], "After 02:00 PM")
+        self.assertEqual(context["check_out_time"], "Before 12:00 PM")
+
+    def test_confirmation_map_prefers_merchant_verification_coordinates(self):
+        booking = self.create_booking("TEST-CONFIRMATION-MAP")
+        guest = Guest.objects.create(
+            booking=booking,
+            name="Map Guest",
+            email="map@example.com",
+            is_primary=True,
+        )
+        self.hotel.address = "Fallback Hotel Address"
+        self.hotel.core_snapshot = {
+            "latitude": "16.866100",
+            "longitude": "96.195100",
+        }
+        self.hotel.save(update_fields=["address", "core_snapshot"])
+
+        context = build_booking_confirmation_context(booking, guest)
+        self.assertEqual(
+            context["map_url"],
+            "https://www.google.com/maps/search/?api=1&query=16.866100%2C96.195100",
+        )
+
+        self.hotel.core_snapshot = {"latitude": "16.866100"}
+        self.hotel.save(update_fields=["core_snapshot"])
+        context = build_booking_confirmation_context(booking, guest)
+        self.assertEqual(
+            context["map_url"],
+            "https://www.google.com/maps/search/?api=1&query=Fallback+Hotel+Address",
+        )
 
     @override_settings(BOOKING_FRONTEND_URL="https://booking.example.com")
     @patch("booking.booking_services.sms.send_custom_sms")

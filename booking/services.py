@@ -2468,15 +2468,15 @@ def sync_booking_charge_invoices(booking):
         item for item in _booking_charge_lines(booking)
         if item.get("metadata", {}).get("line_type") not in non_system_line_types
     ]
-    supplemental = next((
-        candidate
-        for candidate in booking.invoices.filter(
-            note="Additional stay charges",
-        ).exclude(
-            status__in=[Invoice.Status.PAID, Invoice.Status.VOID],
-        ).order_by("-issued_at", "-id")
-        if not (candidate.charge_snapshot or {}).get("manual_adjustments")
-    ), None)
+    supplemental = booking.invoices.filter(
+        note="Additional stay charges",
+    ).exclude(
+        status__in=[Invoice.Status.PAID, Invoice.Status.VOID],
+    ).order_by("-issued_at", "-id").first()
+    manual_adjustments = (
+        ((supplemental.charge_snapshot or {}).get("manual_adjustments") or {}).get("input")
+        if supplemental else None
+    )
     locked_invoices = booking.invoices.exclude(status=Invoice.Status.VOID)
     if supplemental:
         locked_invoices = locked_invoices.exclude(pk=supplemental.pk)
@@ -2506,6 +2506,14 @@ def sync_booking_charge_invoices(booking):
         raise ValidationError({
             "invoice": "Paid invoice charges cannot be removed. Refund or void the paid charge first."
         })
+
+    if supplemental and manual_adjustments is not None:
+        # The check-in form keeps system additions and manual charges on the
+        # same editable PMS invoice. Rebuild the system delta first, then
+        # restore the stored manual input so adding a meal plan/add-on does
+        # not create a second editable invoice or discard the manual rows.
+        _replace_invoice_lines(supplemental, additional_lines, apply_config=True)
+        return apply_check_in_invoice_adjustments(booking, manual_adjustments)
 
     if not additional_lines:
         if supplemental and not supplemental.receipts.exists():

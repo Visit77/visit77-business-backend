@@ -139,10 +139,12 @@
                                     style="font-size:13px;line-height:24px;font-weight:700;color:#0f172a;margin:0;margin-top:0;margin-bottom:0;margin-left:0;margin-right:0">
                                     {{ check_in_date }}
                                   </p>
-                                  <p
-                                    style="font-size:11px;line-height:24px;color:#64748b;margin:0;margin-top:0;margin-bottom:0;margin-left:0;margin-right:0">
-                                    {{ check_in_time }}
-                                  </p>
+                                  {% if check_in_time %}
+                                    <p
+                                      style="font-size:11px;line-height:24px;color:#64748b;margin:0;margin-top:0;margin-bottom:0;margin-left:0;margin-right:0">
+                                      {{ check_in_time }}
+                                    </p>
+                                  {% endif %}
                                 </td>
                                 <td width="4%"></td>
                                 <td
@@ -156,10 +158,12 @@
                                     style="font-size:13px;line-height:24px;font-weight:700;color:#0f172a;margin:0;margin-top:0;margin-bottom:0;margin-left:0;margin-right:0">
                                     {{ check_out_date }}
                                   </p>
-                                  <p
-                                    style="font-size:11px;line-height:24px;color:#64748b;margin:0;margin-top:0;margin-bottom:0;margin-left:0;margin-right:0">
-                                    {{ check_out_time }}
-                                  </p>
+                                  {% if check_out_time %}
+                                    <p
+                                      style="font-size:11px;line-height:24px;color:#64748b;margin:0;margin-top:0;margin-bottom:0;margin-left:0;margin-right:0">
+                                      {{ check_out_time }}
+                                    </p>
+                                  {% endif %}
                                 </td>
                               </tr>
                             </table>

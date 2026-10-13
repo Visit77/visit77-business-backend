@@ -1026,6 +1026,7 @@ class PhysicalRoomActionHistorySerializer(serializers.ModelSerializer):
     invoice_numbers = serializers.SerializerMethodField()
     invoice_url = serializers.SerializerMethodField()
     receipt_url = serializers.SerializerMethodField()
+    metadata = serializers.SerializerMethodField()
 
     class Meta:
         model = PhysicalRoomActionHistory
@@ -1087,8 +1088,75 @@ class PhysicalRoomActionHistorySerializer(serializers.ModelSerializer):
             return []
         return [payment.invoice_number for payment in obj.booking.payments.all()]
 
+    @staticmethod
+    def get_metadata(obj):
+        return {
+            key: value for key, value in (obj.metadata or {}).items()
+            if key != "_history_invoice_id"
+        }
+
+    @staticmethod
+    def _event_invoice(obj):
+        if not obj.booking_id:
+            return None
+        invoices = list(obj.booking.invoices.all())
+        stored_invoice_id = (obj.metadata or {}).get("_history_invoice_id")
+        if stored_invoice_id:
+            return next((
+                invoice for invoice in invoices
+                if str(invoice.id) == str(stored_invoice_id)
+                and invoice.status != Invoice.Status.VOID
+            ), None)
+        if obj.action == PhysicalRoomActionHistory.Action.RESERVED:
+            return next((
+                invoice for invoice in invoices
+                if invoice.invoice_type == Invoice.Type.ROOM_BOOKING
+                and invoice.status != Invoice.Status.VOID
+            ), None)
+        previous_action = {
+            PhysicalRoomActionHistory.Action.CHECKED_IN: PhysicalRoomActionHistory.Action.RESERVED,
+            PhysicalRoomActionHistory.Action.CHECKED_OUT: PhysicalRoomActionHistory.Action.CHECKED_IN,
+        }.get(obj.action)
+        if not previous_action:
+            return None
+        previous_event = PhysicalRoomActionHistory.objects.filter(
+            physical_room_id=obj.physical_room_id,
+            booking_id=obj.booking_id,
+            action=previous_action,
+            created_at__lt=obj.created_at,
+        ).order_by("-created_at", "-id").first()
+        cutoff = previous_event.created_at if previous_event else obj.booking.created_at
+        payments_by_invoice = {}
+        for payment in obj.booking.payments.all():
+            if payment.invoice_id and payment.receipt_number:
+                payments_by_invoice.setdefault(payment.invoice_id, []).append(payment)
+        candidates = []
+        for invoice in invoices:
+            if invoice.status == Invoice.Status.VOID:
+                continue
+            activity_times = [invoice.issued_at]
+            if invoice.updated_at <= obj.created_at:
+                activity_times.append(invoice.updated_at)
+            activity_times.extend(
+                payment.created_at
+                for payment in payments_by_invoice.get(invoice.id, [])
+            )
+            relevant_times = [
+                activity_time for activity_time in activity_times
+                if cutoff < activity_time <= obj.created_at
+            ]
+            if relevant_times:
+                candidates.append((max(relevant_times), invoice))
+        return max(candidates, key=lambda item: (item[0], str(item[1].id)))[1] if candidates else None
+
     def get_invoice_url(self, obj):
-        return booking_invoice_url(obj.booking) if obj.booking_id else None
+        invoice = self._event_invoice(obj)
+        if not invoice:
+            return None
+        return (
+            f"/api/v1/public/bookings/{obj.booking.public_token}/"
+            f"invoices/{invoice.id}/pdf/"
+        )
 
     def get_receipt_url(self, obj):
         return booking_receipt_url(obj.booking) if obj.booking_id else None
