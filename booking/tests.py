@@ -8102,6 +8102,86 @@ class BookingApiTests(BookingServiceTests):
         self.assertIn("is_primary", guest_data)
         self.assertIn("documents", guest_data)
 
+    def test_room_board_keeps_overdue_checked_in_booking_as_current_across_mode_change(self):
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="OVERDUE-1",
+            status=PhysicalRoom.Status.OCCUPIED,
+        )
+        booking, _ = create_booking(self.payload())
+        booking.status = Booking.Status.CHECKED_IN
+        booking.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
+        booking.check_in = timezone.localdate() - timedelta(days=6)
+        booking.check_out = timezone.localdate() - timedelta(days=5)
+        booking.save(update_fields=[
+            "status", "inventory_mode", "check_in", "check_out", "updated_at",
+        ])
+        RoomAssignment.objects.create(
+            booking_room=booking.rooms.first(),
+            physical_room=room,
+        )
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        response = self.client.get(
+            "/api/v1/admin/room-board/",
+            {"date": str(timezone.localdate())},
+            **headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        board_room = next(
+            item for item in response.data["data"]["rooms"] if item["id"] == room.id
+        )
+        self.assertEqual(board_room["display_status"], "occupied")
+        self.assertEqual(str(board_room["current_booking"]["id"]), str(booking.id))
+
+    def test_count_inventory_booking_cannot_enter_physical_room_pms_workflow(self):
+        room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="COUNT-MODE-1",
+        )
+        booking, _ = create_booking(self.payload())
+        booking.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
+        booking.status = Booking.Status.CONFIRMED
+        booking.hold_expires_at = None
+        booking.save(update_fields=[
+            "inventory_mode", "status", "hold_expires_at", "updated_at",
+        ])
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        response = self.client.post(
+            f"/api/v1/admin/bookings/{booking.id}/assign-room/",
+            {
+                "booking_room_id": booking.rooms.first().id,
+                "physical_room_id": room.id,
+            },
+            format="json",
+            **headers,
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("physical_room inventory mode", str(response.data))
+        self.assertFalse(RoomAssignment.objects.filter(physical_room=room).exists())
+
+    def test_pms_booking_uses_physical_inventory_when_ota_uses_room_counts(self):
+        self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
+        self.hotel.save(update_fields=["inventory_mode"])
+        payload = self.payload()
+        payload["source"] = Booking.Source.PMS
+
+        booking, _ = create_booking(payload)
+
+        self.assertEqual(booking.source, Booking.Source.PMS)
+        self.assertEqual(booking.inventory_mode, Hotel.InventoryMode.PHYSICAL_ROOM)
+
     def test_assignment_requires_confirmed_booking_and_vacant_room(self):
         room = PhysicalRoom.objects.create(
             hotel=self.hotel,

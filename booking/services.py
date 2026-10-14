@@ -1702,7 +1702,13 @@ def create_booking(data, idempotency_key=None):
         core_customer_user_id=data.get("core_customer_user_id"),
         idempotency_key=idempotency_key,
         source=source,
-        inventory_mode=hotel.inventory_mode,
+        # room_type_count is the OTA allotment. Hotel-side/PMS bookings always
+        # belong to physical-room inventory, even while OTA sells from counts.
+        inventory_mode=(
+            Hotel.InventoryMode.PHYSICAL_ROOM
+            if source == Booking.Source.PMS
+            else hotel.inventory_mode
+        ),
         source_name=data.get("source_name", ""),
         check_in=check_in,
         check_out=check_out,

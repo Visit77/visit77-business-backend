@@ -343,6 +343,17 @@ def _check_in_readiness(booking):
     }
 
 
+def _require_physical_room_pms_booking(booking):
+    """Reject individual-room PMS workflows for count-inventory bookings."""
+    if booking.inventory_mode != Hotel.InventoryMode.PHYSICAL_ROOM:
+        raise ValidationError({
+            "inventory_mode": (
+                "Physical-room PMS operations require the booking to use "
+                "physical_room inventory mode."
+            )
+        })
+
+
 def _payment_summary(booking):
     amount_due = max(booking.grand_total - booking.amount_paid, 0)
     return {
@@ -3009,7 +3020,6 @@ class RoomBoardView(APIView):
         checked_in_assignments = RoomAssignment.objects.filter(
             physical_room_id__in=room_ids,
             released_at__isnull=True,
-            booking_room__booking__inventory_mode=hotel.inventory_mode,
             booking_room__booking__status=Booking.Status.CHECKED_IN,
         ).select_related(
             "physical_room", "booking_room__room_type", "booking_room__rate_plan",
@@ -3019,10 +3029,6 @@ class RoomBoardView(APIView):
             "booking_room__nights", "booking_room__booking__payments",
             "booking_room__booking__guests__identity_documents",
         ).order_by("assigned_at", "id")
-        if hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
-            checked_in_assignments = checked_in_assignments.filter(
-                booking_room__booking__source=Booking.Source.PMS,
-            )
         # An actual active stay has precedence over a date-based reservation.
         for checked_in_assignment in checked_in_assignments:
             assignment_by_room[checked_in_assignment.physical_room_id] = checked_in_assignment
@@ -5522,7 +5528,10 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
     @transaction.atomic
     def check_in_form(self, request, pk=None):
         logger.info("PublicBookingEstimateView POST request data: %s", request.data)
-        booking = Booking.objects.select_for_update().get(pk=self.get_object().pk)
+        booking = Booking.objects.select_for_update().select_related("hotel").get(
+            pk=self.get_object().pk
+        )
+        _require_physical_room_pms_booking(booking)
         if booking.status not in [Booking.Status.CONFIRMED, Booking.Status.PENDING_PAYMENT]:
             raise ValidationError("Only pending or confirmed reservations can use the check-in form.")
         updated_invoice = None
@@ -5897,7 +5906,10 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
     def assign_room(self, request, pk=None):
         serializer = RoomAssignmentCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        booking = Booking.objects.select_for_update().get(pk=self.get_object().pk)
+        booking = Booking.objects.select_for_update().select_related("hotel").get(
+            pk=self.get_object().pk
+        )
+        _require_physical_room_pms_booking(booking)
         if booking.status != Booking.Status.CONFIRMED:
             raise ValidationError("Only a confirmed booking can be assigned a physical room.")
         booking_room = booking.rooms.filter(id=serializer.validated_data["booking_room_id"]).first()
@@ -5973,7 +5985,8 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
     def change_room(self, request, pk=None):
         serializer = RoomChangeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        booking = self.get_object()
+        booking = self.get_queryset().select_related("hotel").get(pk=self.get_object().pk)
+        _require_physical_room_pms_booking(booking)
         if booking.status not in [Booking.Status.CONFIRMED, Booking.Status.CHECKED_IN]:
             raise ValidationError("Only confirmed or checked-in bookings can change rooms.")
         assignment = RoomAssignment.objects.select_for_update().select_related("physical_room", "booking_room").filter(
@@ -6049,7 +6062,10 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
         serializer.is_valid(raise_exception=True)
         if not serializer.validated_data["verification_confirmed"]:
             raise ValidationError({"verification_confirmed": "Hotel admin verification is required."})
-        booking = Booking.objects.select_for_update().get(pk=self.get_object().pk)
+        booking = Booking.objects.select_for_update().select_related("hotel").get(
+            pk=self.get_object().pk
+        )
+        _require_physical_room_pms_booking(booking)
         if booking.status != Booking.Status.CONFIRMED:
             raise ValidationError("Only a confirmed booking can check in.")
         assigned_room_ids = RoomAssignment.objects.filter(
