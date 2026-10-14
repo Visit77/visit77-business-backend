@@ -854,6 +854,7 @@ class Booking(models.Model):
     idempotency_key = models.CharField(max_length=128, null=True, blank=True)
     status = models.CharField(max_length=32, choices=Status.choices, default=Status.PENDING_PAYMENT)
     source = models.CharField(max_length=24, choices=Source.choices, default=Source.OTA)
+    is_no_show = models.BooleanField(default=False, db_index=True)
     inventory_mode = models.CharField(
         max_length=24,
         choices=Hotel.InventoryMode.choices,

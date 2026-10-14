@@ -5098,6 +5098,7 @@ def _ota_booking_payload(booking):
         "booking_code": booking.booking_code,
         "status": booking.status,
         "source": booking.source,
+        "is_no_show": booking.is_no_show,
         "created_at": created_at,
         "created_date": created_at.date(),
         "created_time": created_at.strftime("%H:%M"),
@@ -5168,6 +5169,7 @@ class SuperAdminOTABookingListView(APIView):
         hotels = _filter_superadmin_hotels(request)
         queryset = Booking.objects.filter(
             source=Booking.Source.OTA,
+            status=Booking.Status.CONFIRMED,
             hotel_id__in=[hotel.id for hotel in hotels],
         ).select_related("hotel", "ota_follow_up").prefetch_related("rooms__room_type")
         date_from = _date_param(request, "date_from")
@@ -5274,6 +5276,28 @@ class SuperAdminOTABookingFollowUpView(APIView):
         return success(_ota_booking_payload(booking))
 
 
+class SuperAdminOTABookingNoShowView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
+    permission_classes = [IsCoreSuperAdmin]
+
+    def patch(self, request, booking_id):
+        booking = Booking.objects.filter(
+            id=booking_id,
+            source=Booking.Source.OTA,
+            hotel__package__in=[Hotel.Package.OTA, Hotel.Package.OTA_PMS],
+        ).select_related("hotel", "ota_follow_up").prefetch_related("rooms__room_type").first()
+        if not booking:
+            raise NotFound("OTA booking not found.")
+
+        is_no_show = request.data.get("is_no_show")
+        if not isinstance(is_no_show, bool):
+            raise ValidationError({"is_no_show": "Must be a boolean."})
+
+        Booking.objects.filter(pk=booking.pk).update(is_no_show=is_no_show)
+        booking.is_no_show = is_no_show
+        return success(_ota_booking_payload(booking))
+
+
 class SuperAdminOTABookingDashboardView(APIView):
     authentication_classes = [CoreJWTAuthentication]
     permission_classes = [IsCoreSuperAdmin]
@@ -5295,7 +5319,11 @@ class SuperAdminOTABookingDashboardView(APIView):
             hotels = [hotel for hotel in hotels if hotel.package == Hotel.Package.OTA_PMS]
 
         hotel_ids = [hotel.id for hotel in summary_hotels]
-        all_bookings = list(Booking.objects.filter(source=Booking.Source.OTA, hotel_id__in=hotel_ids).only("hotel_id", "created_at", "currency", "grand_total"))
+        all_bookings = list(Booking.objects.filter(
+            source=Booking.Source.OTA,
+            status=Booking.Status.CONFIRMED,
+            hotel_id__in=hotel_ids,
+        ).only("hotel_id", "created_at", "currency", "grand_total"))
         daily = defaultdict(lambda: {"count": 0, "amounts": defaultdict(Decimal)})
         period = defaultdict(lambda: {"count": 0, "amounts": defaultdict(Decimal)})
         lifetime = defaultdict(lambda: {"count": 0, "amounts": defaultdict(Decimal)})
@@ -5320,7 +5348,11 @@ class SuperAdminOTABookingDashboardView(APIView):
         elif quick_filter == "inactive":
             hotels = [hotel for hotel in hotels if latest_date.get(hotel.id) is None or latest_date[hotel.id] < inactive_cutoff]
         elif quick_filter == "refund":
-            refunded_hotel_ids = set(Payment.objects.filter(booking__source=Booking.Source.OTA, refunded_amount__gt=0).values_list("booking__hotel_id", flat=True))
+            refunded_hotel_ids = set(Payment.objects.filter(
+                booking__source=Booking.Source.OTA,
+                booking__status=Booking.Status.CONFIRMED,
+                refunded_amount__gt=0,
+            ).values_list("booking__hotel_id", flat=True))
             hotels = [hotel for hotel in hotels if hotel.id in refunded_hotel_ids]
 
         ordering = request.query_params.get("ordering", "hotel_asc")
@@ -5338,12 +5370,21 @@ class SuperAdminOTABookingDashboardView(APIView):
         page_hotels = hotels[start:start + limit]
         page_ids = [hotel.id for hotel in page_hotels]
         pending_counts = dict(
-            Booking.objects.filter(source=Booking.Source.OTA, hotel_id__in=page_ids)
+            Booking.objects.filter(
+                source=Booking.Source.OTA,
+                status=Booking.Status.CONFIRMED,
+                hotel_id__in=page_ids,
+            )
             .filter(Q(ota_follow_up__isnull=True) | Q(ota_follow_up__status=OTABookingFollowUp.Status.PENDING))
             .values("hotel_id").annotate(total=Count("id")).values_list("hotel_id", "total")
         )
         refund_counts = dict(
-            Payment.objects.filter(booking__source=Booking.Source.OTA, booking__hotel_id__in=page_ids, refunded_amount__gt=0)
+            Payment.objects.filter(
+                booking__source=Booking.Source.OTA,
+                booking__status=Booking.Status.CONFIRMED,
+                booking__hotel_id__in=page_ids,
+                refunded_amount__gt=0,
+            )
             .values("booking__hotel_id").annotate(total=Count("id")).values_list("booking__hotel_id", "total")
         )
         remittances = {}
@@ -5410,7 +5451,7 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
     serializer_class = BookingSerializer
     filterset_fields = [
         "hotel", "status", "source", "source_name", "check_in", "check_out",
-        "reference", "booking_code",
+        "reference", "booking_code", "is_no_show",
     ]
     business_scoped = True
     business_lookup = "hotel__core_business_id"
@@ -5833,6 +5874,23 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
     @action(detail=True, methods=["get"], url_path="refund-quote")
     def refund_quote(self, request, pk=None):
         return success(calculate_refund_quote(self.get_object()))
+
+    @action(detail=True, methods=["post", "patch"], url_path="no-show")
+    def no_show(self, request, pk=None):
+        booking = self.get_object()
+        if booking.source != Booking.Source.OTA:
+            raise ValidationError({"booking": "Only OTA bookings can be marked as no-show."})
+        if booking.hotel.package not in {Hotel.Package.OTA, Hotel.Package.OTA_PMS}:
+            raise PermissionDenied("No-show is available only for OTA and OTA + PMS hotels.")
+
+        is_no_show = request.data.get("is_no_show", True)
+        if not isinstance(is_no_show, bool):
+            raise ValidationError({"is_no_show": "Must be a boolean."})
+
+        # Deliberately bypass Booking.save() so this action changes only this flag.
+        Booking.objects.filter(pk=booking.pk).update(is_no_show=is_no_show)
+        booking.is_no_show = is_no_show
+        return success(BookingSerializer(booking, context={"request": request}).data)
 
     @action(detail=True, methods=["post"], url_path="assign-room")
     @transaction.atomic

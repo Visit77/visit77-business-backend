@@ -4063,6 +4063,63 @@ class BookingApiTests(BookingServiceTests):
             document_type=GuestIdentityDocument.DocumentType.IDENTITY_PHOTO,
         ).exists())
 
+    def test_check_in_partial_room_update_preserves_ota_room_occupancy(self):
+        self.room_type.breakfast_plan_type = RoomType.BreakfastPlanType.INCLUDED_IN_ROOM_PRICE
+        self.room_type.save(update_fields=["breakfast_plan_type"])
+        self.hotel.ota_invoice_charges = {
+            "service_charges": [],
+            "taxes": [{
+                "title": "Guest Tax",
+                "mode": "fixed",
+                "value": "1500.00",
+                "calculation_basis": "per_guest_per_night",
+            }],
+        }
+        self.hotel.save(update_fields=["ota_invoice_charges"])
+        physical_room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="OTA-PARTIAL-OCCUPANCY",
+        )
+        payload = self.payload()
+        payload["rooms"] = [{
+            "core_room_type_id": self.room_type.core_room_type_id,
+            "rate_plan_id": self.rate_plan.id,
+            "quantity": 1,
+            "adults": 2,
+            "children": 0,
+        }]
+        booking, _ = create_booking(payload)
+        record_payment(booking, {
+            "provider": "cash",
+            "amount": booking.grand_total,
+            "status": Payment.Status.PAID,
+        })
+        booking.refresh_from_db()
+        original_total = booking.grand_total
+
+        response = self.client.patch(
+            f"/api/v1/admin/bookings/{booking.id}/check-in-form/",
+            {
+                "room[0][physical_room_id]": str(physical_room.id),
+                "room[0][rate_plan_id]": str(self.rate_plan.id),
+                "room[0][breakfast_selected]": "true",
+                "room[0][preferences][preference_standard]": "large_bed",
+                "room[0][preferences][smoking_type]": "non_smoking",
+            },
+            format="multipart",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        booking.refresh_from_db()
+        booking_room = booking.rooms.get()
+        self.assertEqual(booking_room.adults, 2)
+        self.assertEqual(booking_room.children, 0)
+        self.assertEqual(booking.grand_total, original_total)
+        self.assertEqual(booking.amount_paid, original_total)
+
     def test_stay_bill_lists_separate_invoices_and_receipts(self):
         booking, _ = create_booking(self.payload())
         headers = {
@@ -8596,6 +8653,7 @@ class BookingApiTests(BookingServiceTests):
                 reference=f"OTA-MONITOR-{index}",
                 hotel=self.hotel,
                 source=Booking.Source.OTA,
+                status=Booking.Status.CONFIRMED,
                 check_in=self.check_in,
                 check_out=self.check_out,
                 contact_name=f"Guest {index}",
@@ -8605,6 +8663,19 @@ class BookingApiTests(BookingServiceTests):
             )
             Booking.objects.filter(id=booking.id).update(created_at=now - timedelta(days=index))
             bookings.append(booking)
+        for status_value in (Booking.Status.PENDING_PAYMENT, Booking.Status.CANCELED):
+            Booking.objects.create(
+                reference=f"OTA-MONITOR-{status_value}",
+                hotel=self.hotel,
+                source=Booking.Source.OTA,
+                status=status_value,
+                check_in=self.check_in,
+                check_out=self.check_out,
+                contact_name=f"{status_value} Guest",
+                contact_phone="099999999",
+                currency="MMK",
+                grand_total=Decimal("999999"),
+            )
 
         headers = {"HTTP_AUTHORIZATION": f"Bearer {self.core_access_token()}"}
         first = self.client.get(
@@ -8655,6 +8726,104 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(follow_up.informed_by_core_user_id, 9001)
         self.assertIsNotNone(follow_up.informed_at)
 
+    def test_ota_no_show_action_only_updates_boolean_for_ota_and_ota_pms(self):
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+        for index, package in enumerate((Hotel.Package.OTA, Hotel.Package.OTA_PMS), start=1):
+            with self.subTest(package=package):
+                self.hotel.package = package
+                self.hotel.save(update_fields=["package"])
+                booking = Booking.objects.create(
+                    reference=f"OTA-NO-SHOW-{index}",
+                    hotel=self.hotel,
+                    source=Booking.Source.OTA,
+                    status=Booking.Status.CONFIRMED,
+                    check_in=self.check_in,
+                    check_out=self.check_out,
+                    contact_name="No Show Guest",
+                    contact_phone="096666666",
+                    grand_total=Decimal("50000"),
+                )
+                original_updated_at = booking.updated_at
+
+                response = self.client.post(
+                    f"/api/v1/admin/bookings/{booking.id}/no-show/",
+                    {},
+                    format="json",
+                    **headers,
+                )
+
+                self.assertEqual(response.status_code, 200, response.data)
+                self.assertIs(response.data["data"]["is_no_show"], True)
+                booking.refresh_from_db()
+                self.assertIs(booking.is_no_show, True)
+                self.assertEqual(booking.status, Booking.Status.CONFIRMED)
+                self.assertEqual(booking.updated_at, original_updated_at)
+
+                cleared = self.client.patch(
+                    f"/api/v1/admin/bookings/{booking.id}/no-show/",
+                    {"is_no_show": False},
+                    format="json",
+                    **headers,
+                )
+                self.assertEqual(cleared.status_code, 200, cleared.data)
+                booking.refresh_from_db()
+                self.assertIs(booking.is_no_show, False)
+                self.assertEqual(booking.status, Booking.Status.CONFIRMED)
+                self.assertEqual(booking.updated_at, original_updated_at)
+
+    def test_ota_no_show_action_rejects_pms_booking_without_side_effects(self):
+        booking = Booking.objects.create(
+            reference="PMS-NO-SHOW-REJECTED",
+            hotel=self.hotel,
+            source=Booking.Source.PMS,
+            status=Booking.Status.CONFIRMED,
+            check_in=self.check_in,
+            check_out=self.check_out,
+            contact_name="PMS Guest",
+            contact_phone="097777777",
+        )
+        response = self.client.post(
+            f"/api/v1/admin/bookings/{booking.id}/no-show/",
+            {},
+            format="json",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 400, response.data)
+        booking.refresh_from_db()
+        self.assertIs(booking.is_no_show, False)
+        self.assertEqual(booking.status, Booking.Status.CONFIRMED)
+
+    def test_superadmin_can_mark_ota_booking_no_show_without_changing_status(self):
+        booking = Booking.objects.create(
+            reference="SUPERADMIN-OTA-NO-SHOW",
+            hotel=self.hotel,
+            source=Booking.Source.OTA,
+            status=Booking.Status.CONFIRMED,
+            check_in=self.check_in,
+            check_out=self.check_out,
+            contact_name="No Show Guest",
+            contact_phone="098888888",
+        )
+        original_updated_at = booking.updated_at
+        response = self.client.patch(
+            f"/api/v1/superadmin/ota-bookings/{booking.id}/no-show/",
+            {"is_no_show": True},
+            format="json",
+            HTTP_AUTHORIZATION=f"Bearer {self.core_access_token()}",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIs(response.data["data"]["is_no_show"], True)
+        booking.refresh_from_db()
+        self.assertIs(booking.is_no_show, True)
+        self.assertEqual(booking.status, Booking.Status.CONFIRMED)
+        self.assertEqual(booking.updated_at, original_updated_at)
+
     def test_superadmin_ota_dashboard_has_daily_counts_amounts_and_pagination(self):
         self.hotel.phone = "stale-phone"
         self.hotel.address = "stale-address"
@@ -8670,12 +8839,37 @@ class BookingApiTests(BookingServiceTests):
             reference="OTA-DASHBOARD",
             hotel=self.hotel,
             source=Booking.Source.OTA,
+            status=Booking.Status.CONFIRMED,
             check_in=self.check_in,
             check_out=self.check_out,
             contact_name="Dashboard Guest",
             contact_phone="093333333",
             currency="MMK",
             grand_total=Decimal("125000"),
+        )
+        Booking.objects.create(
+            reference="OTA-DASHBOARD-PENDING",
+            hotel=self.hotel,
+            source=Booking.Source.OTA,
+            status=Booking.Status.PENDING_PAYMENT,
+            check_in=self.check_in,
+            check_out=self.check_out,
+            contact_name="Pending Dashboard Guest",
+            contact_phone="094444444",
+            currency="MMK",
+            grand_total=Decimal("500000"),
+        )
+        Booking.objects.create(
+            reference="OTA-DASHBOARD-CANCELED",
+            hotel=self.hotel,
+            source=Booking.Source.OTA,
+            status=Booking.Status.CANCELED,
+            check_in=self.check_in,
+            check_out=self.check_out,
+            contact_name="Canceled Dashboard Guest",
+            contact_phone="095555555",
+            currency="MMK",
+            grand_total=Decimal("700000"),
         )
         response = self.client.get(
             "/api/v1/superadmin/ota-booking-dashboard/?offset=1&limit=20",

@@ -3247,6 +3247,20 @@ def update_reservation_for_check_in(booking, data, *, replace_payment=False):
                 requested_rooms[0]["rate_plan_id"] = data["rate_plan_id"]
             if "physical_room_id" in data:
                 requested_rooms[0]["physical_room_ids"] = [data["physical_room_id"]]
+    else:
+        # OTA creates may receive guest counts at booking level, while the
+        # check-in form later submits nested room fields without those counts.
+        # Preserve the booked occupancy unless the PATCH explicitly replaces it.
+        top_level_adults_supplied = "adults" in data
+        top_level_children_supplied = "children" in data
+        for index, requested in enumerate(requested_rooms):
+            if index >= len(existing_rooms):
+                continue
+            existing = existing_rooms[index]
+            if not top_level_adults_supplied:
+                requested.setdefault("adults", existing.adults)
+            if not top_level_children_supplied:
+                requested.setdefault("children", existing.children)
 
     assignment_ids_by_index = [list(room.pop("physical_room_ids", [])) for room in requested_rooms]
     if len(assignment_ids_by_index) != len(requested_rooms):

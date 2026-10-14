@@ -60,6 +60,7 @@ from booking.views import (
     SuperAdminOTABookingDetailView,
     SuperAdminOTABookingFollowUpView,
     SuperAdminOTABookingListView,
+    SuperAdminOTABookingNoShowView,
     WalkInBookingView,
     WalkInBookingV2View,
 )
@@ -94,6 +95,10 @@ urlpatterns = [
     path(
         "superadmin/ota-bookings/<uuid:booking_id>/follow-up/",
         SuperAdminOTABookingFollowUpView.as_view(),
+    ),
+    path(
+        "superadmin/ota-bookings/<uuid:booking_id>/no-show/",
+        SuperAdminOTABookingNoShowView.as_view(),
     ),
     path("superadmin/ota-booking-dashboard/", SuperAdminOTABookingDashboardView.as_view()),
     path("admin/integration-status/", IntegrationStatusView.as_view()),
