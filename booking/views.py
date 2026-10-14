@@ -5473,7 +5473,25 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
                 "rooms__nights", "rooms__room_type", "rooms__rate_plan",
                 "rooms__assignments__physical_room", "guests__identity_documents", "add_ons", "payments",
                 "invoices__lines", "invoices__receipts",
-            ).filter(inventory_mode=F("hotel__inventory_mode"))
+            ).filter(
+                # PMS always operates physical rooms; room_type_count is only
+                # the OTA allotment and may be the hotel's currently selected
+                # OTA mode.
+                Q(
+                    source=Booking.Source.PMS,
+                    inventory_mode=Hotel.InventoryMode.PHYSICAL_ROOM,
+                )
+                | Q(
+                    source=Booking.Source.OTA,
+                    inventory_mode=F("hotel__inventory_mode"),
+                )
+                # Keep legacy inconsistent stays reachable so staff can see
+                # and check them out instead of leaving rooms occupied forever.
+                | Q(
+                    status=Booking.Status.CHECKED_IN,
+                    rooms__assignments__released_at__isnull=True,
+                )
+            ).distinct()
         )
 
     @staticmethod

@@ -8117,7 +8117,7 @@ class BookingApiTests(BookingServiceTests):
         booking.save(update_fields=[
             "status", "inventory_mode", "check_in", "check_out", "updated_at",
         ])
-        RoomAssignment.objects.create(
+        assignment = RoomAssignment.objects.create(
             booking_room=booking.rooms.first(),
             physical_room=room,
         )
@@ -8138,6 +8138,18 @@ class BookingApiTests(BookingServiceTests):
         )
         self.assertEqual(board_room["display_status"], "occupied")
         self.assertEqual(str(board_room["current_booking"]["id"]), str(booking.id))
+
+        checkout = self.client.post(
+            f"/api/v1/admin/bookings/{booking.id}/check-out-room/",
+            {"assignment_id": assignment.id},
+            format="json",
+            **headers,
+        )
+        self.assertEqual(checkout.status_code, 200, checkout.data)
+        booking.refresh_from_db()
+        assignment.refresh_from_db()
+        self.assertEqual(booking.status, Booking.Status.CHECKED_OUT)
+        self.assertIsNotNone(assignment.released_at)
 
     def test_count_inventory_booking_cannot_enter_physical_room_pms_workflow(self):
         room = PhysicalRoom.objects.create(
