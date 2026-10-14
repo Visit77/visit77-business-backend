@@ -2804,6 +2804,8 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(response.data["data"]["room_total"], Decimal("44000"))
         self.assertEqual(response.data["data"]["room_charge_total"], Decimal("4000"))
         self.assertEqual(response.data["data"]["breakfast_total"], Decimal("40000"))
+        self.assertEqual(response.data["data"]["total_adults"], 4)
+        self.assertEqual(response.data["data"]["total_children"], 0)
 
         booking_room = booking.rooms.get()
         booking_room.breakfast_snapshot = {
@@ -4076,19 +4078,33 @@ class BookingApiTests(BookingServiceTests):
             }],
         }
         self.hotel.save(update_fields=["ota_invoice_charges"])
-        physical_room = PhysicalRoom.objects.create(
+        first_physical_room = PhysicalRoom.objects.create(
             hotel=self.hotel,
             room_type=self.room_type,
-            room_number="OTA-PARTIAL-OCCUPANCY",
+            room_number="OTA-PARTIAL-OCCUPANCY-1",
+        )
+        second_physical_room = PhysicalRoom.objects.create(
+            hotel=self.hotel,
+            room_type=self.room_type,
+            room_number="OTA-PARTIAL-OCCUPANCY-2",
         )
         payload = self.payload()
-        payload["rooms"] = [{
-            "core_room_type_id": self.room_type.core_room_type_id,
-            "rate_plan_id": self.rate_plan.id,
-            "quantity": 1,
-            "adults": 2,
-            "children": 0,
-        }]
+        payload["rooms"] = [
+            {
+                "core_room_type_id": self.room_type.core_room_type_id,
+                "rate_plan_id": self.rate_plan.id,
+                "quantity": 1,
+                "adults": 1,
+                "children": 0,
+            },
+            {
+                "core_room_type_id": self.room_type.core_room_type_id,
+                "rate_plan_id": self.rate_plan.id,
+                "quantity": 1,
+                "adults": 1,
+                "children": 0,
+            },
+        ]
         booking, _ = create_booking(payload)
         record_payment(booking, {
             "provider": "cash",
@@ -4101,11 +4117,20 @@ class BookingApiTests(BookingServiceTests):
         response = self.client.patch(
             f"/api/v1/admin/bookings/{booking.id}/check-in-form/",
             {
-                "room[0][physical_room_id]": str(physical_room.id),
+                # The legacy top-level value represents only one room and
+                # must not collapse the total occupancy from two adults to one.
+                "adults": "1",
+                "children": "0",
+                "room[0][physical_room_id]": str(first_physical_room.id),
                 "room[0][rate_plan_id]": str(self.rate_plan.id),
                 "room[0][breakfast_selected]": "true",
                 "room[0][preferences][preference_standard]": "large_bed",
                 "room[0][preferences][smoking_type]": "non_smoking",
+                "room[1][physical_room_id]": str(second_physical_room.id),
+                "room[1][rate_plan_id]": str(self.rate_plan.id),
+                "room[1][breakfast_selected]": "true",
+                "room[1][preferences][preference_standard]": "large_bed",
+                "room[1][preferences][smoking_type]": "non_smoking",
             },
             format="multipart",
             HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
@@ -4114,9 +4139,9 @@ class BookingApiTests(BookingServiceTests):
 
         self.assertEqual(response.status_code, 200, response.data)
         booking.refresh_from_db()
-        booking_room = booking.rooms.get()
-        self.assertEqual(booking_room.adults, 2)
-        self.assertEqual(booking_room.children, 0)
+        booking_rooms = list(booking.rooms.order_by("id"))
+        self.assertEqual([room.adults for room in booking_rooms], [1, 1])
+        self.assertEqual([room.children for room in booking_rooms], [0, 0])
         self.assertEqual(booking.grand_total, original_total)
         self.assertEqual(booking.amount_paid, original_total)
 

@@ -3251,15 +3251,16 @@ def update_reservation_for_check_in(booking, data, *, replace_payment=False):
         # OTA creates may receive guest counts at booking level, while the
         # check-in form later submits nested room fields without those counts.
         # Preserve the booked occupancy unless the PATCH explicitly replaces it.
+        preserve_ota_occupancy = booking.source == Booking.Source.OTA
         top_level_adults_supplied = "adults" in data
         top_level_children_supplied = "children" in data
         for index, requested in enumerate(requested_rooms):
             if index >= len(existing_rooms):
                 continue
             existing = existing_rooms[index]
-            if not top_level_adults_supplied:
+            if preserve_ota_occupancy or not top_level_adults_supplied:
                 requested.setdefault("adults", existing.adults)
-            if not top_level_children_supplied:
+            if preserve_ota_occupancy or not top_level_children_supplied:
                 requested.setdefault("children", existing.children)
 
     assignment_ids_by_index = [list(room.pop("physical_room_ids", [])) for room in requested_rooms]
@@ -3304,9 +3305,10 @@ def update_reservation_for_check_in(booking, data, *, replace_payment=False):
             ]
             for category in ("taxes", "service_charges")
         }
-    for field in ["adults", "children"]:
-        if field in data:
-            replacement_payload[field] = data[field]
+    if "rooms" not in data or booking.source != Booking.Source.OTA:
+        for field in ["adults", "children"]:
+            if field in data:
+                replacement_payload[field] = data[field]
     replacement, _created = create_booking(replacement_payload)
 
     # A confirmed reservation is a price-locked sale.  Core may change the

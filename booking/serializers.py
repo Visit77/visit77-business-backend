@@ -2552,8 +2552,18 @@ class BookingSerializer(serializers.ModelSerializer):
 
 
 class BookingDetailSerializer(BookingSerializer):
+    total_adults = serializers.SerializerMethodField()
+    total_children = serializers.SerializerMethodField()
     rooms = BookingDetailRoomSerializer(many=True, read_only=True)
     invoice_adjustments = serializers.SerializerMethodField()
+
+    @staticmethod
+    def get_total_adults(obj):
+        return sum(room.adults for room in obj.rooms.all())
+
+    @staticmethod
+    def get_total_children(obj):
+        return sum(room.children for room in obj.rooms.all())
 
     @staticmethod
     def get_invoice_adjustments(obj):
@@ -2864,7 +2874,13 @@ class CheckInFormUpdateSerializer(serializers.Serializer):
         has_room_guest_counts = any(
             "adults" in room or "children" in room for room in rooms
         )
-        if rooms and has_top_level_guest_counts and has_room_guest_counts:
+        if rooms and booking and booking.source == Booking.Source.OTA:
+            # Nested rooms are authoritative during check-in. Some clients
+            # still echo the first room's occupancy in the legacy top-level
+            # fields, which must not replace the booking's total occupancy.
+            attrs.pop("adults", None)
+            attrs.pop("children", None)
+        elif rooms and has_top_level_guest_counts and has_room_guest_counts:
             raise serializers.ValidationError({
                 "rooms": "Send guest counts either inside rooms or as top-level fields, not both."
             })
