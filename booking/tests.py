@@ -8870,6 +8870,88 @@ class BookingApiTests(BookingServiceTests):
             str(bookings[1].id),
         )
 
+    def test_superadmin_ota_views_hide_test_city_unless_explicitly_requested(self):
+        normal_booking = Booking.objects.create(
+            reference="OTA-NORMAL-CITY",
+            hotel=self.hotel,
+            source=Booking.Source.OTA,
+            status=Booking.Status.CONFIRMED,
+            check_in=self.check_in,
+            check_out=self.check_out,
+            contact_name="Normal City Guest",
+            contact_phone="091111111",
+            currency="MMK",
+            grand_total=Decimal("10000"),
+        )
+        test_hotel = Hotel.objects.create(
+            core_business_id=999998,
+            name="Test City Hotel",
+            package=Hotel.Package.OTA_PMS,
+            core_snapshot={
+                "city": {"id": 999999, "name": "Test City"},
+            },
+        )
+        test_booking = Booking.objects.create(
+            reference="OTA-TEST-CITY",
+            hotel=test_hotel,
+            source=Booking.Source.OTA,
+            status=Booking.Status.CONFIRMED,
+            check_in=self.check_in,
+            check_out=self.check_out,
+            contact_name="Test City Guest",
+            contact_phone="092222222",
+            currency="MMK",
+            grand_total=Decimal("20000"),
+        )
+        headers = {"HTTP_AUTHORIZATION": f"Bearer {self.core_access_token()}"}
+
+        booking_list = self.client.get(
+            "/api/v1/superadmin/ota-bookings/?offset=1&limit=20",
+            **headers,
+        )
+        self.assertEqual(booking_list.status_code, 200, booking_list.data)
+        default_booking_ids = {
+            str(booking["id"])
+            for group in booking_list.data["data"]["results"]
+            for booking in group["bookings"]
+        }
+        self.assertIn(str(normal_booking.id), default_booking_ids)
+        self.assertNotIn(str(test_booking.id), default_booking_ids)
+
+        test_city_list = self.client.get(
+            "/api/v1/superadmin/ota-bookings/?city_id=999999&offset=1&limit=20",
+            **headers,
+        )
+        self.assertEqual(test_city_list.status_code, 200, test_city_list.data)
+        explicit_booking_ids = {
+            str(booking["id"])
+            for group in test_city_list.data["data"]["results"]
+            for booking in group["bookings"]
+        }
+        self.assertEqual(explicit_booking_ids, {str(test_booking.id)})
+
+        dashboard = self.client.get(
+            "/api/v1/superadmin/ota-booking-dashboard/?offset=1&limit=20",
+            **headers,
+        )
+        self.assertEqual(dashboard.status_code, 200, dashboard.data)
+        default_hotel_ids = {
+            row["hotel"]["id"] for row in dashboard.data["data"]["results"]
+        }
+        self.assertIn(self.hotel.id, default_hotel_ids)
+        self.assertNotIn(test_hotel.id, default_hotel_ids)
+
+        test_city_dashboard = self.client.get(
+            "/api/v1/superadmin/ota-booking-dashboard/?city_id=999999&offset=1&limit=20",
+            **headers,
+        )
+        self.assertEqual(test_city_dashboard.status_code, 200, test_city_dashboard.data)
+        explicit_hotel_ids = {
+            row["hotel"]["id"]
+            for row in test_city_dashboard.data["data"]["results"]
+        }
+        self.assertEqual(explicit_hotel_ids, {test_hotel.id})
+
     def test_superadmin_can_update_ota_follow_up_without_history_table(self):
         booking = Booking.objects.create(
             reference="OTA-FOLLOW-UP",

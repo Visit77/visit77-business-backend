@@ -5104,6 +5104,9 @@ def _hotel_matches_location(hotel, field, expected):
     return any(str(candidate).strip().lower() == expected for candidate in candidates if candidate is not None)
 
 
+SUPERADMIN_HIDDEN_TEST_CITY_ID = 999999
+
+
 def _follow_up_payload(booking):
     try:
         follow_up = booking.ota_follow_up
@@ -5199,6 +5202,12 @@ def _filter_superadmin_hotels(request):
     hotels = list(Hotel.objects.filter(is_active=True))
     hotel_value = request.query_params.get("hotel_id") or request.query_params.get("core_business_id")
     search = (request.query_params.get("search") or request.query_params.get("hotel") or "").strip().lower()
+    requested_city = request.query_params.get("city_id") or request.query_params.get("city")
+    if str(requested_city or "").strip() != str(SUPERADMIN_HIDDEN_TEST_CITY_ID):
+        hotels = [
+            hotel for hotel in hotels
+            if not _hotel_matches_location(hotel, "city", SUPERADMIN_HIDDEN_TEST_CITY_ID)
+        ]
     if hotel_value:
         hotels = [hotel for hotel in hotels if str(hotel.id) == str(hotel_value) or str(hotel.core_business_id) == str(hotel_value)]
     if search:
