@@ -2592,9 +2592,9 @@ class OTARoomHistoryView(APIView):
         query = OTARoomTimelineQuerySerializer(data=request.query_params)
         query.is_valid(raise_exception=True)
         timeline_status = query.validated_data["timeline_status"]
-        # Build the complete room timeline first, then expose only confirmed
-        # bookings from this history endpoint. Other OTA room-selection views
-        # keep their existing operational timeline behavior.
+        # Build the complete room timeline first, then hide incomplete and
+        # terminally canceled/expired bookings from this history endpoint.
+        # Other OTA room-selection views keep their existing behavior.
         payload = OTARoomSelectionView._payload(
             hotel,
             timeline_status="all",
@@ -2610,32 +2610,36 @@ class OTARoomHistoryView(APIView):
         if not room_payload:
             raise NotFound("Physical room is not available for this business.")
 
-        confirmed_records = [
+        visible_records = [
             record
             for record in room_payload["ota_records"]
-            if record["booking_status"] == Booking.Status.CONFIRMED
+            if record["booking_status"] in {
+                Booking.Status.CONFIRMED,
+                Booking.Status.CHECKED_IN,
+                Booking.Status.CHECKED_OUT,
+            }
         ]
         filtered_records = (
-            confirmed_records
+            visible_records
             if timeline_status == "all"
             else [
-                record for record in confirmed_records
+                record for record in visible_records
                 if record["timeline_status"] == timeline_status
             ]
         )
-        confirmed_summary = {
-            "all": len(confirmed_records),
+        visible_summary = {
+            "all": len(visible_records),
             "active_today": sum(
                 record["timeline_status"] == "active_today"
-                for record in confirmed_records
+                for record in visible_records
             ),
             "upcoming": sum(
                 record["timeline_status"] == "upcoming"
-                for record in confirmed_records
+                for record in visible_records
             ),
             "past": sum(
                 record["timeline_status"] == "past"
-                for record in confirmed_records
+                for record in visible_records
             ),
         }
 
@@ -2653,8 +2657,8 @@ class OTARoomHistoryView(APIView):
             },
             "applied_timeline_status": timeline_status,
             "ota_record_count": len(filtered_records),
-            "ota_record_total": len(confirmed_records),
-            "ota_record_summary": confirmed_summary,
+            "ota_record_total": len(visible_records),
+            "ota_record_summary": visible_summary,
             "ota_records": filtered_records,
         })
 
@@ -2721,7 +2725,11 @@ class OTARecordListView(APIView):
             room_type__hotel=hotel,
             booking__source=Booking.Source.OTA,
             booking__inventory_mode=hotel.inventory_mode,
-            booking__status=Booking.Status.CONFIRMED,
+            booking__status__in=[
+                Booking.Status.CONFIRMED,
+                Booking.Status.CHECKED_IN,
+                Booking.Status.CHECKED_OUT,
+            ],
         )
         booking_rooms = booking_rooms.select_related(
             "room_type",
@@ -3838,7 +3846,11 @@ class OTAHotelNotificationView(APIView):
         queryset = OTABookingNotification.objects.filter(
             hotel=hotel,
             is_deleted=False,
-            booking__status=Booking.Status.CONFIRMED,
+            booking__status__in=[
+                Booking.Status.CONFIRMED,
+                Booking.Status.CHECKED_IN,
+                Booking.Status.CHECKED_OUT,
+            ],
         ).select_related("booking", "hotel").prefetch_related(
             "booking__rooms__room_type",
             "booking__rooms__assignments__physical_room",

@@ -269,7 +269,17 @@ class BookingServiceTests(TestCase):
                 }],
             },
         )
-        pending_booking, _ = create_booking(self.payload())
+        pending_booking = Booking.objects.create(
+            reference="OTA-PENDING-NOTIFICATION",
+            hotel=self.hotel,
+            status=Booking.Status.PENDING_PAYMENT,
+            source=Booking.Source.OTA,
+            inventory_mode=self.hotel.inventory_mode,
+            check_in=self.check_in,
+            check_out=self.check_out,
+            contact_name="Pending Guest",
+            contact_phone="091111111",
+        )
         OTABookingNotification.objects.create(
             hotel=self.hotel,
             booking=pending_booking,
@@ -5927,14 +5937,14 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(history_data["physical_room"]["physical_room_id"], room.id)
         self.assertEqual(history_data["applied_timeline_status"], "all")
         self.assertEqual(history_data["ota_record_summary"], {
-            "all": 2,
-            "active_today": 0,
+            "all": 5,
+            "active_today": 1,
             "upcoming": 2,
-            "past": 0,
+            "past": 2,
         })
         self.assertEqual(
             [item["booking_reference"] for item in history_data["ota_records"]],
-            ["OTA-UPCOMING-NEAR", "OTA-UPCOMING-FAR"],
+            ["OTA-CURRENT", "OTA-UPCOMING-NEAR", "OTA-UPCOMING-FAR", "OTA-PAST-NEAR", "OTA-PAST-FAR"],
         )
         current_record = room_payload["ota_records"][0]
         self.assertTrue(current_record["invoices"][0]["invoice_pdf_url"].endswith(
@@ -5980,12 +5990,9 @@ class BookingApiTests(BookingServiceTests):
             self.assertEqual(filtered_history.status_code, 200, filtered_history.data)
             self.assertEqual(
                 [item["booking_reference"] for item in filtered_history.data["data"]["ota_records"]],
-                (
-                    ["OTA-UPCOMING-NEAR", "OTA-UPCOMING-FAR"]
-                    if timeline_status == "upcoming" else []
-                ),
+                expected_references,
             )
-            self.assertEqual(filtered_history.data["data"]["ota_record_total"], 2)
+            self.assertEqual(filtered_history.data["data"]["ota_record_total"], 5)
             self.assertIsInstance(filtered_history.data["data"]["ota_record_total"], int)
 
         close_conflict = self.client.post(
