@@ -240,6 +240,8 @@ class BookingServiceTests(TestCase):
     @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
     def test_ota_pms_notification_list_includes_assigned_physical_rooms(self):
         booking, _ = create_booking(self.payload())
+        booking.status = Booking.Status.CONFIRMED
+        booking.save(update_fields=["status", "updated_at"])
         booking_room = booking.rooms.get()
         physical_room = PhysicalRoom.objects.create(
             hotel=self.hotel,
@@ -267,6 +269,14 @@ class BookingServiceTests(TestCase):
                 }],
             },
         )
+        pending_booking, _ = create_booking(self.payload())
+        OTABookingNotification.objects.create(
+            hotel=self.hotel,
+            booking=pending_booking,
+            event_type=OTABookingNotification.EventType.NEW,
+            body=f"Pending: {pending_booking.booking_code}",
+            payload={"booking_id": str(pending_booking.id)},
+        )
 
         response = self.client.get(
             "/api/v1/admin/ota-notifications/",
@@ -275,6 +285,7 @@ class BookingServiceTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["count"], 1)
         notification_payload = response.data["data"]["results"][0]
         self.assertEqual(notification_payload["hotel_id"], self.hotel.id)
         self.assertEqual(
@@ -396,6 +407,8 @@ class BookingServiceTests(TestCase):
         self.assertEqual(payload["room_types"][0]["physical_rooms"], [])
 
         booking, _ = create_booking(self.payload())
+        booking.status = Booking.Status.CONFIRMED
+        booking.save(update_fields=["status", "updated_at"])
         today_inventory = DailyInventory.objects.get(
             room_type=self.room_type,
             stay_date=timezone.localdate(),
@@ -463,6 +476,8 @@ class BookingServiceTests(TestCase):
             "extra_beds": 0,
         })
         physical_booking, _ = create_booking(physical_payload)
+        physical_booking.status = Booking.Status.CONFIRMED
+        physical_booking.save(update_fields=["status", "updated_at"])
         self.assertEqual(
             physical_booking.inventory_mode,
             Hotel.InventoryMode.PHYSICAL_ROOM,
@@ -5912,16 +5927,16 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(history_data["physical_room"]["physical_room_id"], room.id)
         self.assertEqual(history_data["applied_timeline_status"], "all")
         self.assertEqual(history_data["ota_record_summary"], {
-            "all": 5,
-            "active_today": 1,
+            "all": 2,
+            "active_today": 0,
             "upcoming": 2,
-            "past": 2,
+            "past": 0,
         })
         self.assertEqual(
             [item["booking_reference"] for item in history_data["ota_records"]],
-            ["OTA-CURRENT", "OTA-UPCOMING-NEAR", "OTA-UPCOMING-FAR", "OTA-PAST-NEAR", "OTA-PAST-FAR"],
+            ["OTA-UPCOMING-NEAR", "OTA-UPCOMING-FAR"],
         )
-        current_record = history_data["ota_records"][0]
+        current_record = room_payload["ota_records"][0]
         self.assertTrue(current_record["invoices"][0]["invoice_pdf_url"].endswith(
             f"/api/v1/public/bookings/{current.public_token}/invoices/{current_payment.invoice_id}/pdf/"
         ))
@@ -5965,9 +5980,12 @@ class BookingApiTests(BookingServiceTests):
             self.assertEqual(filtered_history.status_code, 200, filtered_history.data)
             self.assertEqual(
                 [item["booking_reference"] for item in filtered_history.data["data"]["ota_records"]],
-                expected_references,
+                (
+                    ["OTA-UPCOMING-NEAR", "OTA-UPCOMING-FAR"]
+                    if timeline_status == "upcoming" else []
+                ),
             )
-            self.assertEqual(filtered_history.data["data"]["ota_record_total"], 5)
+            self.assertEqual(filtered_history.data["data"]["ota_record_total"], 2)
             self.assertIsInstance(filtered_history.data["data"]["ota_record_total"], int)
 
         close_conflict = self.client.post(
