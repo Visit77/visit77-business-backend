@@ -9139,6 +9139,63 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(row["period_amounts_by_currency"]["MMK"], 125000.0)
         self.assertEqual(row["daily"][-1]["count"], 1)
         self.assertEqual(row["daily"][-1]["amounts_by_currency"]["MMK"], 125000.0)
+        self.assertEqual(data["summary"]["today_ota"], 1)
+        self.assertEqual(data["summary"]["period_ota"], 1)
+        self.assertEqual(data["summary"]["today_ota_hotels"], 1)
+        self.assertEqual(data["summary"]["period_ota_hotels"], 1)
+        self.assertEqual(data["summary"]["last_7_days_hotels"], 1)
+        self.assertEqual(data["summary"]["refund_hotels"], 0)
+        self.assertEqual(data["summary"]["inactive_hotels"], 0)
+        self.assertEqual(data["summary"]["ota_only_hotels"], 0)
+        self.assertEqual(data["summary"]["ota_pms_hotels"], 1)
+
+    def test_superadmin_ota_dashboard_supports_all_ui_sort_orders(self):
+        self.hotel.name = "Alpha Hotel"
+        self.hotel.save(update_fields=["name"])
+        zulu_hotel = Hotel.objects.create(
+            core_business_id=7800,
+            name="Zulu Hotel",
+            package=Hotel.Package.OTA,
+        )
+
+        def create_ota(reference, hotel):
+            return Booking.objects.create(
+                reference=reference,
+                hotel=hotel,
+                source=Booking.Source.OTA,
+                status=Booking.Status.CONFIRMED,
+                check_in=self.check_in,
+                check_out=self.check_out,
+                contact_name="Sort Guest",
+                contact_phone="091111111",
+                currency="MMK",
+                grand_total=Decimal("10000"),
+            )
+
+        create_ota("SORT-ALPHA-TODAY", self.hotel)
+        for index in range(3):
+            old_booking = create_ota(f"SORT-ALPHA-OLD-{index}", self.hotel)
+            Booking.objects.filter(pk=old_booking.pk).update(
+                created_at=timezone.now() - timedelta(days=100 + index),
+            )
+        create_ota("SORT-ZULU-TODAY-1", zulu_hotel)
+        create_ota("SORT-ZULU-TODAY-2", zulu_hotel)
+
+        headers = {"HTTP_AUTHORIZATION": f"Bearer {self.core_access_token()}"}
+
+        def hotel_names(ordering):
+            response = self.client.get(
+                f"/api/v1/superadmin/ota-booking-dashboard/?ordering={ordering}&offset=1&limit=20",
+                **headers,
+            )
+            self.assertEqual(response.status_code, 200, response.data)
+            return [row["hotel"]["name"] for row in response.data["data"]["results"]]
+
+        self.assertEqual(hotel_names("hotel_asc")[:2], ["Alpha Hotel", "Zulu Hotel"])
+        self.assertEqual(hotel_names("hotel_desc")[:2], ["Zulu Hotel", "Alpha Hotel"])
+        self.assertEqual(hotel_names("today_max")[:2], ["Zulu Hotel", "Alpha Hotel"])
+        self.assertEqual(hotel_names("weekly_max")[:2], ["Zulu Hotel", "Alpha Hotel"])
+        self.assertEqual(hotel_names("total_max")[:2], ["Alpha Hotel", "Zulu Hotel"])
 
 
 class DemoSeedCommandTests(TestCase):

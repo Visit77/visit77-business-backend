@@ -5410,6 +5410,12 @@ class SuperAdminOTABookingDashboardView(APIView):
 
         inactive_days = _positive_query_int(request, "inactive_days", 60)
         inactive_cutoff = today - timedelta(days=inactive_days)
+        refunded_hotel_ids = set(Payment.objects.filter(
+            booking__source=Booking.Source.OTA,
+            booking__status=Booking.Status.CONFIRMED,
+            booking__hotel_id__in=hotel_ids,
+            refunded_amount__gt=0,
+        ).values_list("booking__hotel_id", flat=True))
         if quick_filter == "today":
             hotels = [hotel for hotel in hotels if daily[(hotel.id, today)]["count"]]
         elif quick_filter == "last_7_days":
@@ -5417,20 +5423,17 @@ class SuperAdminOTABookingDashboardView(APIView):
         elif quick_filter == "inactive":
             hotels = [hotel for hotel in hotels if latest_date.get(hotel.id) is None or latest_date[hotel.id] < inactive_cutoff]
         elif quick_filter == "refund":
-            refunded_hotel_ids = set(Payment.objects.filter(
-                booking__source=Booking.Source.OTA,
-                booking__status=Booking.Status.CONFIRMED,
-                refunded_amount__gt=0,
-            ).values_list("booking__hotel_id", flat=True))
             hotels = [hotel for hotel in hotels if hotel.id in refunded_hotel_ids]
 
         ordering = request.query_params.get("ordering", "hotel_asc")
-        if ordering == "hotel_desc":
+        if ordering in {"hotel_desc", "z_to_a"}:
             hotels.sort(key=lambda hotel: hotel.name.lower(), reverse=True)
-        elif ordering == "most_total":
-            hotels.sort(key=lambda hotel: lifetime[hotel.id]["count"], reverse=True)
-        elif ordering == "most_last_7_days":
-            hotels.sort(key=lambda hotel: period[hotel.id]["count"], reverse=True)
+        elif ordering in {"today_max", "most_today"}:
+            hotels.sort(key=lambda hotel: (-daily[(hotel.id, today)]["count"], hotel.name.lower()))
+        elif ordering in {"weekly_max", "period_max", "most_last_7_days"}:
+            hotels.sort(key=lambda hotel: (-period[hotel.id]["count"], hotel.name.lower()))
+        elif ordering in {"total_max", "most_total"}:
+            hotels.sort(key=lambda hotel: (-lifetime[hotel.id]["count"], hotel.name.lower()))
         else:
             hotels.sort(key=lambda hotel: hotel.name.lower())
 
@@ -5509,6 +5512,14 @@ class SuperAdminOTABookingDashboardView(APIView):
         payload["summary"] = {
             "today_ota": sum(daily[(hotel.id, today)]["count"] for hotel in summary_hotels),
             "period_ota": sum(period[hotel.id]["count"] for hotel in summary_hotels),
+            "today_ota_hotels": sum(bool(daily[(hotel.id, today)]["count"]) for hotel in summary_hotels),
+            "period_ota_hotels": sum(bool(period[hotel.id]["count"]) for hotel in summary_hotels),
+            "last_7_days_hotels": sum(bool(period[hotel.id]["count"]) for hotel in summary_hotels),
+            "refund_hotels": sum(hotel.id in refunded_hotel_ids for hotel in summary_hotels),
+            "inactive_hotels": sum(
+                latest_date.get(hotel.id) is None or latest_date[hotel.id] < inactive_cutoff
+                for hotel in summary_hotels
+            ),
             "ota_only_hotels": sum(hotel.package == Hotel.Package.OTA for hotel in summary_hotels),
             "ota_pms_hotels": sum(hotel.package == Hotel.Package.OTA_PMS for hotel in summary_hotels),
         }
