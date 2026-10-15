@@ -5026,17 +5026,25 @@ def _page_payload(items, offset, limit, total_count):
 
 def _snapshot_location(hotel):
     snapshot = hotel.core_snapshot or {}
+    branches = snapshot.get("branches") or []
+    branches = [branch for branch in branches if isinstance(branch, dict)]
+    main_branch = next((branch for branch in branches if branch.get("is_main") is True), None)
+    branch = main_branch or (branches[0] if branches else {})
 
     def pick(*names):
-        for name in names:
-            value = snapshot.get(name)
-            if value not in (None, ""):
-                if isinstance(value, dict):
-                    return {
-                        "id": value.get("id"),
-                        "name": value.get("name") or value.get("title"),
-                    }
-                return value
+        # Older provisioning payloads exposed location at the business level,
+        # while current Core payloads expose it on the main business branch.
+        # Keep the former as the first choice for backwards compatibility.
+        for source in (snapshot, branch):
+            for name in names:
+                value = source.get(name)
+                if value not in (None, ""):
+                    if isinstance(value, dict):
+                        return {
+                            "id": value.get("id"),
+                            "name": value.get("name") or value.get("title"),
+                        }
+                    return value
         return None
 
     return {

@@ -8789,6 +8789,25 @@ class BookingApiTests(BookingServiceTests):
 
     def test_superadmin_ota_booking_list_groups_dates_and_uses_page_number_offset(self):
         now = timezone.now()
+        self.hotel.core_snapshot = {
+            "branches": [
+                {
+                    "id": 2,
+                    "is_main": False,
+                    "state": {"id": 9, "name": "Other Region"},
+                    "city": {"id": 8, "name": "Other City"},
+                    "township": {"id": 7, "name": "Other Township"},
+                },
+                {
+                    "id": 1,
+                    "is_main": True,
+                    "state": {"id": 1, "name": "Mandalay Region"},
+                    "city": {"id": 2, "name": "Mandalay"},
+                    "township": None,
+                },
+            ],
+        }
+        self.hotel.save(update_fields=["core_snapshot"])
         bookings = []
         for index, amount in enumerate((Decimal("10000"), Decimal("20000"), Decimal("30000"))):
             booking = Booking.objects.create(
@@ -8834,6 +8853,14 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(first.data["data"]["total_pages"], 3)
         self.assertEqual(len(first.data["data"]["results"][0]["bookings"]), 1)
         self.assertIn("created_time", first.data["data"]["results"][0]["bookings"][0])
+        self.assertEqual(
+            first.data["data"]["results"][0]["bookings"][0]["hotel"]["location"],
+            {
+                "state": {"id": 1, "name": "Mandalay Region"},
+                "city": {"id": 2, "name": "Mandalay"},
+                "township": None,
+            },
+        )
         self.assertEqual(
             str(first.data["data"]["results"][0]["bookings"][0]["id"]),
             str(bookings[0].id),
