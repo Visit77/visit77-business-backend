@@ -1920,7 +1920,16 @@ class OTARoomSelectionView(APIView):
             Booking.Status.CONFIRMED,
             Booking.Status.CHECKED_IN,
         ]
-        queryset = Booking.objects.filter(hotel=hotel, source=Booking.Source.OTA)
+        visible_statuses = [
+            Booking.Status.CONFIRMED,
+            Booking.Status.CHECKED_IN,
+            Booking.Status.CHECKED_OUT,
+        ]
+        queryset = Booking.objects.filter(
+            hotel=hotel,
+            source=Booking.Source.OTA,
+            status__in=visible_statuses,
+        )
         if hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
             # Count-mode records exist at BookingRoom/RoomType level and do
             # not require physical-room assignments.
@@ -2079,11 +2088,16 @@ class OTARoomSelectionView(APIView):
             room_type__in=room_types,
             booking__source=Booking.Source.OTA,
             booking__inventory_mode=Hotel.InventoryMode.ROOM_TYPE_COUNT,
+            booking__status__in=[
+                Booking.Status.CONFIRMED,
+                Booking.Status.CHECKED_IN,
+                Booking.Status.CHECKED_OUT,
+            ],
         ).select_related("booking", "room_type").prefetch_related(
             "booking__invoices", "booking__payments",
         ).order_by("booking__created_at", "id"))
         records_by_room_type = defaultdict(list)
-        active_quantities = defaultdict(int)
+        booked_quantities = defaultdict(int)
         for booking_room in booking_rooms:
             booking = booking_room.booking
             is_live = booking.status in [
@@ -2094,7 +2108,6 @@ class OTARoomSelectionView(APIView):
             if is_live and booking.check_in <= today < booking.check_out:
                 record_timeline_status = "active_today"
                 color = "blue"
-                active_quantities[booking_room.room_type_id] += booking_room.quantity
             elif is_live and booking.check_in > today:
                 record_timeline_status = "upcoming"
                 color = "orange"
@@ -2103,6 +2116,7 @@ class OTARoomSelectionView(APIView):
                 color = "grey"
             if timeline_status != "all" and timeline_status != record_timeline_status:
                 continue
+            booked_quantities[booking_room.room_type_id] += booking_room.quantity
             paid_invoice_ids = {
                 payment.invoice_id
                 for payment in booking.payments.all()
@@ -2160,16 +2174,15 @@ class OTARoomSelectionView(APIView):
                 room_type.id,
                 count_inventory,
             )
-            # Count-mode OTA selection is isolated from PMS. Derive this from
-            # OTA bookings directly instead of legacy/shared inventory counters
-            # that may still contain PMS reservations.
-            booked_rooms = active_quantities.get(room_type.id, 0)
+            # This is a record count for the requested timeline, not today's
+            # occupancy. By default (timeline_status=all), include quantities
+            # from every non-canceled/non-expired OTA booking in this mode.
+            booked_rooms = booked_quantities.get(room_type.id, 0)
             # DailyInventory is shared by both inventory modes and its
             # total_rooms value is rewritten when the hotel changes mode.
             # Never use that shared total for a room-type-count response: the
             # dedicated count inventory must remain independent from physical
             # room totals across mode switches.
-            booked_rooms = min(booked_rooms, count_inventory)
             closed_rooms = min(
                 today_inventory.closed_rooms if today_inventory else 0,
                 max(count_inventory - booked_rooms, 0),
@@ -5956,10 +5969,6 @@ class BookingViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
         booking = cancel_booking(self.get_object())
-        if booking.source == Booking.Source.OTA:
-            transaction.on_commit(
-                lambda: create_and_queue_ota_booking_notification(str(booking.id), "cancelled")
-            )
         return success(BookingSerializer(booking).data)
 
     @action(detail=True, methods=["post"])

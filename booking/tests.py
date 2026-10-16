@@ -224,6 +224,10 @@ class BookingServiceTests(TestCase):
         self.hotel.package = Hotel.Package.OTA
         self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
         self.hotel.save(update_fields=["package", "inventory_mode"])
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
         booking, _ = create_booking(self.payload())
         self.assertEqual(
             booking.inventory_mode,
@@ -529,6 +533,73 @@ class BookingServiceTests(TestCase):
         self.assertEqual(count_record["unassigned_quantity"], 0)
         self.assertEqual(count_record["assignments"], [])
         self.assertIsNone(count_record["assignment_id"])
+
+    @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
+    def test_ota_room_selection_total_excludes_canceled_and_expired_bookings(self):
+        self.hotel.package = Hotel.Package.OTA
+        self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
+        self.hotel.save(update_fields=["package", "inventory_mode"])
+        headers = {
+            "HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key",
+            "HTTP_X_BOOKING_BUSINESS_ID": str(self.hotel.core_business_id),
+        }
+
+        booking, _ = create_booking(self.payload())
+        for booking_status in [Booking.Status.CANCELED, Booking.Status.EXPIRED]:
+            booking.status = booking_status
+            booking.save(update_fields=["status", "updated_at"])
+            response = self.client.get(
+                "/api/v1/admin/ota-rooms/selection/",
+                **headers,
+            )
+
+            self.assertEqual(response.status_code, 200, response.data)
+            self.assertEqual(response.data["data"]["total_booking_count"], 0)
+
+    @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
+    def test_count_mode_booked_rooms_defaults_to_all_non_terminal_records(self):
+        self.hotel.package = Hotel.Package.OTA
+        self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
+        self.hotel.save(update_fields=["package", "inventory_mode"])
+        booking, _ = create_booking(self.payload())
+        pending_response = self.client.get(
+            "/api/v1/admin/ota-rooms/selection/",
+            **headers,
+        )
+        pending_data = pending_response.data["data"]
+        self.assertEqual(pending_data["total_booking_count"], 0)
+        self.assertEqual(pending_data["room_types"][0]["booked_rooms"], 0)
+        self.assertEqual(pending_data["room_types"][0]["ota_records"], [])
+
+        booking.status = Booking.Status.CHECKED_OUT
+        booking.save(update_fields=["status", "updated_at"])
+
+        response = self.client.get(
+            "/api/v1/admin/ota-rooms/selection/",
+            **headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            response.data["data"]["applied_timeline_status"],
+            "all",
+        )
+        self.assertEqual(
+            response.data["data"]["room_types"][0]["booked_rooms"],
+            2,
+        )
+
+        for terminal_status in [Booking.Status.CANCELED, Booking.Status.EXPIRED]:
+            booking.status = terminal_status
+            booking.save(update_fields=["status", "updated_at"])
+            terminal_response = self.client.get(
+                "/api/v1/admin/ota-rooms/selection/",
+                **headers,
+            )
+            self.assertEqual(
+                terminal_response.data["data"]["room_types"][0]["booked_rooms"],
+                0,
+            )
 
     @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
     def test_ota_only_scheduled_closure_keeps_booking_record_and_can_be_deleted(self):
@@ -8261,6 +8332,40 @@ class BookingApiTests(BookingServiceTests):
         assignment.refresh_from_db()
         self.assertEqual(canceled.status, Booking.Status.CANCELED)
         self.assertIsNotNone(assignment.released_at)
+
+    @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
+    @patch("booking.views.create_and_queue_ota_booking_notification")
+    def test_cancel_ota_booking_does_not_send_notification(self, queue_notification):
+        payload = self.payload()
+        payload["source"] = Booking.Source.OTA
+        booking, _ = create_booking(payload)
+        record_payment(
+            booking,
+            {
+                "provider": "cash",
+                "amount": booking.grand_total,
+                "status": Payment.Status.PAID,
+            },
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                f"/api/v1/admin/bookings/{booking.id}/cancel/",
+                format="json",
+                HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+                HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+            )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, Booking.Status.CANCELED)
+        queue_notification.assert_not_called()
+        self.assertFalse(
+            OTABookingNotification.objects.filter(
+                booking=booking,
+                event_type=OTABookingNotification.EventType.CANCELLED,
+            ).exists()
+        )
 
     def test_integration_status_reports_synced_catalog_counts(self):
         PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="801")
