@@ -59,10 +59,7 @@ def Paragraph(text, style, *args, **kwargs):
     if MYANMAR_TEXT_RE.search(str(text)):
         style = style.clone(f"{style.name}-Myanmar")
         style.fontName = DOCUMENT_FONT
-        # Myanmar combining marks extend substantially above and below the
-        # Latin em box. ReportLab's default leading causes adjacent lines to
-        # overlap, especially in the large hotel-name header.
-        style.leading = max(style.leading, style.fontSize * 1.55)
+        style.shaping = True
     return ReportLabParagraph(text, style, *args, **kwargs)
 
 

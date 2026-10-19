@@ -6,6 +6,7 @@ from unittest.mock import call, patch
 from django.test import TestCase, override_settings
 from pypdf import PdfReader
 from io import BytesIO
+from reportlab.lib.styles import ParagraphStyle
 
 from booking.models import (
     BOOKING_CODES_PER_SERIES,
@@ -35,7 +36,9 @@ from booking.booking_services.sms import (
     normalize_sms_phone_number,
 )
 from booking.booking_services.receipt import (
+    Paragraph as receipt_paragraph,
     _contact_values,
+    _register_document_fonts,
     build_invoice_snapshot,
     ensure_receipt_pdf,
     render_invoice_pdf,
@@ -77,6 +80,16 @@ class BookingCodeTests(TestCase):
             _contact_values('["82 58 5", "09 123 456"]'),
             ["82 58 5", "09 123 456"],
         )
+
+    def test_receipt_enables_shaping_for_myanmar_text(self):
+        _register_document_fonts()
+        paragraph = receipt_paragraph(
+            "မြန်မာစာ",
+            ParagraphStyle("MyanmarReceiptTest", fontName="Helvetica"),
+        )
+
+        self.assertEqual(paragraph.style.fontName, "NotoSansMyanmar")
+        self.assertTrue(paragraph.style.shaping)
 
     def add_confirmation_rooms(self, booking):
         twin = RoomType.objects.create(
