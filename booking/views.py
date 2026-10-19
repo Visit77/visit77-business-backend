@@ -5118,6 +5118,11 @@ def _hotel_matches_location(hotel, field, expected):
 
 
 SUPERADMIN_HIDDEN_TEST_CITY_ID = 999999
+SUPERADMIN_VISIBLE_OTA_BOOKING_STATUSES = [
+    Booking.Status.CONFIRMED,
+    Booking.Status.CHECKED_IN,
+    Booking.Status.CHECKED_OUT,
+]
 
 
 def _follow_up_payload(booking):
@@ -5251,7 +5256,7 @@ class SuperAdminOTABookingListView(APIView):
         hotels = _filter_superadmin_hotels(request)
         queryset = Booking.objects.filter(
             source=Booking.Source.OTA,
-            status=Booking.Status.CONFIRMED,
+            status__in=SUPERADMIN_VISIBLE_OTA_BOOKING_STATUSES,
             hotel_id__in=[hotel.id for hotel in hotels],
         ).select_related("hotel", "ota_follow_up").prefetch_related("rooms__room_type")
         date_from = _date_param(request, "date_from")
@@ -5403,7 +5408,7 @@ class SuperAdminOTABookingDashboardView(APIView):
         hotel_ids = [hotel.id for hotel in summary_hotels]
         all_bookings = list(Booking.objects.filter(
             source=Booking.Source.OTA,
-            status=Booking.Status.CONFIRMED,
+            status__in=SUPERADMIN_VISIBLE_OTA_BOOKING_STATUSES,
             hotel_id__in=hotel_ids,
         ).only("hotel_id", "created_at", "currency", "grand_total"))
         daily = defaultdict(lambda: {"count": 0, "amounts": defaultdict(Decimal)})
@@ -5425,7 +5430,7 @@ class SuperAdminOTABookingDashboardView(APIView):
         inactive_cutoff = today - timedelta(days=inactive_days)
         refunded_hotel_ids = set(Payment.objects.filter(
             booking__source=Booking.Source.OTA,
-            booking__status=Booking.Status.CONFIRMED,
+            booking__status__in=SUPERADMIN_VISIBLE_OTA_BOOKING_STATUSES,
             booking__hotel_id__in=hotel_ids,
             refunded_amount__gt=0,
         ).values_list("booking__hotel_id", flat=True))
@@ -5457,7 +5462,7 @@ class SuperAdminOTABookingDashboardView(APIView):
         pending_counts = dict(
             Booking.objects.filter(
                 source=Booking.Source.OTA,
-                status=Booking.Status.CONFIRMED,
+                status__in=SUPERADMIN_VISIBLE_OTA_BOOKING_STATUSES,
                 hotel_id__in=page_ids,
             )
             .filter(Q(ota_follow_up__isnull=True) | Q(ota_follow_up__status=OTABookingFollowUp.Status.PENDING))
@@ -5466,7 +5471,7 @@ class SuperAdminOTABookingDashboardView(APIView):
         refund_counts = dict(
             Payment.objects.filter(
                 booking__source=Booking.Source.OTA,
-                booking__status=Booking.Status.CONFIRMED,
+                booking__status__in=SUPERADMIN_VISIBLE_OTA_BOOKING_STATUSES,
                 booking__hotel_id__in=page_ids,
                 refunded_amount__gt=0,
             )

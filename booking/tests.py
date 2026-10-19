@@ -8929,6 +8929,25 @@ class BookingApiTests(BookingServiceTests):
             )
             Booking.objects.filter(id=booking.id).update(created_at=now - timedelta(days=index))
             bookings.append(booking)
+        for index, status_value in enumerate(
+            (Booking.Status.CHECKED_IN, Booking.Status.CHECKED_OUT),
+            start=3,
+        ):
+            booking = Booking.objects.create(
+                reference=f"OTA-MONITOR-{status_value}",
+                hotel=self.hotel,
+                source=Booking.Source.OTA,
+                status=status_value,
+                check_in=self.check_in,
+                check_out=self.check_out,
+                contact_name=f"{status_value} Guest",
+                contact_phone="098888888",
+                currency="MMK",
+                grand_total=Decimal("40000"),
+            )
+            Booking.objects.filter(id=booking.id).update(
+                created_at=now - timedelta(days=index),
+            )
         for status_value in (Booking.Status.PENDING_PAYMENT, Booking.Status.CANCELED):
             Booking.objects.create(
                 reference=f"OTA-MONITOR-{status_value}",
@@ -8954,8 +8973,8 @@ class BookingApiTests(BookingServiceTests):
         )
 
         self.assertEqual(first.status_code, 200, first.data)
-        self.assertEqual(first.data["data"]["total_count"], 3)
-        self.assertEqual(first.data["data"]["total_pages"], 3)
+        self.assertEqual(first.data["data"]["total_count"], 5)
+        self.assertEqual(first.data["data"]["total_pages"], 5)
         self.assertEqual(len(first.data["data"]["results"][0]["bookings"]), 1)
         self.assertIn("created_time", first.data["data"]["results"][0]["bookings"][0])
         self.assertEqual(
