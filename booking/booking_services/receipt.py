@@ -27,7 +27,7 @@ from booking.models import Invoice, Payment
 
 DOCUMENT_FONT = "NotoSansMyanmar"
 DOCUMENT_FONT_BOLD = "NotoSansMyanmar-Bold"
-PDF_RENDER_VERSION = 2
+PDF_RENDER_VERSION = 3
 MYANMAR_TEXT_RE = re.compile(r"[\u1000-\u109f\uaa60-\uaa7f\ua9e0-\ua9ff]")
 
 
@@ -59,6 +59,10 @@ def Paragraph(text, style, *args, **kwargs):
     if MYANMAR_TEXT_RE.search(str(text)):
         style = style.clone(f"{style.name}-Myanmar")
         style.fontName = DOCUMENT_FONT
+        # Myanmar combining marks extend substantially above and below the
+        # Latin em box. ReportLab's default leading causes adjacent lines to
+        # overlap, especially in the large hotel-name header.
+        style.leading = max(style.leading, style.fontSize * 1.55)
     return ReportLabParagraph(text, style, *args, **kwargs)
 
 
