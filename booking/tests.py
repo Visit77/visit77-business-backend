@@ -2761,7 +2761,8 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(cleaning["value"], "3.00")
         self.assertEqual(cleaning["calculation_basis"], "per_room_per_night")
         deleted_charge = self.client.delete(f"{ota_crud_url}{charge_id}/", **headers)
-        self.assertEqual(deleted_charge.status_code, 204, deleted_charge.data)
+        self.assertEqual(deleted_charge.status_code, 200, deleted_charge.data)
+        self.assertEqual(deleted_charge.data["data"], {"id": charge_id})
         self.hotel.refresh_from_db()
         self.assertNotIn(
             "Cleaning Charge",
@@ -2788,6 +2789,22 @@ class BookingApiTests(BookingServiceTests):
         )
         self.assertEqual(pms_grouped.data["data"]["other_charge"], [])
         self.assertEqual(pms_grouped.data["data"]["other_tax"], [])
+
+        pms_crud_url = "/api/v1/admin/pms-invoice-charges/"
+        created_pms_charge = self.client.post(pms_crud_url, {
+            "charge_type": "service",
+            "charge_kind": "other_charge",
+            "title": "PMS Cleaning Charge",
+            "mode": "fixed",
+            "value": "5000",
+        }, format="json", **headers)
+        self.assertEqual(created_pms_charge.status_code, 201, created_pms_charge.data)
+        pms_charge_id = created_pms_charge.data["data"]["id"]
+        deleted_pms_charge = self.client.delete(
+            f"{pms_crud_url}{pms_charge_id}/", **headers
+        )
+        self.assertEqual(deleted_pms_charge.status_code, 200, deleted_pms_charge.data)
+        self.assertEqual(deleted_pms_charge.data["data"], {"id": pms_charge_id})
         self.assertEqual(self.client.get(setup_url, HTTP_X_BOOKING_ADMIN_KEY="test-admin-key").status_code, 403)
         other_hotel = Hotel.objects.create(core_business_id=999998, name="Other Charge Hotel")
         other_headers = {**headers, "HTTP_X_BOOKING_BUSINESS_ID": str(other_hotel.core_business_id)}

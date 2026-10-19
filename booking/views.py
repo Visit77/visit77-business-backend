@@ -4120,6 +4120,13 @@ class InvoiceChargeViewSetBase(AdminModelViewSet):
         instance.delete()
         sync_hotel_charge_config(hotel, self.charge_model)
 
+    @transaction.atomic
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        deleted_id = instance.pk
+        self.perform_destroy(instance)
+        return success({"id": deleted_id})
+
 
 class OTAInvoiceChargeViewSet(InvoiceChargeViewSetBase):
     queryset = OTAInvoiceCharge.objects.select_related("hotel")
