@@ -18,9 +18,48 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
-from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import Image, Paragraph as ReportLabParagraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from booking.models import Invoice, Payment
+
+
+DOCUMENT_FONT = "NotoSansMyanmar"
+DOCUMENT_FONT_BOLD = "NotoSansMyanmar-Bold"
+PDF_RENDER_VERSION = 2
+MYANMAR_TEXT_RE = re.compile(r"[\u1000-\u109f\uaa60-\uaa7f\ua9e0-\ua9ff]")
+
+
+def _register_document_fonts():
+    """Register embedded Unicode fonts used by invoice and receipt PDFs."""
+    if DOCUMENT_FONT not in pdfmetrics.getRegisteredFontNames():
+        font_dir = Path(__file__).resolve().parents[1] / "static" / "booking" / "fonts"
+        pdfmetrics.registerFont(TTFont(
+            DOCUMENT_FONT,
+            str(font_dir / "NotoSansMyanmar-Regular.ttf"),
+            shapable=True,
+        ))
+        pdfmetrics.registerFont(TTFont(
+            DOCUMENT_FONT_BOLD,
+            str(font_dir / "NotoSansMyanmar-Bold.ttf"),
+            shapable=True,
+        ))
+        pdfmetrics.registerFontFamily(
+            DOCUMENT_FONT,
+            normal=DOCUMENT_FONT,
+            bold=DOCUMENT_FONT_BOLD,
+            italic=DOCUMENT_FONT,
+            boldItalic=DOCUMENT_FONT_BOLD,
+        )
+
+
+def Paragraph(text, style, *args, **kwargs):
+    """Use the embedded shaping font only when a paragraph contains Myanmar."""
+    if MYANMAR_TEXT_RE.search(str(text)):
+        style = style.clone(f"{style.name}-Myanmar")
+        style.fontName = DOCUMENT_FONT
+    return ReportLabParagraph(text, style, *args, **kwargs)
 
 
 def _money(value, currency):
@@ -245,6 +284,7 @@ def _build_document_snapshot(
     )
     snapshot = {
         "version": 2,
+        "pdf_render_version": PDF_RENDER_VERSION,
         "receipt_number": payment.receipt_number if payment is not None else "",
         "invoice_number": invoice.invoice_number if invoice else payment.invoice_number,
         "payment_date": (
@@ -369,6 +409,7 @@ def finalize_receipt_snapshot(payment, pending_charge_groups=None):
 
 
 def _render_payment_document_pdf(snapshot, document_title, document_number):
+    _register_document_fonts()
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer, pagesize=A4, rightMargin=18 * mm, leftMargin=18 * mm,
@@ -773,17 +814,27 @@ def render_invoice_pdf(snapshot):
 @transaction.atomic
 def ensure_receipt_pdf(payment):
     payment = Payment.objects.select_for_update().get(pk=payment.pk)
-    if payment.receipt_pdf:
+    if (
+        payment.receipt_pdf
+        and (payment.receipt_snapshot or {}).get("pdf_render_version") == PDF_RENDER_VERSION
+    ):
         return payment
     if not payment.receipt_number:
         raise ValueError("A receipt PDF can only be generated for a completed payment.")
     finalize_receipt_snapshot(payment)
+    receipt_snapshot = dict(payment.receipt_snapshot or {})
+    receipt_snapshot["pdf_render_version"] = PDF_RENDER_VERSION
     pdf_bytes = render_receipt_pdf(payment.receipt_snapshot)
+    if payment.receipt_pdf:
+        payment.receipt_pdf.delete(save=False)
     payment.receipt_pdf.save(
         f"{payment.receipt_number}.pdf",
         ContentFile(pdf_bytes),
         save=False,
     )
+    payment.receipt_snapshot = receipt_snapshot
     payment.receipt_pdf_generated_at = timezone.now()
-    payment.save(update_fields=["receipt_pdf", "receipt_pdf_generated_at"])
+    payment.save(update_fields=[
+        "receipt_pdf", "receipt_snapshot", "receipt_pdf_generated_at",
+    ])
     return payment

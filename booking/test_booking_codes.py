@@ -463,6 +463,22 @@ class BookingCodeTests(TestCase):
             self.assertIn("Amount Paid", pdf_text)
             self.assertIn("Amount Due", pdf_text)
 
+        myanmar_snapshot = deepcopy(payment.receipt_snapshot)
+        myanmar_snapshot["issuer"]["name"] = "မြန်မာ ဟိုတယ်"
+        myanmar_snapshot["guest"]["name"] = "မောင်မောင်"
+        myanmar_snapshot["booking"]["hotel_name"] = "မြန်မာ ဟိုတယ်"
+        myanmar_snapshot["invoice"]["lines"][0]["description"] = "အခန်းခ"
+        myanmar_reader = PdfReader(BytesIO(render_receipt_pdf(myanmar_snapshot)))
+        embedded_font_names = {
+            str(font.get_object().get("/BaseFont", ""))
+            for page in myanmar_reader.pages
+            for font in (page.get("/Resources", {}).get("/Font", {}) or {}).values()
+        }
+        self.assertTrue(any(
+            "NotoSansMyanmar" in font_name
+            for font_name in embedded_font_names
+        ))
+
     def test_receipt_groups_same_room_type_and_sums_quantity(self):
         booking = self.create_booking("TEST-GROUPED-ROOM-RECEIPT")
         booking.source = Booking.Source.PMS
