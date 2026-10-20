@@ -14,6 +14,7 @@ from booking.models import (
     OTARemittanceActor,
     OTARemittanceAuditLog,
 )
+from booking.authentication import CoreJWTAuthentication
 from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
 from config.response_formatter import success
 
@@ -150,6 +151,7 @@ class HotelRemittanceActorDeleteView(APIView):
 
 
 class SuperAdminRemittanceActorListCreateView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
     permission_classes = [IsCoreSuperAdmin]
 
     def get(self, request):
@@ -174,6 +176,7 @@ class SuperAdminRemittanceActorListCreateView(APIView):
 
 
 class SuperAdminRemittanceActorDeleteView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
     permission_classes = [IsCoreSuperAdmin]
 
     def delete(self, request, actor_id):
@@ -234,6 +237,7 @@ class HotelRemittanceReceiveView(APIView):
 
 
 class SuperAdminRemittanceListView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
     permission_classes = [IsCoreSuperAdmin]
 
     def get(self, request):
@@ -248,6 +252,7 @@ class SuperAdminRemittanceListView(APIView):
 
 
 class SuperAdminRemittanceDetailView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
     permission_classes = [IsCoreSuperAdmin]
 
     def get(self, request, remittance_id):
@@ -258,6 +263,7 @@ class SuperAdminRemittanceDetailView(APIView):
 
 
 class SuperAdminRemittanceCheckView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
     permission_classes = [IsCoreSuperAdmin]
 
     @transaction.atomic
@@ -274,6 +280,7 @@ class SuperAdminRemittanceCheckView(APIView):
 
 
 class SuperAdminRemittancePayView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
     permission_classes = [IsCoreSuperAdmin]
 
     @transaction.atomic
@@ -296,6 +303,7 @@ class SuperAdminRemittancePayView(APIView):
 
 
 class SuperAdminCommissionRateView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
     permission_classes = [IsCoreSuperAdmin]
 
     def get(self, request):
