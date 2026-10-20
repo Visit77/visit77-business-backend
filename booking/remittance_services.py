@@ -163,7 +163,9 @@ def generate_weekly_remittance(hotel, period_from, period_to, historical=False, 
             Q(event_type=OTARevenueLedger.EventType.BOOKING_COLLECTION)
             | Q(event_type=OTARevenueLedger.EventType.HELD_RELEASE)
             | Q(event_type=OTARevenueLedger.EventType.REFUND)
-        ).filter(remittance_item__isnull=True).select_related("booking")
+        ).exclude(
+            id__in=OTARemittanceItem.objects.values("ledger_entry_id")
+        ).select_related("booking")
     )
     if not entries:
         return None
