@@ -1313,6 +1313,7 @@ class OTARemittance(models.Model):
     gross_booking_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     released_held_funds_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     tax_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    service_charge_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     refund_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     commission_rate = models.DecimalField(max_digits=7, decimal_places=4, default=5)
     commission_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
@@ -1404,6 +1405,7 @@ class OTARevenueLedger(models.Model):
     event_type = models.CharField(max_length=24, choices=EventType.choices, db_index=True)
     gross_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     tax_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    service_charge_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     refund_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     effective_at = models.DateTimeField(db_index=True)
     metadata = models.JSONField(default=dict, blank=True)
@@ -1420,6 +1422,7 @@ class OTARemittanceItem(models.Model):
     item_type = models.CharField(max_length=24, choices=OTARevenueLedger.EventType.choices)
     gross_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     tax_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    service_charge_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     refund_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 

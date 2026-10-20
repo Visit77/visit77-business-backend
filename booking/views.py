@@ -1125,6 +1125,7 @@ class OTARevenueView(APIView):
             "booking_collection": Decimal("0"),
             "released_held_funds": Decimal("0"),
             "tax_excluded_from_commission": Decimal("0"),
+            "service_charge_excluded_from_commission": Decimal("0"),
             "held_amount": Decimal("0"),
             "available_amount": Decimal("0"),
             "refunded_amount": Decimal("0"),
@@ -1165,11 +1166,16 @@ class OTARevenueView(APIView):
                 min(booking.tax_total, available_amount)
                 if status_value == "available" else Decimal("0")
             )
+            allocated_service_charge = (
+                min(booking.service_charge_total, available_amount)
+                if status_value == "available" else Decimal("0")
+            )
             for key, value in {
                 "gross_amount": gross_amount,
                 "booking_collection": booking_collection,
                 "released_held_funds": released_amount,
                 "tax_excluded_from_commission": allocated_tax,
+                "service_charge_excluded_from_commission": allocated_service_charge,
                 "held_amount": held_amount,
                 "available_amount": available_amount,
                 "refunded_amount": refunded_amount,
@@ -1215,7 +1221,8 @@ class OTARevenueView(APIView):
         rate = commission_rate_for(hotel) if hotel else Decimal("5.00")
         commissionable = max(
             totals["booking_collection"] + totals["released_held_funds"]
-            - totals["tax_excluded_from_commission"],
+            - totals["tax_excluded_from_commission"]
+            - totals["service_charge_excluded_from_commission"],
             Decimal("0"),
         )
         totals["commission_rate"] = rate

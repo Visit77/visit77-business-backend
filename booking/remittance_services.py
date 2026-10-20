@@ -54,6 +54,13 @@ def payment_tax(payment):
     return _money(booking.tax_total * payment.amount / booking.grand_total)
 
 
+def payment_service_charge(payment):
+    booking = payment.booking
+    if booking.grand_total <= 0:
+        return Decimal("0")
+    return _money(booking.service_charge_total * payment.amount / booking.grand_total)
+
+
 def _refund_time(payment):
     raw = (payment.metadata or {}).get("refunded_at")
     parsed = parse_datetime(str(raw)) if raw else None
@@ -82,6 +89,7 @@ def sync_payment_ledger(payment):
             "event_type": initial_type,
             "gross_amount": payment.amount,
             "tax_amount": payment_tax(payment),
+            "service_charge_amount": payment_service_charge(payment),
             "effective_at": payment.paid_at,
         },
     )
@@ -98,6 +106,7 @@ def sync_payment_ledger(payment):
                     "event_type": OTARevenueLedger.EventType.HELD_RELEASE,
                     "gross_amount": payment.amount,
                     "tax_amount": payment_tax(payment),
+                    "service_charge_amount": payment_service_charge(payment),
                     "effective_at": local_release,
                 },
             )
@@ -161,11 +170,13 @@ def generate_weekly_remittance(hotel, period_from, period_to, historical=False, 
     collections = sum((e.gross_amount for e in entries if e.event_type == OTARevenueLedger.EventType.BOOKING_COLLECTION), Decimal("0"))
     releases = sum((e.gross_amount for e in entries if e.event_type == OTARevenueLedger.EventType.HELD_RELEASE), Decimal("0"))
     tax = sum((e.tax_amount for e in entries if e.event_type in {OTARevenueLedger.EventType.BOOKING_COLLECTION, OTARevenueLedger.EventType.HELD_RELEASE}), Decimal("0"))
+    service_charge = sum((e.service_charge_amount for e in entries if e.event_type in {OTARevenueLedger.EventType.BOOKING_COLLECTION, OTARevenueLedger.EventType.HELD_RELEASE}), Decimal("0"))
     refunds = sum((e.refund_amount for e in entries if e.event_type == OTARevenueLedger.EventType.REFUND), Decimal("0"))
-    if all(_money(value) == 0 for value in (collections, releases, tax, refunds)):
+    if all(_money(value) == 0 for value in (collections, releases, tax, service_charge, refunds)):
         return None
     rate = commission_rate_for(hotel)
-    commission = _money(max(collections + releases - tax, Decimal("0")) * rate / Decimal("100"))
+    commissionable = max(collections + releases - tax - service_charge, Decimal("0"))
+    commission = _money(commissionable * rate / Decimal("100"))
     net = _money(collections + releases - commission - refunds)
     status = OTARemittance.Status.RECEIVED if completed else OTARemittance.Status.PENDING
     remittance, created = OTARemittance.objects.get_or_create(
@@ -174,6 +185,7 @@ def generate_weekly_remittance(hotel, period_from, period_to, historical=False, 
             "gross_booking_amount": _money(collections),
             "released_held_funds_amount": _money(releases),
             "tax_amount": _money(tax),
+            "service_charge_amount": _money(service_charge),
             "refund_amount": _money(refunds),
             "commission_rate": rate,
             "commission_amount": commission,
@@ -192,6 +204,7 @@ def generate_weekly_remittance(hotel, period_from, period_to, historical=False, 
         remittance.gross_booking_amount = _money(collections)
         remittance.released_held_funds_amount = _money(releases)
         remittance.tax_amount = _money(tax)
+        remittance.service_charge_amount = _money(service_charge)
         remittance.refund_amount = _money(refunds)
         remittance.commission_rate = rate
         remittance.commission_amount = commission
@@ -206,7 +219,9 @@ def generate_weekly_remittance(hotel, period_from, period_to, historical=False, 
         OTARemittanceItem.objects.create(
             remittance=remittance, ledger_entry=entry, booking=entry.booking,
             item_type=entry.event_type, gross_amount=entry.gross_amount,
-            tax_amount=entry.tax_amount, refund_amount=entry.refund_amount,
+            tax_amount=entry.tax_amount,
+            service_charge_amount=entry.service_charge_amount,
+            refund_amount=entry.refund_amount,
         )
     bookings = Booking.objects.filter(id__in={entry.booking_id for entry in entries})
     bookings.update(

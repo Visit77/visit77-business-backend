@@ -57,6 +57,7 @@ def remittance_data(remittance, detail=False):
         "booking_collection": remittance.gross_booking_amount,
         "released_held_funds": remittance.released_held_funds_amount,
         "tax_excluded_from_commission": remittance.tax_amount,
+        "service_charge_excluded_from_commission": remittance.service_charge_amount,
         "commission_rate": remittance.commission_rate,
         "commission": remittance.commission_amount,
         "refund": remittance.refund_amount,
@@ -80,6 +81,7 @@ def remittance_data(remittance, detail=False):
                 "effective_at": item.ledger_entry.effective_at,
                 "gross_amount": item.gross_amount,
                 "tax_amount": item.tax_amount,
+                "service_charge_amount": item.service_charge_amount,
                 "refund_amount": item.refund_amount,
                 "booking_settlement_status": item.booking.settlement_status,
             }
