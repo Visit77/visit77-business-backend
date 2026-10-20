@@ -187,6 +187,14 @@ CELERY_BEAT_SCHEDULE = {
         # no-shows confirmed and their rooms unavailable for another day.
         "schedule": crontab(minute="*/15"),
     },
+    "sync-ota-revenue-ledger-and-release-held-funds": {
+        "task": "booking.tasks.sync_ota_revenue_ledger_task",
+        "schedule": crontab(minute="*/15"),
+    },
+    "generate-weekly-ota-remittances": {
+        "task": "booking.tasks.generate_weekly_ota_remittances_task",
+        "schedule": crontab(day_of_week="monday", hour=0, minute=10),
+    },
 }
 
 BOOKING_FRONTEND_URL = env(

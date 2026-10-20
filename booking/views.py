@@ -32,6 +32,7 @@ from booking.integrations.core import CoreClient, sync_business_from_core
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, GuestProfile, Hotel, Invoice, MealPlan, OTABookingFollowUp, OTABookingNotification, OTARemittance, OTAInvoiceCharge, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, PMSInvoiceCharge, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
 from booking.tasks import create_and_queue_ota_booking_notification, ota_notification_payload, queue_booking_confirmation_notifications
+from booking.remittance_services import commission_rate_for
 
 from booking.serializers import (
     AddOnSerializer,
@@ -1121,6 +1122,9 @@ class OTARevenueView(APIView):
         records = []
         totals = {
             "gross_amount": Decimal("0"),
+            "booking_collection": Decimal("0"),
+            "released_held_funds": Decimal("0"),
+            "tax_excluded_from_commission": Decimal("0"),
             "held_amount": Decimal("0"),
             "available_amount": Decimal("0"),
             "refunded_amount": Decimal("0"),
@@ -1134,17 +1138,38 @@ class OTARevenueView(APIView):
             policy_type = self._policy_type(booking)
             checkin_at, checkout_at = self._stay_datetimes(booking)
 
+            # Refundable advance payments leave Held Fund at hotel-local
+            # check-in date 00:00, independently of the configured check-in hour.
+            release_at = datetime.combine(
+                booking.check_in, time.min, tzinfo=self._hotel_timezone(booking)
+            )
             if remaining_amount == 0 and refunded_amount > 0:
                 status_value = "refunded"
-            elif policy_type == "non_refundable" or now >= checkout_at:
+            elif policy_type == "non_refundable" or now >= release_at:
                 status_value = "available"
             else:
                 status_value = "held"
 
             held_amount = remaining_amount if status_value == "held" else Decimal("0")
             available_amount = remaining_amount if status_value == "available" else Decimal("0")
+            paid_before_checkin = bool(
+                latest_paid_at.astimezone(self._hotel_timezone(booking)).date() < booking.check_in
+            ) if (latest_paid_at := max((payment.paid_at for payment in payments if payment.paid_at), default=None)) else False
+            released_amount = (
+                remaining_amount
+                if status_value == "available" and policy_type != "non_refundable" and paid_before_checkin
+                else Decimal("0")
+            )
+            booking_collection = available_amount - released_amount
+            allocated_tax = (
+                min(booking.tax_total, available_amount)
+                if status_value == "available" else Decimal("0")
+            )
             for key, value in {
                 "gross_amount": gross_amount,
+                "booking_collection": booking_collection,
+                "released_held_funds": released_amount,
+                "tax_excluded_from_commission": allocated_tax,
                 "held_amount": held_amount,
                 "available_amount": available_amount,
                 "refunded_amount": refunded_amount,
@@ -1154,7 +1179,6 @@ class OTARevenueView(APIView):
 
             if revenue_status != "all" and status_value != revenue_status:
                 continue
-            latest_paid_at = max((payment.paid_at for payment in payments if payment.paid_at), default=None)
             records.append({
                 "booking_id": str(booking.id),
                 "booking_code": booking.booking_code,
@@ -1168,6 +1192,7 @@ class OTARevenueView(APIView):
                 "checkout_at": checkout_at,
                 "checkin_at_utc": checkin_at.astimezone(datetime_timezone.utc),
                 "checkout_at_utc": checkout_at.astimezone(datetime_timezone.utc),
+                "held_release_at": release_at,
                 "currency": booking.currency,
                 "policy_type": policy_type,
                 "status": status_value,
@@ -1176,6 +1201,7 @@ class OTARevenueView(APIView):
                 "available_amount": f"{available_amount:.2f}",
                 "refunded_amount": f"{refunded_amount:.2f}",
                 "remaining_amount": f"{remaining_amount:.2f}",
+                "settlement_status": booking.settlement_status,
             })
 
         total_count = len(records)
@@ -1186,6 +1212,18 @@ class OTARevenueView(APIView):
         else:
             paginated_records = records
             total_pages = 1 if total_count else 0
+        rate = commission_rate_for(hotel) if hotel else Decimal("5.00")
+        commissionable = max(
+            totals["booking_collection"] + totals["released_held_funds"]
+            - totals["tax_excluded_from_commission"],
+            Decimal("0"),
+        )
+        totals["commission_rate"] = rate
+        totals["commission"] = commissionable * rate / Decimal("100")
+        totals["net_available"] = (
+            totals["booking_collection"] + totals["released_held_funds"]
+            - totals["commission"] - totals["refunded_amount"]
+        )
         return success({
             "count": total_count,
             "returned_count": len(paginated_records),

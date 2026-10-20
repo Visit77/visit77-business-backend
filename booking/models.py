@@ -837,6 +837,15 @@ class Booking(models.Model):
         CANCELED = "canceled", "Canceled"
         EXPIRED = "expired", "Expired"
 
+    class SettlementStatus(models.TextChoices):
+        UNPAID = "unpaid", "Unpaid"
+        HELD = "held", "Held"
+        AVAILABLE = "available", "Available"
+        PENDING_REMITTANCE = "pending_remittance", "Pending remittance"
+        CHECKED = "checked", "Checked"
+        PAID = "paid", "Paid"
+        RECEIVED = "received", "Received"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     reference = models.CharField(max_length=24, unique=True)
     booking_code = models.CharField(max_length=20, unique=True, editable=False)
@@ -875,6 +884,13 @@ class Booking(models.Model):
     discount_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     grand_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     amount_paid = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    settlement_status = models.CharField(
+        max_length=24,
+        choices=SettlementStatus.choices,
+        default=SettlementStatus.UNPAID,
+        db_index=True,
+    )
+    settled_at = models.DateTimeField(null=True, blank=True)
     cancellation_policy_snapshot = models.JSONField(default=dict, blank=True)
     invoice_charge_snapshot = models.JSONField(default=dict, blank=True)
     special_request = models.TextField(blank=True)
@@ -1280,9 +1296,10 @@ class OTARemittance(models.Model):
     """Settlement summary for one hotel and accounting period."""
 
     class Status(models.TextChoices):
-        PENDING = "pending", "Pending"
-        PROCESSING = "processing", "Processing"
+        PENDING = "pending", "Pending check"
+        CHECKED = "checked", "Checked"
         PAID = "paid", "Paid"
+        RECEIVED = "received", "Received"
         FAILED = "failed", "Failed"
 
     hotel = models.ForeignKey(
@@ -1294,7 +1311,10 @@ class OTARemittance(models.Model):
     period_to = models.DateField()
     currency = models.CharField(max_length=3, default="MMK")
     gross_booking_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    released_held_funds_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    tax_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     refund_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    commission_rate = models.DecimalField(max_digits=7, decimal_places=4, default=5)
     commission_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     net_remittance_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     status = models.CharField(
@@ -1304,7 +1324,23 @@ class OTARemittance(models.Model):
         db_index=True,
     )
     reference = models.CharField(max_length=120, blank=True)
+    system_generated = models.BooleanField(default=True)
+    historical_backfill = models.BooleanField(default=False)
+    checked_at = models.DateTimeField(null=True, blank=True)
+    checked_by = models.ForeignKey(
+        "OTARemittanceActor", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="checked_remittances",
+    )
     paid_at = models.DateTimeField(null=True, blank=True)
+    paid_by = models.ForeignKey(
+        "OTARemittanceActor", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="paid_remittances",
+    )
+    received_at = models.DateTimeField(null=True, blank=True)
+    received_by = models.ForeignKey(
+        "OTARemittanceActor", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="received_remittances",
+    )
     processed_by_core_user_id = models.PositiveBigIntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1323,3 +1359,78 @@ class OTARemittance(models.Model):
                 name="ota_remit_hotel_period_idx",
             )
         ]
+
+
+class OTACommissionRate(models.Model):
+    package = models.CharField(max_length=24, choices=Hotel.Package.choices, unique=True)
+    rate = models.DecimalField(max_digits=7, decimal_places=4, default=5)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class OTARemittanceActor(models.Model):
+    class Scope(models.TextChoices):
+        ADMIN = "admin", "Visit77 admin"
+        HOTEL = "hotel", "Hotel"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    scope = models.CharField(max_length=12, choices=Scope.choices)
+    hotel = models.ForeignKey(
+        Hotel, on_delete=models.CASCADE, null=True, blank=True,
+        related_name="remittance_actors",
+    )
+    name = models.CharField(max_length=150)
+    passcode_hash = models.CharField(max_length=255)
+    access_rights = models.JSONField(default=list, blank=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    removed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["scope", "name", "id"]
+
+
+class OTARevenueLedger(models.Model):
+    class EventType(models.TextChoices):
+        BOOKING_COLLECTION = "booking_collection", "Booking collection"
+        HELD = "held", "Held fund"
+        HELD_RELEASE = "held_release", "Release of held funds"
+        REFUND = "refund", "Refund"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    event_key = models.CharField(max_length=180, unique=True)
+    hotel = models.ForeignKey(Hotel, on_delete=models.PROTECT, related_name="ota_revenue_ledger")
+    booking = models.ForeignKey(Booking, on_delete=models.PROTECT, related_name="ota_revenue_ledger")
+    payment = models.ForeignKey(Payment, on_delete=models.PROTECT, related_name="ota_revenue_ledger")
+    event_type = models.CharField(max_length=24, choices=EventType.choices, db_index=True)
+    gross_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    tax_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    refund_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    effective_at = models.DateTimeField(db_index=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["effective_at", "id"]
+
+
+class OTARemittanceItem(models.Model):
+    remittance = models.ForeignKey(OTARemittance, on_delete=models.CASCADE, related_name="items")
+    ledger_entry = models.OneToOneField(OTARevenueLedger, on_delete=models.PROTECT, related_name="remittance_item")
+    booking = models.ForeignKey(Booking, on_delete=models.PROTECT, related_name="remittance_items")
+    item_type = models.CharField(max_length=24, choices=OTARevenueLedger.EventType.choices)
+    gross_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    tax_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    refund_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class OTARemittanceAuditLog(models.Model):
+    remittance = models.ForeignKey(OTARemittance, on_delete=models.CASCADE, related_name="audit_logs")
+    action = models.CharField(max_length=32)
+    actor = models.ForeignKey(OTARemittanceActor, on_delete=models.SET_NULL, null=True, blank=True)
+    actor_name = models.CharField(max_length=150, default="System")
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]

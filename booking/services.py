@@ -3515,8 +3515,11 @@ def refund_payment(payment, amount, provider_reference=""):
         raise ValidationError("Refund amount exceeds the refundable payment balance.")
     payment.refunded_amount += amount
     payment.status = Payment.Status.REFUNDED if payment.refunded_amount == payment.amount else Payment.Status.PARTIALLY_REFUNDED
-    if provider_reference:
-        payment.metadata = {**payment.metadata, "refund_reference": provider_reference}
+    payment.metadata = {
+        **payment.metadata,
+        "refunded_at": timezone.now().isoformat(),
+        **({"refund_reference": provider_reference} if provider_reference else {}),
+    }
     payment.save(update_fields=["refunded_amount", "status", "metadata"])
     booking = Booking.objects.select_for_update().get(pk=payment.booking_id)
     booking.amount_paid = max(booking.amount_paid - amount, Decimal("0"))

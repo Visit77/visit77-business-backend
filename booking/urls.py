@@ -64,6 +64,20 @@ from booking.views import (
     WalkInBookingView,
     WalkInBookingV2View,
 )
+from booking.remittance_views import (
+    HotelRemittanceActorDeleteView,
+    HotelRemittanceActorListCreateView,
+    HotelRemittanceDetailView,
+    HotelRemittanceListView,
+    HotelRemittanceReceiveView,
+    SuperAdminCommissionRateView,
+    SuperAdminRemittanceActorDeleteView,
+    SuperAdminRemittanceActorListCreateView,
+    SuperAdminRemittanceCheckView,
+    SuperAdminRemittanceDetailView,
+    SuperAdminRemittanceListView,
+    SuperAdminRemittancePayView,
+)
 
 
 router = DefaultRouter()
@@ -87,6 +101,13 @@ router.register("superadmin/add-on-templates", SuperAdminAddOnTemplateViewSet, b
 router.register("superadmin/add-on-template-requests", SuperAdminAddOnTemplateRequestViewSet, basename="superadmin-add-on-template-request")
 
 urlpatterns = [
+    path("superadmin/remittance-actors/", SuperAdminRemittanceActorListCreateView.as_view()),
+    path("superadmin/remittance-actors/<uuid:actor_id>/", SuperAdminRemittanceActorDeleteView.as_view()),
+    path("superadmin/remittance-commission-rates/", SuperAdminCommissionRateView.as_view()),
+    path("superadmin/remittances/", SuperAdminRemittanceListView.as_view()),
+    path("superadmin/remittances/<int:remittance_id>/", SuperAdminRemittanceDetailView.as_view()),
+    path("superadmin/remittances/<int:remittance_id>/check/", SuperAdminRemittanceCheckView.as_view()),
+    path("superadmin/remittances/<int:remittance_id>/pay/", SuperAdminRemittancePayView.as_view()),
     path("superadmin/ota-bookings/", SuperAdminOTABookingListView.as_view()),
     path(
         "superadmin/ota-bookings/<uuid:booking_id>/",
@@ -119,6 +140,11 @@ urlpatterns = [
     ),
     path("admin/ota-records/", OTARecordListView.as_view()),
     path("admin/ota-revenue/", OTARevenueView.as_view()),
+    path("admin/remittance-checkers/", HotelRemittanceActorListCreateView.as_view()),
+    path("admin/remittance-checkers/<uuid:actor_id>/", HotelRemittanceActorDeleteView.as_view()),
+    path("admin/remittances/", HotelRemittanceListView.as_view()),
+    path("admin/remittances/<int:remittance_id>/", HotelRemittanceDetailView.as_view()),
+    path("admin/remittances/<int:remittance_id>/receive/", HotelRemittanceReceiveView.as_view()),
     path("admin/ota-rooms/<int:physical_room_id>/history/", OTARoomHistoryView.as_view()),
     path("admin/ota-rooms/<int:physical_room_id>/sale-status/", OTARoomSaleStatusView.as_view()),
     path("admin/walk-in-bookings/", WalkInBookingView.as_view()),
