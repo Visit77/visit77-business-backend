@@ -1,5 +1,6 @@
 from datetime import timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.contrib.auth.hashers import check_password, make_password
 from django.db import transaction
@@ -72,6 +73,96 @@ def _hotel_city(hotel):
     return value
 
 
+def _remittance_local_datetime(remittance, value):
+    try:
+        hotel_tz = ZoneInfo(remittance.hotel.timezone or "Asia/Yangon")
+    except ZoneInfoNotFoundError:
+        hotel_tz = ZoneInfo("Asia/Yangon")
+    return timezone.localtime(value, hotel_tz)
+
+
+def _remittance_item_data(remittance, item):
+    local_effective_at = _remittance_local_datetime(remittance, item.ledger_entry.effective_at)
+    return {
+        "id": item.id,
+        "booking_id": str(item.booking_id),
+        "booking_code": item.booking.booking_code,
+        "payment_id": str(item.ledger_entry.payment_id),
+        "type": item.item_type,
+        "effective_at": item.ledger_entry.effective_at,
+        "effective_date": local_effective_at.date(),
+        "effective_time": local_effective_at.strftime("%H:%M"),
+        "check_in": item.booking.check_in,
+        "check_out": item.booking.check_out,
+        "gross_amount": item.gross_amount,
+        "amount": item.gross_amount,
+        "tax_amount": item.tax_amount,
+        "service_charge_amount": item.service_charge_amount,
+        "refund_amount": item.refund_amount,
+        "booking_settlement_status": item.booking.settlement_status,
+    }
+
+
+def _group_remittance_items(remittance, items):
+    section_types = (
+        ("booking_collection", "Booking Collection"),
+        ("held_release", "Release of Held Funds"),
+    )
+    refunds_by_payment = {}
+    for item in items:
+        if item.item_type == "refund":
+            payment_id = item.ledger_entry.payment_id
+            refunds_by_payment[payment_id] = (
+                refunds_by_payment.get(payment_id, Decimal("0")) + item.refund_amount
+            )
+
+    section_rows = {key: [] for key, _label in section_types}
+    matched_refund_payments = set()
+    for item in items:
+        if item.item_type not in section_rows:
+            continue
+        row = _remittance_item_data(remittance, item)
+        payment_id = item.ledger_entry.payment_id
+        if payment_id in refunds_by_payment:
+            row["refund_amount"] = refunds_by_payment[payment_id]
+            matched_refund_payments.add(payment_id)
+        section_rows[item.item_type].append(row)
+
+    # A refund can occur in a later remittance period than its original
+    # collection/release. Keep it visible in Booking Collection with amount 0.
+    for item in items:
+        payment_id = item.ledger_entry.payment_id
+        if item.item_type != "refund" or payment_id in matched_refund_payments:
+            continue
+        row = _remittance_item_data(remittance, item)
+        row["gross_amount"] = Decimal("0")
+        row["amount"] = Decimal("0")
+        section_rows["booking_collection"].append(row)
+
+    sections = []
+    for section_type, label in section_types:
+        rows = section_rows[section_type]
+        date_groups = {}
+        for row in rows:
+            date_groups.setdefault(row["effective_date"], []).append(row)
+        groups = []
+        for effective_date in sorted(date_groups, reverse=True):
+            group_rows = sorted(
+                date_groups[effective_date],
+                key=lambda row: row["effective_at"],
+                reverse=True,
+            )
+            groups.append({"date": effective_date, "items": group_rows})
+        sections.append({
+            "type": section_type,
+            "label": label,
+            "total_amount": sum((row["amount"] for row in rows), Decimal("0")),
+            "total_refund": sum((row["refund_amount"] for row in rows), Decimal("0")),
+            "date_groups": groups,
+        })
+    return sections
+
+
 def remittance_data(remittance, detail=False):
     data = {
         "id": remittance.id,
@@ -102,22 +193,12 @@ def remittance_data(remittance, detail=False):
         "booking_ids": list(dict.fromkeys(item.booking_id for item in remittance.items.all())),
     }
     if detail:
-        data["items"] = [
-            {
-                "id": item.id,
-                "booking_id": str(item.booking_id),
-                "booking_code": item.booking.booking_code,
-                "payment_id": str(item.ledger_entry.payment_id),
-                "type": item.item_type,
-                "effective_at": item.ledger_entry.effective_at,
-                "gross_amount": item.gross_amount,
-                "tax_amount": item.tax_amount,
-                "service_charge_amount": item.service_charge_amount,
-                "refund_amount": item.refund_amount,
-                "booking_settlement_status": item.booking.settlement_status,
-            }
-            for item in remittance.items.select_related("booking", "ledger_entry").all()
-        ]
+        items = list(
+            remittance.items.select_related("booking", "ledger_entry")
+            .order_by("-ledger_entry__effective_at", "-id")
+        )
+        data["items"] = [_remittance_item_data(remittance, item) for item in items]
+        data["grouped_items"] = _group_remittance_items(remittance, items)
         data["audit_logs"] = [_audit_data(log) for log in remittance.audit_logs.select_related("actor")]
     return data
 
