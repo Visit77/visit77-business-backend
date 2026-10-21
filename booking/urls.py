@@ -75,6 +75,7 @@ from booking.remittance_views import (
     SuperAdminRemittanceActorListCreateView,
     SuperAdminRemittanceCheckView,
     SuperAdminRemittanceDetailView,
+    SuperAdminRemittanceHistoryView,
     SuperAdminRemittanceListView,
     SuperAdminRemittancePayView,
 )
@@ -105,6 +106,7 @@ urlpatterns = [
     path("superadmin/remittance-actors/<uuid:actor_id>/", SuperAdminRemittanceActorDeleteView.as_view()),
     path("superadmin/remittance-commission-rates/", SuperAdminCommissionRateView.as_view()),
     path("superadmin/remittances/", SuperAdminRemittanceListView.as_view()),
+    path("superadmin/remittances/history/", SuperAdminRemittanceHistoryView.as_view()),
     path("superadmin/remittances/<int:remittance_id>/", SuperAdminRemittanceDetailView.as_view()),
     path("superadmin/remittances/<int:remittance_id>/check/", SuperAdminRemittanceCheckView.as_view()),
     path("superadmin/remittances/<int:remittance_id>/pay/", SuperAdminRemittancePayView.as_view()),

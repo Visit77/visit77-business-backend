@@ -5,6 +5,7 @@ from django.contrib.auth.hashers import check_password, make_password
 from django.db import transaction
 from django.db.models.functions import Lower
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from rest_framework.exceptions import ValidationError
 from rest_framework.views import APIView
 
@@ -373,6 +374,60 @@ class SuperAdminRemittanceListView(APIView):
             "results": hotel_rows,
             "hotel_summaries": hotel_rows,
             "remittances": serialized_remittances,
+        })
+
+
+class SuperAdminRemittanceHistoryView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
+    permission_classes = [IsCoreSuperAdmin]
+
+    def get(self, request):
+        try:
+            limit = min(max(int(request.query_params.get("limit", 20)), 1), 100)
+            offset = int(request.query_params.get("offset", 1))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"pagination": "limit and offset must be integers."}) from exc
+        if offset < 1:
+            raise ValidationError({"offset": "Must be a page number starting from 1."})
+
+        records = (
+            OTARemittance.objects.select_related(
+                "hotel", "checked_by", "paid_by", "received_by",
+            )
+            .prefetch_related("items")
+            .order_by("-period_to", "hotel__name", "-id")
+        )
+        business_id = request.query_params.get("business_id")
+        if business_id:
+            records = records.filter(hotel__core_business_id=business_id)
+
+        status = request.query_params.get("status")
+        valid_statuses = {choice for choice, _label in OTARemittance.Status.choices}
+        if status:
+            if status not in valid_statuses:
+                raise ValidationError({"status": f"Use one of: {', '.join(sorted(valid_statuses))}."})
+            records = records.filter(status=status)
+
+        for parameter, lookup in (("period_from", "period_from__gte"), ("period_to", "period_to__lte")):
+            raw_value = request.query_params.get(parameter)
+            if raw_value:
+                value = parse_date(raw_value)
+                if not value:
+                    raise ValidationError({parameter: "Use YYYY-MM-DD format."})
+                records = records.filter(**{lookup: value})
+
+        total_count = records.count()
+        start = (offset - 1) * limit
+        page_records = list(records[start:start + limit])
+        total_pages = (total_count + limit - 1) // limit if total_count else 0
+        return success({
+            "count": total_count,
+            "offset": offset,
+            "limit": limit,
+            "total_pages": total_pages,
+            "has_previous": offset > 1,
+            "has_next": offset < total_pages,
+            "results": [remittance_data(item) for item in page_records],
         })
 
 
