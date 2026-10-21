@@ -1,7 +1,9 @@
+from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth.hashers import check_password, make_password
 from django.db import transaction
+from django.db.models.functions import Lower
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 from rest_framework.views import APIView
@@ -45,6 +47,29 @@ def _audit_data(log):
     }
 
 
+def _action_actor_data(actor):
+    if not actor:
+        return None
+    return {
+        "id": str(actor.id),
+        "name": actor.name,
+    }
+
+
+def _hotel_city(hotel):
+    snapshot = hotel.core_snapshot or {}
+    branches = [item for item in snapshot.get("branches", []) if isinstance(item, dict)]
+    main_branch = next((item for item in branches if item.get("is_main") is True), None)
+    branch = main_branch or (branches[0] if branches else {})
+    value = (
+        snapshot.get("city") or snapshot.get("city_name")
+        or branch.get("city") or branch.get("city_name")
+    )
+    if isinstance(value, dict):
+        return {"id": value.get("id"), "name": value.get("name") or value.get("title")}
+    return value
+
+
 def remittance_data(remittance, detail=False):
     data = {
         "id": remittance.id,
@@ -67,9 +92,12 @@ def remittance_data(remittance, detail=False):
         "system_generated": remittance.system_generated,
         "historical_backfill": remittance.historical_backfill,
         "checked_at": remittance.checked_at,
+        "checker": _action_actor_data(remittance.checked_by),
         "paid_at": remittance.paid_at,
+        "payer": _action_actor_data(remittance.paid_by),
         "received_at": remittance.received_at,
-        "booking_ids": list(remittance.items.values_list("booking_id", flat=True).distinct()),
+        "received_by": _action_actor_data(remittance.received_by),
+        "booking_ids": list(dict.fromkeys(item.booking_id for item in remittance.items.all())),
     }
     if detail:
         data["items"] = [
@@ -241,39 +269,110 @@ class SuperAdminRemittanceListView(APIView):
     permission_classes = [IsCoreSuperAdmin]
 
     def get(self, request):
-        all_records = OTARemittance.objects.select_related("hotel").prefetch_related("items")
+        try:
+            limit = min(max(int(request.query_params.get("limit", 20)), 1), 100)
+            offset = int(request.query_params.get("offset", 1))
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({"pagination": "limit and offset must be integers."}) from exc
+        if offset < 1:
+            raise ValidationError({"offset": "Must be a page number starting from 1."})
+
+        hotels = Hotel.objects.filter(is_active=True)
         business_id = request.query_params.get("business_id")
         if business_id:
-            all_records = all_records.filter(hotel__core_business_id=business_id)
-        outstanding_statuses = [OTARemittance.Status.PENDING, OTARemittance.Status.CHECKED]
-        hotel_summaries = {}
-        for item in all_records.filter(status__in=outstanding_statuses):
-            summary = hotel_summaries.setdefault(item.hotel_id, {
-                "hotel_id": item.hotel_id,
-                "core_business_id": item.hotel.core_business_id,
-                "hotel_name": item.hotel.name,
-                "currency": item.currency,
-                "outstanding_remittance_count": 0,
-                "unpaid_week_count": 0,
-                "outstanding_net_payout": Decimal("0"),
-                "oldest_unpaid_period_from": item.period_from,
-            })
-            summary["outstanding_remittance_count"] += 1
-            summary["unpaid_week_count"] += 1
-            summary["outstanding_net_payout"] += item.net_remittance_amount
-            summary["oldest_unpaid_period_from"] = min(
-                summary["oldest_unpaid_period_from"], item.period_from
-            )
+            hotels = hotels.filter(core_business_id=business_id)
+        hotels = hotels.order_by(Lower("name"), "name", "id")
+        total_count = hotels.count()
+        start = (offset - 1) * limit
+        page_hotels = list(hotels[start:start + limit])
 
-        records = all_records
+        all_records = list(
+            OTARemittance.objects.filter(hotel_id__in=[hotel.id for hotel in page_hotels])
+            .select_related("hotel", "checked_by", "paid_by", "received_by")
+            .prefetch_related("items")
+        )
+        records_by_hotel = {hotel.id: [] for hotel in page_hotels}
+        for record in all_records:
+            records_by_hotel[record.hotel_id].append(record)
+
+        today = timezone.localdate()
+        current_monday = today - timedelta(days=today.weekday())
+        previous_period_from = current_monday - timedelta(days=7)
+        previous_period_to = current_monday - timedelta(days=1)
+        outstanding_statuses = [OTARemittance.Status.PENDING, OTARemittance.Status.CHECKED]
         status = request.query_params.get("status")
-        if status:
-            records = records.filter(status=status)
+        hotel_rows = []
+        serialized_remittances = []
+        for hotel in page_hotels:
+            hotel_records = records_by_hotel[hotel.id]
+            outstanding = sorted(
+                (item for item in hotel_records if item.status in outstanding_statuses),
+                key=lambda item: (item.period_from, item.id),
+            )
+            previous_week_record = next((
+                item for item in hotel_records
+                if item.period_from == previous_period_from and item.period_to == previous_period_to
+            ), None)
+            # The oldest unpaid statement takes priority. Otherwise show only the
+            # immediately preceding week's completed statement. Older paid history
+            # must not create a button for a hotel with no activity last week.
+            action_record = outstanding[0] if outstanding else previous_week_record
+            action = None
+            if action_record:
+                action = {
+                    OTARemittance.Status.PENDING: "check",
+                    OTARemittance.Status.CHECKED: "pay",
+                    OTARemittance.Status.PAID: "paid",
+                    OTARemittance.Status.RECEIVED: "paid",
+                }.get(action_record.status)
+
+            outstanding_net_payout = sum(
+                (item.net_remittance_amount for item in outstanding), Decimal("0")
+            )
+            visible_records = [
+                item for item in hotel_records if not status or item.status == status
+            ]
+            serialized = [remittance_data(item) for item in visible_records]
+            serialized_remittances.extend(serialized)
+            hotel_rows.append({
+                "hotel_id": hotel.id,
+                "core_business_id": hotel.core_business_id,
+                "hotel_name": hotel.name,
+                "package": hotel.package,
+                "address": hotel.address,
+                "city": _hotel_city(hotel),
+                "currency": hotel.base_currency,
+                "outstanding_remittance_count": len(outstanding),
+                "unpaid_week_count": len(outstanding),
+                "outstanding_net_payout": outstanding_net_payout,
+                "oldest_unpaid_period_from": outstanding[0].period_from if outstanding else None,
+                "action": action,
+                "action_label": action.title() if action else None,
+                "action_required": action in {"check", "pay"},
+                "can_check": action == "check",
+                "can_pay": action == "pay",
+                "is_paid": action == "paid",
+                "action_remittance_id": action_record.id if action_record and action else None,
+                "checker": _action_actor_data(action_record.checked_by) if action_record else None,
+                "payer": _action_actor_data(action_record.paid_by) if action_record else None,
+                "remittance": remittance_data(action_record) if action_record else None,
+                "remittances": serialized,
+            })
+
+        total_pages = (total_count + limit - 1) // limit if total_count else 0
         return success({
-            "count": records.count(),
-            "hotel_count": len(hotel_summaries),
-            "hotel_summaries": list(hotel_summaries.values()),
-            "remittances": [remittance_data(item) for item in records],
+            "count": total_count,
+            "hotel_count": total_count,
+            "offset": offset,
+            "limit": limit,
+            "total_pages": total_pages,
+            "has_previous": offset > 1,
+            "has_next": offset < total_pages,
+            "previous_period_from": previous_period_from,
+            "previous_period_to": previous_period_to,
+            "results": hotel_rows,
+            "hotel_summaries": hotel_rows,
+            "remittances": serialized_remittances,
         })
 
 
