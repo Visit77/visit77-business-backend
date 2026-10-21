@@ -321,7 +321,7 @@ class SuperAdminRemittanceListView(APIView):
             action = None
             if action_record:
                 action = {
-                    OTARemittance.Status.PENDING: "check",
+                    OTARemittance.Status.PENDING: "pay",
                     OTARemittance.Status.CHECKED: "pay",
                     OTARemittance.Status.PAID: "paid",
                     OTARemittance.Status.RECEIVED: "paid",
@@ -350,12 +350,20 @@ class SuperAdminRemittanceListView(APIView):
                 "action": action,
                 "action_label": action.title() if action else None,
                 "action_required": action in {"check", "pay"},
-                "can_check": action == "check",
-                "can_pay": action == "pay",
+                "can_check": bool(action_record and action_record.status == OTARemittance.Status.PENDING),
+                "can_pay": bool(action_record and action_record.status == OTARemittance.Status.CHECKED),
                 "is_paid": action == "paid",
                 "action_remittance_id": action_record.id if action_record and action else None,
-                "checker": _action_actor_data(action_record.checked_by) if action_record else None,
-                "payer": _action_actor_data(action_record.paid_by) if action_record else None,
+                "checker": (
+                    _action_actor_data(action_record.checked_by)
+                    if action_record and action_record.status == OTARemittance.Status.CHECKED else None
+                ),
+                "payer": (
+                    _action_actor_data(action_record.paid_by)
+                    if action_record and action_record.status in {
+                        OTARemittance.Status.PAID, OTARemittance.Status.RECEIVED,
+                    } else None
+                ),
                 "remittance": remittance_data(action_record) if action_record else None,
                 "remittances": serialized,
             })
