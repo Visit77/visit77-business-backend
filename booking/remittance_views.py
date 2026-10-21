@@ -3,6 +3,7 @@ from decimal import Decimal
 
 from django.contrib.auth.hashers import check_password, make_password
 from django.db import transaction
+from django.db.models import OuterRef, Subquery
 from django.db.models.functions import Lower
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -278,10 +279,65 @@ class SuperAdminRemittanceListView(APIView):
         if offset < 1:
             raise ValidationError({"offset": "Must be a page number starting from 1."})
 
+        today = timezone.localdate()
+        current_monday = today - timedelta(days=today.weekday())
+        previous_period_from = current_monday - timedelta(days=7)
+        previous_period_to = current_monday - timedelta(days=1)
+        outstanding_statuses = [OTARemittance.Status.PENDING, OTARemittance.Status.CHECKED]
+
+        oldest_outstanding_status = (
+            OTARemittance.objects.filter(
+                hotel_id=OuterRef("pk"), status__in=outstanding_statuses,
+            )
+            .order_by("period_from", "id")
+            .values("status")[:1]
+        )
+        previous_week_status = (
+            OTARemittance.objects.filter(
+                hotel_id=OuterRef("pk"),
+                period_from=previous_period_from,
+                period_to=previous_period_to,
+            )
+            .values("status")[:1]
+        )
         hotels = Hotel.objects.filter(is_active=True)
         business_id = request.query_params.get("business_id")
         if business_id:
             hotels = hotels.filter(core_business_id=business_id)
+        hotels = hotels.annotate(
+            remittance_action_status=Subquery(oldest_outstanding_status),
+            previous_week_remittance_status=Subquery(previous_week_status),
+        )
+
+        paid_statuses = [OTARemittance.Status.PAID, OTARemittance.Status.RECEIVED]
+        action_counts = {
+            "all": hotels.count(),
+            "need_to_check": hotels.filter(
+                remittance_action_status=OTARemittance.Status.PENDING,
+            ).count(),
+            "need_to_pay": hotels.filter(
+                remittance_action_status=OTARemittance.Status.CHECKED,
+            ).count(),
+            "paid": hotels.filter(
+                remittance_action_status__isnull=True,
+                previous_week_remittance_status__in=paid_statuses,
+            ).count(),
+        }
+        action_filter = request.query_params.get("action_filter", "all")
+        if action_filter == "need_to_check":
+            hotels = hotels.filter(remittance_action_status=OTARemittance.Status.PENDING)
+        elif action_filter == "need_to_pay":
+            hotels = hotels.filter(remittance_action_status=OTARemittance.Status.CHECKED)
+        elif action_filter == "paid":
+            hotels = hotels.filter(
+                remittance_action_status__isnull=True,
+                previous_week_remittance_status__in=paid_statuses,
+            )
+        elif action_filter != "all":
+            raise ValidationError({
+                "action_filter": "Use all, need_to_check, need_to_pay, or paid."
+            })
+
         hotels = hotels.order_by(Lower("name"), "name", "id")
         total_count = hotels.count()
         start = (offset - 1) * limit
@@ -296,11 +352,6 @@ class SuperAdminRemittanceListView(APIView):
         for record in all_records:
             records_by_hotel[record.hotel_id].append(record)
 
-        today = timezone.localdate()
-        current_monday = today - timedelta(days=today.weekday())
-        previous_period_from = current_monday - timedelta(days=7)
-        previous_period_to = current_monday - timedelta(days=1)
-        outstanding_statuses = [OTARemittance.Status.PENDING, OTARemittance.Status.CHECKED]
         status = request.query_params.get("status")
         hotel_rows = []
         serialized_remittances = []
@@ -377,6 +428,8 @@ class SuperAdminRemittanceListView(APIView):
             "total_pages": total_pages,
             "has_previous": offset > 1,
             "has_next": offset < total_pages,
+            "action_filter": action_filter,
+            "action_counts": action_counts,
             "previous_period_from": previous_period_from,
             "previous_period_to": previous_period_to,
             "results": hotel_rows,
