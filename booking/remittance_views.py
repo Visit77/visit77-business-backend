@@ -241,14 +241,40 @@ class SuperAdminRemittanceListView(APIView):
     permission_classes = [IsCoreSuperAdmin]
 
     def get(self, request):
-        records = OTARemittance.objects.select_related("hotel").prefetch_related("items")
+        all_records = OTARemittance.objects.select_related("hotel").prefetch_related("items")
+        business_id = request.query_params.get("business_id")
+        if business_id:
+            all_records = all_records.filter(hotel__core_business_id=business_id)
+        outstanding_statuses = [OTARemittance.Status.PENDING, OTARemittance.Status.CHECKED]
+        hotel_summaries = {}
+        for item in all_records.filter(status__in=outstanding_statuses):
+            summary = hotel_summaries.setdefault(item.hotel_id, {
+                "hotel_id": item.hotel_id,
+                "core_business_id": item.hotel.core_business_id,
+                "hotel_name": item.hotel.name,
+                "currency": item.currency,
+                "outstanding_remittance_count": 0,
+                "unpaid_week_count": 0,
+                "outstanding_net_payout": Decimal("0"),
+                "oldest_unpaid_period_from": item.period_from,
+            })
+            summary["outstanding_remittance_count"] += 1
+            summary["unpaid_week_count"] += 1
+            summary["outstanding_net_payout"] += item.net_remittance_amount
+            summary["oldest_unpaid_period_from"] = min(
+                summary["oldest_unpaid_period_from"], item.period_from
+            )
+
+        records = all_records
         status = request.query_params.get("status")
         if status:
             records = records.filter(status=status)
-        business_id = request.query_params.get("business_id")
-        if business_id:
-            records = records.filter(hotel__core_business_id=business_id)
-        return success({"count": records.count(), "remittances": [remittance_data(item) for item in records]})
+        return success({
+            "count": records.count(),
+            "hotel_count": len(hotel_summaries),
+            "hotel_summaries": list(hotel_summaries.values()),
+            "remittances": [remittance_data(item) for item in records],
+        })
 
 
 class SuperAdminRemittanceDetailView(APIView):
