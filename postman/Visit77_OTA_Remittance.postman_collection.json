@@ -17,7 +17,7 @@
       "name": "Hotel",
       "item": [
         {
-          "name": "Create hotel checker",
+          "name": "Create hotel payee",
           "request": {
             "method": "POST",
             "header": [
@@ -25,19 +25,19 @@
               {"key": "X-Booking-Business-ID", "value": "{{business_id}}"},
               {"key": "Content-Type", "value": "application/json"}
             ],
-            "body": {"mode": "raw", "raw": "{\n  \"name\": \"Hotel Checker One\",\n  \"passcode\": \"123456\"\n}"},
+            "body": {"mode": "raw", "raw": "{\n  \"name\": \"Hotel Payee One\",\n  \"passcode\": \"123456\"\n}"},
             "url": "{{booking_base_url}}/admin/remittance-checkers/"
           }
         },
         {
-          "name": "List hotel checkers",
+          "name": "List hotel payees",
           "request": {"method": "GET", "header": [
             {"key": "X-Booking-Admin-Key", "value": "{{booking_admin_key}}"},
             {"key": "X-Booking-Business-ID", "value": "{{business_id}}"}
           ], "url": "{{booking_base_url}}/admin/remittance-checkers/"}
         },
         {
-          "name": "Remove hotel checker",
+          "name": "Remove hotel payee",
           "request": {"method": "DELETE", "header": [
             {"key": "X-Booking-Admin-Key", "value": "{{booking_admin_key}}"},
             {"key": "X-Booking-Business-ID", "value": "{{business_id}}"}

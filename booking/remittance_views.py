@@ -242,7 +242,7 @@ class HotelRemittanceActorListCreateView(APIView):
             raise ValidationError({"actor": "name and a passcode of at least 4 characters are required."})
         actor = OTARemittanceActor.objects.create(
             scope=OTARemittanceActor.Scope.HOTEL, hotel=hotel, name=name,
-            passcode_hash=make_password(passcode), access_rights=["checker"],
+            passcode_hash=make_password(passcode), access_rights=["payee"],
         )
         return success({"actor": _actor_data(actor)})
 
@@ -255,7 +255,7 @@ class HotelRemittanceActorDeleteView(APIView):
         hotel = _hotel_from_request(request)
         actor = OTARemittanceActor.objects.filter(id=actor_id, hotel=hotel, is_active=True).first()
         if not actor:
-            raise ValidationError({"actor_id": "Active checker was not found."})
+            raise ValidationError({"actor_id": "Active payee was not found."})
         actor.is_active, actor.removed_at = False, timezone.now()
         actor.save(update_fields=["is_active", "removed_at"])
         return success({"removed": True, "actor": _actor_data(actor)})
@@ -335,7 +335,7 @@ class HotelRemittanceReceiveView(APIView):
             raise ValidationError({"status": "Only a paid remittance can be confirmed as received."})
         actor = _require_passcode_actor(
             request.data, scope=OTARemittanceActor.Scope.HOTEL,
-            right="checker", hotel=hotel,
+            right="payee", hotel=hotel,
         )
         record.status, record.received_at, record.received_by = OTARemittance.Status.RECEIVED, timezone.now(), actor
         record.save(update_fields=["status", "received_at", "received_by", "updated_at"])
