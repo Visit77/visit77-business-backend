@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.contrib.auth.hashers import check_password, make_password
 from django.db import transaction
-from django.db.models import OuterRef, Subquery
+from django.db.models import OuterRef, Q, Subquery
 from django.db.models.functions import Lower
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -23,6 +23,7 @@ from booking.models import (
 from booking.authentication import CoreJWTAuthentication
 from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
 from booking.remittance_services import (
+    active_payout_period,
     current_week_period,
     hotel_timezone,
     refresh_current_week_remittance,
@@ -287,6 +288,8 @@ def remittance_data(remittance, detail=False):
         "hotel_id": remittance.hotel_id,
         "core_business_id": remittance.hotel.core_business_id,
         "hotel_name": remittance.hotel.name,
+        "payout_option": remittance.hotel.remittance_payout_option,
+        "payout_option_label": remittance.hotel.get_remittance_payout_option_display(),
         "period_from": remittance.period_from,
         "period_to": remittance.period_to,
         "currency": remittance.currency,
@@ -474,7 +477,6 @@ class HotelRemittanceListView(APIView):
             "has_previous": offset > 1,
             "has_next": offset < total_pages,
             "results": results,
-            "remittances": results,
         })
 
 
@@ -484,12 +486,34 @@ class HotelAvailableRevenueView(APIView):
 
     def get(self, request):
         hotel = _hotel_from_request(request)
-        period_from, period_to = current_week_period(hotel=hotel)
+        local_today = timezone.now().astimezone(hotel_timezone(hotel)).date()
+        period_from, period_to = active_payout_period(hotel, local_today)
         record = refresh_current_week_remittance(hotel)
+        blocked_by_first_period = False
+        if (
+            hotel.remittance_payout_option == Hotel.RemittancePayoutOption.TWICE_WEEKLY
+            and local_today.weekday() >= 3
+        ):
+            week_from, _week_to = current_week_period(local_today, hotel=hotel)
+            first_period = OTARemittance.objects.filter(
+                hotel=hotel,
+                period_from=week_from,
+                period_to=week_from + timedelta(days=2),
+            ).select_related("hotel").first()
+            if first_period and first_period.status not in {
+                OTARemittance.Status.PAID,
+                OTARemittance.Status.RECEIVED,
+            }:
+                record = first_period
+                period_from, period_to = first_period.period_from, first_period.period_to
+                blocked_by_first_period = True
         if not record:
             return success({
+                "payout_option": hotel.remittance_payout_option,
+                "payout_option_label": hotel.get_remittance_payout_option_display(),
                 "period_from": period_from,
                 "period_to": period_to,
+                "blocked_by_first_period": blocked_by_first_period,
                 "currency": hotel.base_currency,
                 "status": OTARemittance.Status.ACCRUING,
                 "booking_collection": Decimal("0"),
@@ -504,8 +528,11 @@ class HotelAvailableRevenueView(APIView):
             })
         data = remittance_data(record, detail=True)
         return success({
+            "payout_option": hotel.remittance_payout_option,
+            "payout_option_label": hotel.get_remittance_payout_option_display(),
             "period_from": record.period_from,
             "period_to": record.period_to,
+            "blocked_by_first_period": blocked_by_first_period,
             "currency": record.currency,
             "status": record.status,
             "booking_collection": record.gross_booking_amount,
@@ -518,6 +545,76 @@ class HotelAvailableRevenueView(APIView):
             "available": record.net_remittance_amount,
             "remittance": data,
             "grouped_items": data["grouped_items"],
+        })
+
+
+class SuperAdminHotelPayoutOptionView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
+    permission_classes = [IsCoreSuperAdmin]
+
+    def get(self, request, hotel_id):
+        hotel = Hotel.objects.filter(id=hotel_id).first()
+        if not hotel:
+            raise ValidationError({"hotel_id": "Hotel was not found."})
+        return success({
+            "hotel_id": hotel.id,
+            "core_business_id": hotel.core_business_id,
+            "hotel_name": hotel.name,
+            "payout_option": hotel.remittance_payout_option,
+            "payout_option_label": hotel.get_remittance_payout_option_display(),
+            "choices": [
+                {"value": value, "label": label}
+                for value, label in Hotel.RemittancePayoutOption.choices
+            ],
+        })
+
+    @transaction.atomic
+    def post(self, request, hotel_id):
+        hotel = Hotel.objects.select_for_update().filter(id=hotel_id).first()
+        if not hotel:
+            raise ValidationError({"hotel_id": "Hotel was not found."})
+        payout_option = str(request.data.get("payout_option") or "").strip()
+        valid_options = {value for value, _label in Hotel.RemittancePayoutOption.choices}
+        if payout_option not in valid_options:
+            raise ValidationError({
+                "payout_option": "Use weekly or twice_weekly."
+            })
+        if payout_option == hotel.remittance_payout_option:
+            return success({
+                "changed": False,
+                "hotel_id": hotel.id,
+                "payout_option": hotel.remittance_payout_option,
+                "payout_option_label": hotel.get_remittance_payout_option_display(),
+            })
+        week_from, week_to = current_week_period(hotel=hotel)
+        locked_period = OTARemittance.objects.filter(
+            hotel=hotel,
+            period_from__gte=week_from,
+            period_to__lte=week_to,
+        ).exclude(status=OTARemittance.Status.ACCRUING).exists()
+        if locked_period:
+            raise ValidationError({
+                "payout_option": (
+                    "Current week already has a finalized remittance period. "
+                    "Change the payout option after the current weekly cycle ends."
+                )
+            })
+        OTARemittance.objects.filter(
+            hotel=hotel,
+            status=OTARemittance.Status.ACCRUING,
+            period_from__gte=week_from,
+            period_to__lte=week_to,
+        ).delete()
+        hotel.remittance_payout_option = payout_option
+        hotel.save(update_fields=["remittance_payout_option"])
+        refresh_current_week_remittance(hotel)
+        return success({
+            "changed": True,
+            "hotel_id": hotel.id,
+            "core_business_id": hotel.core_business_id,
+            "hotel_name": hotel.name,
+            "payout_option": hotel.remittance_payout_option,
+            "payout_option_label": hotel.get_remittance_payout_option_display(),
         })
 
 
@@ -656,10 +753,7 @@ class SuperAdminRemittanceListView(APIView):
         if offset < 1:
             raise ValidationError({"offset": "Must be a page number starting from 1."})
 
-        today = timezone.localdate()
-        current_monday = today - timedelta(days=today.weekday())
-        previous_period_from = current_monday - timedelta(days=7)
-        previous_period_to = current_monday - timedelta(days=1)
+        paid_cutoff = timezone.now() - timedelta(days=1)
         outstanding_statuses = [OTARemittance.Status.PENDING, OTARemittance.Status.CHECKED]
 
         oldest_outstanding_status = (
@@ -669,12 +763,13 @@ class SuperAdminRemittanceListView(APIView):
             .order_by("period_from", "id")
             .values("status")[:1]
         )
-        previous_week_status = (
+        recent_paid_status = (
             OTARemittance.objects.filter(
                 hotel_id=OuterRef("pk"),
-                period_from=previous_period_from,
-                period_to=previous_period_to,
+                status__in=[OTARemittance.Status.PAID, OTARemittance.Status.RECEIVED],
+                paid_at__gte=paid_cutoff,
             )
+            .order_by("-paid_at", "-id")
             .values("status")[:1]
         )
         hotels = Hotel.objects.filter(is_active=True)
@@ -683,10 +778,28 @@ class SuperAdminRemittanceListView(APIView):
             hotels = hotels.filter(core_business_id=business_id)
         hotels = hotels.annotate(
             remittance_action_status=Subquery(oldest_outstanding_status),
-            previous_week_remittance_status=Subquery(previous_week_status),
+            recent_paid_remittance_status=Subquery(recent_paid_status),
         )
 
         paid_statuses = [OTARemittance.Status.PAID, OTARemittance.Status.RECEIVED]
+        payout_counts = {
+            "all": hotels.count(),
+            "weekly": hotels.filter(
+                remittance_payout_option=Hotel.RemittancePayoutOption.WEEKLY,
+            ).count(),
+            "twice_weekly": hotels.filter(
+                remittance_payout_option=Hotel.RemittancePayoutOption.TWICE_WEEKLY,
+            ).count(),
+        }
+        payout_option = request.query_params.get("payout_option", "all")
+        if payout_option in {
+            Hotel.RemittancePayoutOption.WEEKLY,
+            Hotel.RemittancePayoutOption.TWICE_WEEKLY,
+        }:
+            hotels = hotels.filter(remittance_payout_option=payout_option)
+        elif payout_option != "all":
+            raise ValidationError({"payout_option": "Use all, weekly, or twice_weekly."})
+
         action_counts = {
             "all": hotels.count(),
             "need_to_check": hotels.filter(
@@ -697,7 +810,11 @@ class SuperAdminRemittanceListView(APIView):
             ).count(),
             "paid": hotels.filter(
                 remittance_action_status__isnull=True,
-                previous_week_remittance_status__in=paid_statuses,
+                recent_paid_remittance_status__in=paid_statuses,
+            ).count(),
+            "action": hotels.filter(
+                Q(remittance_action_status=OTARemittance.Status.PENDING)
+                | Q(remittance_action_status=OTARemittance.Status.CHECKED)
             ).count(),
         }
         action_filter = request.query_params.get("action_filter", "all")
@@ -708,11 +825,16 @@ class SuperAdminRemittanceListView(APIView):
         elif action_filter == "paid":
             hotels = hotels.filter(
                 remittance_action_status__isnull=True,
-                previous_week_remittance_status__in=paid_statuses,
+                recent_paid_remittance_status__in=paid_statuses,
+            )
+        elif action_filter == "action":
+            hotels = hotels.filter(
+                Q(remittance_action_status=OTARemittance.Status.PENDING)
+                | Q(remittance_action_status=OTARemittance.Status.CHECKED)
             )
         elif action_filter != "all":
             raise ValidationError({
-                "action_filter": "Use all, need_to_check, need_to_pay, or paid."
+                "action_filter": "Use all, action, need_to_check, need_to_pay, or paid."
             })
 
         hotels = hotels.order_by(Lower("name"), "name", "id")
@@ -739,14 +861,19 @@ class SuperAdminRemittanceListView(APIView):
                 (item for item in hotel_records if item.status in outstanding_statuses),
                 key=lambda item: (item.period_from, item.id),
             )
-            previous_week_record = next((
-                item for item in hotel_records
-                if item.period_from == previous_period_from and item.period_to == previous_period_to
-            ), None)
-            # The oldest unpaid statement takes priority. Otherwise show only the
-            # immediately preceding week's completed statement. Older paid history
-            # must not create a button for a hotel with no activity last week.
-            action_record = outstanding[0] if outstanding else previous_week_record
+            recent_paid = sorted(
+                (
+                    item for item in hotel_records
+                    if item.status in paid_statuses
+                    and item.paid_at
+                    and item.paid_at >= paid_cutoff
+                ),
+                key=lambda item: (item.paid_at, item.id),
+                reverse=True,
+            )
+            # An unpaid period always takes priority. A paid badge remains visible
+            # for only 24 hours after payment, regardless of payout cadence.
+            action_record = outstanding[0] if outstanding else (recent_paid[0] if recent_paid else None)
             action = None
             if action_record:
                 action = {
@@ -769,6 +896,8 @@ class SuperAdminRemittanceListView(APIView):
                 "core_business_id": hotel.core_business_id,
                 "hotel_name": hotel.name,
                 "package": hotel.package,
+                "payout_option": hotel.remittance_payout_option,
+                "payout_option_label": hotel.get_remittance_payout_option_display(),
                 "address": hotel.address,
                 "city": _hotel_city(hotel),
                 "currency": hotel.base_currency,
@@ -808,8 +937,9 @@ class SuperAdminRemittanceListView(APIView):
             "has_next": offset < total_pages,
             "action_filter": action_filter,
             "action_counts": action_counts,
-            "previous_period_from": previous_period_from,
-            "previous_period_to": previous_period_to,
+            "payout_option": payout_option,
+            "payout_counts": payout_counts,
+            "paid_display_hours": 24,
             "results": hotel_rows,
             "hotel_summaries": hotel_rows,
             "remittances": serialized_remittances,

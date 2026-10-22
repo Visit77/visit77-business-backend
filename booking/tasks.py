@@ -213,7 +213,7 @@ def sync_ota_revenue_ledger_task():
 @shared_task
 def generate_weekly_ota_remittances_task():
     records = generate_previous_week_remittances()
-    return f"Generated {len(records)} weekly OTA remittance(s)."
+    return f"Generated {len(records)} scheduled OTA remittance period(s)."
 
 
 

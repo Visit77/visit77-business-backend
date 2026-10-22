@@ -300,19 +300,38 @@ def current_week_period(today=None, hotel=None):
     return start, start + timedelta(days=6)
 
 
+def active_payout_period(hotel, today=None):
+    monday, sunday = current_week_period(today, hotel=hotel)
+    local_today = today or timezone.now().astimezone(hotel_timezone(hotel)).date()
+    if hotel.remittance_payout_option == Hotel.RemittancePayoutOption.TWICE_WEEKLY:
+        wednesday = monday + timedelta(days=2)
+        if local_today <= wednesday:
+            return monday, wednesday
+        return monday + timedelta(days=3), sunday
+    return monday, sunday
+
+
 def refresh_current_week_remittance(hotel, today=None, sync_ledger=True):
     if sync_ledger:
         sync_all_payment_ledgers(hotel=hotel)
-    start, end = current_week_period(today, hotel=hotel)
+    local_today = today or timezone.now().astimezone(hotel_timezone(hotel)).date()
+    week_from, _week_to = current_week_period(local_today, hotel=hotel)
+    start, end = active_payout_period(hotel, local_today)
     stale_periods = list(
         OTARemittance.objects.filter(
             hotel=hotel,
             status=OTARemittance.Status.ACCRUING,
-            period_to__lt=start,
+            period_to__lt=local_today,
         ).values_list("period_from", "period_to")
     )
     for period_from, period_to in stale_periods:
         generate_weekly_remittance(hotel, period_from, period_to)
+    if (
+        hotel.remittance_payout_option == Hotel.RemittancePayoutOption.TWICE_WEEKLY
+        and local_today.weekday() >= 3
+    ):
+        first_period_to = week_from + timedelta(days=2)
+        generate_weekly_remittance(hotel, week_from, first_period_to)
     return generate_weekly_remittance(hotel, start, end, accruing=True)
 
 
@@ -331,8 +350,12 @@ def generate_previous_week_remittances(today=None):
     results = []
     for hotel in Hotel.objects.filter(is_active=True):
         current_monday, _current_sunday = current_week_period(today, hotel=hotel)
-        start = current_monday - timedelta(days=7)
-        end = current_monday - timedelta(days=1)
+        if hotel.remittance_payout_option == Hotel.RemittancePayoutOption.TWICE_WEEKLY:
+            start = current_monday - timedelta(days=4)
+            end = current_monday - timedelta(days=1)
+        else:
+            start = current_monday - timedelta(days=7)
+            end = current_monday - timedelta(days=1)
         result = generate_weekly_remittance(hotel, start, end)
         if result:
             results.append(result)

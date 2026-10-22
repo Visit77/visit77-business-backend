@@ -50,6 +50,10 @@ class Hotel(models.Model):
         ROOM_TYPE_COUNT = "room_type_count", "Room type count"
         PHYSICAL_ROOM = "physical_room", "Physical room"
 
+    class RemittancePayoutOption(models.TextChoices):
+        WEEKLY = "weekly", "One time a week"
+        TWICE_WEEKLY = "twice_weekly", "Two times a week"
+
     core_business_id = models.PositiveBigIntegerField(unique=True)
     document_code = models.CharField(max_length=4, unique=True, editable=False)
     name = models.CharField(max_length=255)
@@ -59,6 +63,12 @@ class Hotel(models.Model):
     cover_image_url = models.URLField(max_length=1000, blank=True)
     base_currency = models.CharField(max_length=3, default="MMK")
     package = models.CharField(max_length=24, choices=Package.choices, default=Package.OTA)
+    remittance_payout_option = models.CharField(
+        max_length=24,
+        choices=RemittancePayoutOption.choices,
+        default=RemittancePayoutOption.WEEKLY,
+        db_index=True,
+    )
     inventory_mode = models.CharField(
         max_length=24,
         choices=InventoryMode.choices,
