@@ -125,7 +125,7 @@
         },
         {
           "name": "List remittances",
-          "request": {"method": "GET", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "url": "{{booking_base_url}}/superadmin/remittances/?payout_option=all&action_filter=all&offset=1&limit=20"}
+          "request": {"method": "GET", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "url": "{{booking_base_url}}/superadmin/remittances/?payout_option=all&action_filter=need_to_action&offset=1&limit=20"}
         },
         {
           "name": "Remittance history",

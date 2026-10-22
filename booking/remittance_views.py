@@ -819,7 +819,7 @@ class SuperAdminRemittanceListView(APIView):
                 remittance_action_status__isnull=True,
                 recent_paid_remittance_status__in=paid_statuses,
             ).count(),
-            "action": hotels.filter(
+            "need_to_action": hotels.filter(
                 Q(remittance_action_status=OTARemittance.Status.PENDING)
                 | Q(remittance_action_status=OTARemittance.Status.CHECKED)
             ).count(),
@@ -834,14 +834,17 @@ class SuperAdminRemittanceListView(APIView):
                 remittance_action_status__isnull=True,
                 recent_paid_remittance_status__in=paid_statuses,
             )
-        elif action_filter == "action":
+        elif action_filter in {"need_to_action", "action"}:
             hotels = hotels.filter(
                 Q(remittance_action_status=OTARemittance.Status.PENDING)
                 | Q(remittance_action_status=OTARemittance.Status.CHECKED)
             )
+            action_filter = "need_to_action"
         elif action_filter != "all":
             raise ValidationError({
-                "action_filter": "Use all, action, need_to_check, need_to_pay, or paid."
+                "action_filter": (
+                    "Use all, need_to_action, need_to_check, need_to_pay, or paid."
+                )
             })
 
         hotels = hotels.order_by(Lower("name"), "name", "id")
