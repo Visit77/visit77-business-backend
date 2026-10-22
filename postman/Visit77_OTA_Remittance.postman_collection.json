@@ -128,7 +128,15 @@
         },
         {
           "name": "Pay remittance",
-          "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"actor_id\": \"{{admin_actor_id}}\",\n  \"passcode\": \"654321\",\n  \"payment_reference\": \"BANK-TXN-001\"\n}"}, "url": "{{booking_base_url}}/superadmin/remittances/{{remittance_id}}/pay/"}
+          "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "body": {"mode": "formdata", "formdata": [
+            {"key": "actor_id", "value": "{{admin_actor_id}}", "type": "text"},
+            {"key": "passcode", "value": "654321", "type": "text"},
+            {"key": "adjustment_operator", "value": "+", "description": "Use + to add or - to deduct", "type": "text"},
+            {"key": "adjustment_amount", "value": "0", "description": "Positive amount only", "type": "text"},
+            {"key": "adjustment_note", "value": "", "type": "text"},
+            {"key": "payment_reference", "value": "BANK-TXN-001", "type": "text"},
+            {"key": "receipt", "type": "file", "src": []}
+          ]}, "url": "{{booking_base_url}}/superadmin/remittances/{{remittance_id}}/pay/"}
         }
       ]
     }

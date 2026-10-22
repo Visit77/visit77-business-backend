@@ -163,6 +163,12 @@ def generate_weekly_remittance(
         period_to=period_to,
         currency=hotel.base_currency,
     ).first()
+    if (
+        remittance
+        and remittance.items.exists()
+        and (remittance.checked_by_id or remittance.paid_by_id or remittance.received_by_id)
+    ):
+        return remittance
     # A retry of the Monday finalizer must not roll an already checked/paid
     # statement back to pending. The rolling current-week record is the only
     # ordinary statement that is recalculated in place.

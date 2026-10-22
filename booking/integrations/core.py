@@ -172,6 +172,12 @@ def sync_business_from_core(core_business_id: int, client=None, *, preserve_acce
         and (policy.get("is_configured", True) or bool(policy.get("config")))
     ), {})
     business_snapshot = dict(business_data)
+    merchant_verification = (
+        bundle.get("merchant_verification")
+        or business_data.get("merchant_verification")
+    )
+    if isinstance(merchant_verification, dict):
+        business_snapshot["merchant_verification"] = merchant_verification
     business_snapshot["hotel_check_in_out_policy"] = hotel_check_in_out_policy
     business_snapshot["hotel_cancellation_policy"] = hotel_cancellation_policy or {
         "type": "non_refundable",

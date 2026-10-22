@@ -1,5 +1,5 @@
 from datetime import timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.contrib.auth.hashers import check_password, make_password
@@ -64,6 +64,62 @@ def _action_actor_data(actor):
         "id": str(actor.id),
         "name": actor.name,
     }
+
+
+def _merchant_verification_data(hotel):
+    snapshot = hotel.core_snapshot or {}
+    verification = (
+        snapshot.get("merchant_verification")
+        or snapshot.get("business_verification")
+        or snapshot.get("verification")
+        or {}
+    )
+    if not isinstance(verification, dict):
+        verification = {}
+    nested = [
+        value for key in (
+            "bank_information", "bank_account", "payment_information",
+            "settlement_information", "mobile_wallet",
+        )
+        if isinstance((value := verification.get(key)), dict)
+    ]
+    sources = [verification, *nested, snapshot]
+
+    def pick(*keys, default=""):
+        for source in sources:
+            for key in keys:
+                value = source.get(key)
+                if value not in (None, ""):
+                    return value
+        return default
+
+    return {
+        "hotel_name": hotel.name,
+        "contact_phone": pick(
+            "business_contact_phone_number", "contact_phone", "phone", "phone_no",
+            default=hotel.phone,
+        ),
+        "email": pick("business_contact_email", "contact_email", "email", "business_email"),
+        "address": pick("hotel_address", "business_address", "address", default=hotel.address),
+        "payment_account_number": pick(
+            "payment_account_number", "bank_account_number", "account_number",
+            "mobile_wallet_account", "mobile_wallet_number",
+        ),
+        "beneficiary_name": pick("beneficiary_name", "account_name", "account_holder_name"),
+        "bank_or_mobile_wallet_name": pick(
+            "bank_or_mobile_wallet_name", "bank_name", "wallet_name", "payment_provider_name",
+        ),
+        "branch": pick("branch", "bank_branch", "branch_name"),
+    }
+
+
+def _payment_receipt_url(remittance):
+    if not remittance.payment_receipt:
+        return None
+    try:
+        return remittance.payment_receipt.url
+    except (ValueError, NotImplementedError):
+        return None
 
 
 def _hotel_city(hotel):
@@ -222,6 +278,9 @@ def _date_grouped_rows(rows):
 
 
 def remittance_data(remittance, detail=False):
+    available_amount = remittance.net_remittance_amount - remittance.adjustment_amount
+    adjustment_operator = "-" if remittance.adjustment_amount < 0 else "+"
+    adjustment_input_amount = abs(remittance.adjustment_amount)
     data = {
         "id": remittance.id,
         "reference": remittance.reference,
@@ -238,7 +297,18 @@ def remittance_data(remittance, detail=False):
         "commission_rate": remittance.commission_rate,
         "commission": remittance.commission_amount,
         "refund": remittance.refund_amount,
+        "available": available_amount,
+        "adjustment_amount": remittance.adjustment_amount,
+        "adjustment_operator": adjustment_operator,
+        "adjustment_input_amount": adjustment_input_amount,
+        "adjustment_display": (
+            f"{adjustment_operator} {remittance.currency} "
+            f"{adjustment_input_amount:,.2f}"
+        ),
+        "adjustment_note": remittance.adjustment_note,
         "net_payout": remittance.net_remittance_amount,
+        "payment_reference": remittance.payment_reference,
+        "payment_receipt_url": _payment_receipt_url(remittance),
         "status": remittance.status,
         "system_generated": remittance.system_generated,
         "historical_backfill": remittance.historical_backfill,
@@ -258,6 +328,7 @@ def remittance_data(remittance, detail=False):
         data["items"] = [_remittance_item_data(remittance, item) for item in items]
         data["grouped_items"] = _group_remittance_items(remittance, items)
         data["audit_logs"] = [_audit_data(log) for log in remittance.audit_logs.select_related("actor")]
+        data["merchant_verification"] = _merchant_verification_data(remittance.hotel)
     return data
 
 
@@ -820,19 +891,70 @@ class SuperAdminRemittancePayView(APIView):
 
     @transaction.atomic
     def post(self, request, remittance_id):
-        record = OTARemittance.objects.select_for_update().filter(id=remittance_id).first()
+        record = (
+            OTARemittance.objects.select_for_update()
+            .select_related("hotel")
+            .filter(id=remittance_id)
+            .first()
+        )
         if not record or record.status != OTARemittance.Status.CHECKED:
             raise ValidationError({"status": "Remittance must be checked before payment."})
         actor = _require_passcode_actor(request.data, scope=OTARemittanceActor.Scope.ADMIN, right="payer")
+        raw_adjustment = request.data.get("adjustment_amount", "0")
+        try:
+            adjustment_input = Decimal(str(raw_adjustment)).quantize(Decimal("0.01"))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValidationError({"adjustment_amount": "Use a positive numeric amount, for example 5000."}) from exc
+        if adjustment_input < 0:
+            raise ValidationError({
+                "adjustment_amount": "Amount must be positive; send + or - in adjustment_operator."
+            })
+        if adjustment_input > Decimal("999999999999.99"):
+            raise ValidationError({"adjustment_amount": "Adjustment amount is too large."})
+        adjustment_operator = str(request.data.get("adjustment_operator") or "+").strip()
+        if adjustment_operator not in {"+", "-"}:
+            raise ValidationError({"adjustment_operator": "Use + or -."})
+        adjustment = adjustment_input if adjustment_operator == "+" else -adjustment_input
+        adjustment_note = str(request.data.get("adjustment_note") or "").strip()
+        if adjustment and not adjustment_note:
+            raise ValidationError({"adjustment_note": "A note is required when an adjustment is applied."})
+        available_amount = record.net_remittance_amount - record.adjustment_amount
+        net_payout = available_amount + adjustment
+        if net_payout < 0:
+            raise ValidationError({"adjustment_amount": "Adjustment cannot make net payout negative."})
+        receipt = request.FILES.get("receipt")
+        if not receipt:
+            raise ValidationError({"receipt": "Payment receipt JPEG, JPG, or PDF is required."})
+        extension = str(receipt.name or "").lower().rsplit(".", 1)[-1]
+        if extension not in {"jpg", "jpeg", "pdf"}:
+            raise ValidationError({"receipt": "Only JPEG, JPG, or PDF files are accepted."})
+        if receipt.size > 10 * 1024 * 1024:
+            raise ValidationError({"receipt": "Payment receipt must not exceed 10 MB."})
         record.status, record.paid_at, record.paid_by = OTARemittance.Status.PAID, timezone.now(), actor
-        record.reference = str(request.data.get("payment_reference") or record.reference)
-        record.save(update_fields=["status", "paid_at", "paid_by", "reference", "updated_at"])
+        record.adjustment_amount = adjustment
+        record.adjustment_note = adjustment_note
+        record.net_remittance_amount = net_payout
+        record.payment_reference = str(request.data.get("payment_reference") or "").strip()
+        record.payment_receipt = receipt
+        record.save(update_fields=[
+            "status", "paid_at", "paid_by", "adjustment_amount", "adjustment_note",
+            "net_remittance_amount", "payment_reference", "payment_receipt", "updated_at",
+        ])
         Booking.objects.filter(remittance_items__remittance=record).update(
             settlement_status=Booking.SettlementStatus.PAID, settled_at=record.paid_at,
         )
         OTARemittanceAuditLog.objects.create(
             remittance=record, action="paid", actor=actor, actor_name=actor.name,
-            metadata={"payment_reference": record.reference},
+            metadata={
+                "available_amount": str(available_amount),
+                "adjustment_operator": adjustment_operator,
+                "adjustment_input_amount": str(adjustment_input),
+                "adjustment_amount": str(adjustment),
+                "adjustment_note": adjustment_note,
+                "net_payout": str(net_payout),
+                "payment_reference": record.payment_reference,
+                "payment_receipt": record.payment_receipt.name,
+            },
         )
         return success({"remittance": remittance_data(record, detail=True)})
 

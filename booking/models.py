@@ -1319,6 +1319,16 @@ class OTARemittance(models.Model):
     commission_rate = models.DecimalField(max_digits=7, decimal_places=4, default=5)
     commission_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     net_remittance_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    adjustment_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    adjustment_note = models.TextField(blank=True)
+    payment_reference = models.CharField(max_length=255, blank=True)
+    payment_receipt = models.FileField(
+        upload_to="booking/remittance-receipts/%Y/%m/",
+        storage=get_private_document_storage,
+        null=True,
+        blank=True,
+        editable=False,
+    )
     status = models.CharField(
         max_length=16,
         choices=Status.choices,
