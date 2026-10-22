@@ -256,21 +256,29 @@ def render_remittance_statement_pdf(remittance):
     story.extend([rule, Spacer(1, 6 * mm)])
 
     statement_date = remittance.created_at
-    status_label = (
-        "Pending" if getattr(remittance, "status", None) == "checked"
-        else remittance.get_status_display()
-    )
     meta = Table([
-        [_paragraph("Remittance", title), _paragraph("Statement Date", bold), _paragraph(statement_date.strftime("%d %b %Y"), right)],
-        [_paragraph(remittance.reference, bold), _paragraph("Payout Period Covered", bold), _paragraph(
-            f"{remittance.period_from:%d %b %Y} - {remittance.period_to:%d %b %Y}", right,
-        )],
-        ["", _paragraph("Status", bold), _paragraph(status_label, right)],
-    ], colWidths=[80 * mm, 42 * mm, 44 * mm])
+        [
+            _paragraph("Remittance", title),
+            _paragraph("Statement Date", bold),
+            _paragraph(":", bold),
+            _paragraph(statement_date.strftime("%d %b %Y"), normal),
+        ],
+        [
+            _paragraph(remittance.reference, bold),
+            _paragraph("Payout Period Covered", bold),
+            _paragraph(":", bold),
+            _paragraph(
+                f"{remittance.period_from:%d %b %Y} - {remittance.period_to:%d %b %Y}",
+                normal,
+            ),
+        ],
+    ], colWidths=[76 * mm, 42 * mm, 5 * mm, 43 * mm])
     meta.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 0), (-1, -1), 2),
         ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+        ("LEFTPADDING", (2, 0), (2, -1), 0),
+        ("RIGHTPADDING", (2, 0), (2, -1), 0),
     ]))
     story.extend([meta, Spacer(1, 5 * mm)])
 
