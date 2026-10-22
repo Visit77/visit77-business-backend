@@ -132,6 +132,16 @@ def _payment_receipt_url(remittance):
         return None
 
 
+def _filter_remittance_search(queryset, raw_search):
+    search = str(raw_search or "").strip()
+    if not search:
+        return queryset
+    lookup = Q(reference__icontains=search)
+    if search.isdigit():
+        lookup |= Q(id=int(search))
+    return queryset.filter(lookup)
+
+
 def _hotel_city(hotel):
     snapshot = hotel.core_snapshot or {}
     branches = [item for item in snapshot.get("branches", []) if isinstance(item, dict)]
@@ -303,6 +313,14 @@ def remittance_data(remittance, detail=False):
         if remittance.status == OTARemittance.Status.CHECKED
         else remittance.status
     )
+    receipt_url = _payment_receipt_url(remittance)
+    receipt_is_available = bool(
+        receipt_url
+        and remittance.status in {
+            OTARemittance.Status.PAID,
+            OTARemittance.Status.RECEIVED,
+        }
+    )
     data = {
         "id": remittance.id,
         "reference": remittance.reference,
@@ -332,7 +350,9 @@ def remittance_data(remittance, detail=False):
         "adjustment_note": remittance.adjustment_note,
         "net_payout": remittance.net_remittance_amount,
         "payment_reference": remittance.payment_reference,
-        "payment_receipt_url": _payment_receipt_url(remittance),
+        "payment_receipt_url": receipt_url if receipt_is_available else None,
+        "receipt_file_url": receipt_url if receipt_is_available else None,
+        "can_view_payment_receipt": receipt_is_available,
         "status": display_status,
         "system_generated": remittance.system_generated,
         "historical_backfill": remittance.historical_backfill,
@@ -342,6 +362,7 @@ def remittance_data(remittance, detail=False):
         "received_by": _action_actor_data(remittance.received_by),
         "can_confirm_receipt": remittance.status == OTARemittance.Status.PAID,
         "receipt_confirmation_required": remittance.status == OTARemittance.Status.PAID,
+        "can_view_remittance_pdf": True,
         "hotel_statement_pdf_url": (
             f"/api/v1/admin/remittances/{remittance.id}/pdf/"
         ),
@@ -495,6 +516,10 @@ class HotelRemittanceListView(APIView):
             .prefetch_related("items")
             .order_by("-period_to", "-id")
         )
+        search = request.query_params.get("search") or request.query_params.get(
+            "remittance_id"
+        )
+        records = _filter_remittance_search(records, search)
         total_count = records.count()
         start = (offset - 1) * limit
         page_records = list(records[start:start + limit])
@@ -507,6 +532,7 @@ class HotelRemittanceListView(APIView):
             "total_pages": total_pages,
             "has_previous": offset > 1,
             "has_next": offset < total_pages,
+            "search": str(search or "").strip(),
             "results": results,
         })
 
@@ -1007,6 +1033,11 @@ class SuperAdminRemittanceHistoryView(APIView):
         if business_id:
             records = records.filter(hotel__core_business_id=business_id)
 
+        search = request.query_params.get("search") or request.query_params.get(
+            "remittance_id"
+        )
+        records = _filter_remittance_search(records, search)
+
         status = request.query_params.get("status")
         valid_statuses = {
             choice for choice, _label in OTARemittance.Status.choices
@@ -1036,6 +1067,7 @@ class SuperAdminRemittanceHistoryView(APIView):
             "total_pages": total_pages,
             "has_previous": offset > 1,
             "has_next": offset < total_pages,
+            "search": str(search or "").strip(),
             "results": [remittance_data(item) for item in page_records],
         })
 

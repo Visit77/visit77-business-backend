@@ -11,7 +11,8 @@
     {"key": "admin_actor_id", "value": ""},
     {"key": "hotel_actor_id", "value": ""},
     {"key": "hotel_id", "value": ""},
-    {"key": "remittance_id", "value": ""}
+    {"key": "remittance_id", "value": ""},
+    {"key": "remittance_reference", "value": ""}
   ],
   "item": [
     {
@@ -77,7 +78,7 @@
           "request": {"method": "GET", "header": [
             {"key": "X-Booking-Admin-Key", "value": "{{booking_admin_key}}"},
             {"key": "X-Booking-Business-ID", "value": "{{business_id}}"}
-          ], "url": "{{booking_base_url}}/admin/remittances/?offset=1&limit=20"}
+          ], "url": "{{booking_base_url}}/admin/remittances/?search={{remittance_reference}}&offset=1&limit=20"}
         },
         {
           "name": "Remittance detail with booking IDs",
@@ -136,7 +137,7 @@
         },
         {
           "name": "Remittance history",
-          "request": {"method": "GET", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "url": "{{booking_base_url}}/superadmin/remittances/history/?business_id={{business_id}}&offset=1&limit=20"}
+          "request": {"method": "GET", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "url": "{{booking_base_url}}/superadmin/remittances/history/?business_id={{business_id}}&search={{remittance_reference}}&offset=1&limit=20"}
         },
         {
           "name": "Download remittance statement PDF",
