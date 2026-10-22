@@ -1,11 +1,14 @@
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
+from io import BytesIO
+import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.contrib.auth.hashers import check_password, make_password
 from django.db import transaction
 from django.db.models import OuterRef, Q, Subquery
 from django.db.models.functions import Lower
+from django.http import FileResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from rest_framework.exceptions import ValidationError
@@ -32,7 +35,13 @@ from booking.remittance_services import (
 from config.response_formatter import success
 
 
-ADMIN_RIGHTS = {"checker", "payer"}
+ADMIN_RIGHTS = {"payer"}
+PASSCODE_RE = re.compile(r"^[0-9]{4}$")
+
+
+def _validate_actor_passcode(passcode):
+    if not PASSCODE_RE.fullmatch(passcode):
+        raise ValidationError({"passcode": "Passcode must be exactly 4 digits."})
 
 
 def _actor_data(actor):
@@ -289,6 +298,11 @@ def remittance_data(remittance, detail=False):
     available_amount = remittance.net_remittance_amount - remittance.adjustment_amount
     adjustment_operator = "-" if remittance.adjustment_amount < 0 else "+"
     adjustment_input_amount = abs(remittance.adjustment_amount)
+    display_status = (
+        OTARemittance.Status.PENDING
+        if remittance.status == OTARemittance.Status.CHECKED
+        else remittance.status
+    )
     data = {
         "id": remittance.id,
         "reference": remittance.reference,
@@ -319,17 +333,21 @@ def remittance_data(remittance, detail=False):
         "net_payout": remittance.net_remittance_amount,
         "payment_reference": remittance.payment_reference,
         "payment_receipt_url": _payment_receipt_url(remittance),
-        "status": remittance.status,
+        "status": display_status,
         "system_generated": remittance.system_generated,
         "historical_backfill": remittance.historical_backfill,
-        "checked_at": remittance.checked_at,
-        "checker": _action_actor_data(remittance.checked_by),
         "paid_at": remittance.paid_at,
         "payer": _action_actor_data(remittance.paid_by),
         "received_at": remittance.received_at,
         "received_by": _action_actor_data(remittance.received_by),
         "can_confirm_receipt": remittance.status == OTARemittance.Status.PAID,
         "receipt_confirmation_required": remittance.status == OTARemittance.Status.PAID,
+        "hotel_statement_pdf_url": (
+            f"/api/v1/admin/remittances/{remittance.id}/pdf/"
+        ),
+        "superadmin_statement_pdf_url": (
+            f"/api/v1/superadmin/remittances/{remittance.id}/pdf/"
+        ),
         "booking_ids": list(dict.fromkeys(item.booking_id for item in remittance.items.all())),
     }
     if detail:
@@ -339,7 +357,10 @@ def remittance_data(remittance, detail=False):
         )
         data["items"] = [_remittance_item_data(remittance, item) for item in items]
         data["grouped_items"] = _group_remittance_items(remittance, items)
-        data["audit_logs"] = [_audit_data(log) for log in remittance.audit_logs.select_related("actor")]
+        data["audit_logs"] = [
+            _audit_data(log)
+            for log in remittance.audit_logs.select_related("actor").exclude(action="checked")
+        ]
         data["merchant_verification"] = _merchant_verification_data(remittance.hotel)
     return data
 
@@ -359,6 +380,7 @@ def _require_passcode_actor(data, *, scope, right=None, hotel=None):
     passcode = str(data.get("passcode") or "")
     if not actor_id or not passcode:
         raise ValidationError({"actor": "actor_id and passcode are required."})
+    _validate_actor_passcode(passcode)
     actor = OTARemittanceActor.objects.filter(id=actor_id, scope=scope, is_active=True).first()
     if not actor or (hotel and actor.hotel_id != hotel.id) or not check_password(passcode, actor.passcode_hash):
         raise ValidationError({"passcode": "Actor or passcode is invalid."})
@@ -384,8 +406,9 @@ class HotelRemittanceActorListCreateView(APIView):
     def post(self, request):
         hotel = _hotel_from_request(request)
         name, passcode = str(request.data.get("name") or "").strip(), str(request.data.get("passcode") or "")
-        if not name or len(passcode) < 4:
-            raise ValidationError({"actor": "name and a passcode of at least 4 characters are required."})
+        if not name:
+            raise ValidationError({"name": "Name is required."})
+        _validate_actor_passcode(passcode)
         actor = OTARemittanceActor.objects.create(
             scope=OTARemittanceActor.Scope.HOTEL, hotel=hotel, name=name,
             passcode_hash=make_password(passcode), access_rights=["payee"],
@@ -429,10 +452,11 @@ class SuperAdminRemittanceActorListCreateView(APIView):
         if isinstance(raw_rights, str):
             raw_rights = [value.strip() for value in raw_rights.split(",") if value.strip()]
         rights = list(dict.fromkeys(raw_rights))
-        if not name or len(passcode) < 4:
-            raise ValidationError({"actor": "name and a passcode of at least 4 characters are required."})
+        if not name:
+            raise ValidationError({"name": "Name is required."})
+        _validate_actor_passcode(passcode)
         if not rights or set(rights) - ADMIN_RIGHTS:
-            raise ValidationError({"access_rights": "Select checker, payer, or both."})
+            raise ValidationError({"access_rights": "Select payer."})
         actor = OTARemittanceActor.objects.create(
             scope=OTARemittanceActor.Scope.ADMIN, name=name,
             passcode_hash=make_password(passcode), access_rights=rights,
@@ -467,7 +491,7 @@ class HotelRemittanceListView(APIView):
         records = (
             OTARemittance.objects.filter(hotel=hotel)
             .exclude(status=OTARemittance.Status.ACCRUING)
-            .select_related("hotel", "checked_by", "paid_by", "received_by")
+            .select_related("hotel", "paid_by", "received_by")
             .prefetch_related("items")
             .order_by("-period_to", "-id")
         )
@@ -723,6 +747,24 @@ class HotelRemittanceDetailView(APIView):
         return success({"remittance": remittance_data(record, detail=True)})
 
 
+class HotelRemittancePDFView(APIView):
+    permission_classes = [HasBookingAdminKey]
+    business_scoped = True
+
+    def get(self, request, remittance_id):
+        hotel = _hotel_from_request(request)
+        record = OTARemittance.objects.filter(id=remittance_id, hotel=hotel).first()
+        if not record:
+            raise ValidationError({"remittance_id": "Remittance was not found."})
+        from booking.booking_services.remittance_pdf import render_remittance_statement_pdf
+        return FileResponse(
+            BytesIO(render_remittance_statement_pdf(record)),
+            content_type="application/pdf",
+            as_attachment=False,
+            filename=f"{record.reference}.pdf",
+        )
+
+
 class HotelRemittanceReceiveView(APIView):
     permission_classes = [HasBookingAdminKey]
     business_scoped = True
@@ -809,11 +851,8 @@ class SuperAdminRemittanceListView(APIView):
 
         action_counts = {
             "all": hotels.count(),
-            "need_to_check": hotels.filter(
-                remittance_action_status=OTARemittance.Status.PENDING,
-            ).count(),
             "need_to_pay": hotels.filter(
-                remittance_action_status=OTARemittance.Status.CHECKED,
+                remittance_action_status__in=outstanding_statuses,
             ).count(),
             "paid": hotels.filter(
                 remittance_action_status__isnull=True,
@@ -825,10 +864,8 @@ class SuperAdminRemittanceListView(APIView):
             ).count(),
         }
         action_filter = request.query_params.get("action_filter", "all")
-        if action_filter == "need_to_check":
-            hotels = hotels.filter(remittance_action_status=OTARemittance.Status.PENDING)
-        elif action_filter == "need_to_pay":
-            hotels = hotels.filter(remittance_action_status=OTARemittance.Status.CHECKED)
+        if action_filter == "need_to_pay":
+            hotels = hotels.filter(remittance_action_status__in=outstanding_statuses)
         elif action_filter == "paid":
             hotels = hotels.filter(
                 remittance_action_status__isnull=True,
@@ -843,7 +880,7 @@ class SuperAdminRemittanceListView(APIView):
         elif action_filter != "all":
             raise ValidationError({
                 "action_filter": (
-                    "Use all, need_to_action, need_to_check, need_to_pay, or paid."
+                    "Use all, need_to_action, need_to_pay, or paid."
                 )
             })
 
@@ -855,7 +892,7 @@ class SuperAdminRemittanceListView(APIView):
         all_records = list(
             OTARemittance.objects.filter(hotel_id__in=[hotel.id for hotel in page_hotels])
             .exclude(status=OTARemittance.Status.ACCRUING)
-            .select_related("hotel", "checked_by", "paid_by", "received_by")
+            .select_related("hotel", "paid_by", "received_by")
             .prefetch_related("items")
         )
         records_by_hotel = {hotel.id: [] for hotel in page_hotels}
@@ -913,15 +950,10 @@ class SuperAdminRemittanceListView(APIView):
                 "oldest_unpaid_period_from": outstanding[0].period_from if outstanding else None,
                 "action": action,
                 "action_label": action.title() if action else None,
-                "action_required": action in {"check", "pay"},
-                "can_check": bool(action_record and action_record.status == OTARemittance.Status.PENDING),
-                "can_pay": bool(action_record and action_record.status == OTARemittance.Status.CHECKED),
+                "action_required": action == "pay",
+                "can_pay": bool(action_record and action_record.status in outstanding_statuses),
                 "is_paid": action == "paid",
                 "action_remittance_id": action_record.id if action_record and action else None,
-                "checker": (
-                    _action_actor_data(action_record.checked_by)
-                    if action_record and action_record.status == OTARemittance.Status.CHECKED else None
-                ),
                 "payer": (
                     _action_actor_data(action_record.paid_by)
                     if action_record and action_record.status in {
@@ -965,7 +997,7 @@ class SuperAdminRemittanceHistoryView(APIView):
 
         records = (
             OTARemittance.objects.select_related(
-                "hotel", "checked_by", "paid_by", "received_by",
+                "hotel", "paid_by", "received_by",
             )
             .exclude(status=OTARemittance.Status.ACCRUING)
             .prefetch_related("items")
@@ -1019,21 +1051,21 @@ class SuperAdminRemittanceDetailView(APIView):
         return success({"remittance": remittance_data(record, detail=True)})
 
 
-class SuperAdminRemittanceCheckView(APIView):
+class SuperAdminRemittancePDFView(APIView):
     authentication_classes = [CoreJWTAuthentication]
     permission_classes = [IsCoreSuperAdmin]
 
-    @transaction.atomic
-    def post(self, request, remittance_id):
-        record = OTARemittance.objects.select_for_update().filter(id=remittance_id).first()
-        if not record or record.status != OTARemittance.Status.PENDING:
-            raise ValidationError({"status": "Only a pending remittance can be checked."})
-        actor = _require_passcode_actor(request.data, scope=OTARemittanceActor.Scope.ADMIN, right="checker")
-        record.status, record.checked_at, record.checked_by = OTARemittance.Status.CHECKED, timezone.now(), actor
-        record.save(update_fields=["status", "checked_at", "checked_by", "updated_at"])
-        Booking.objects.filter(remittance_items__remittance=record).update(settlement_status=Booking.SettlementStatus.CHECKED)
-        OTARemittanceAuditLog.objects.create(remittance=record, action="checked", actor=actor, actor_name=actor.name)
-        return success({"remittance": remittance_data(record, detail=True)})
+    def get(self, request, remittance_id):
+        record = OTARemittance.objects.filter(id=remittance_id).first()
+        if not record:
+            raise ValidationError({"remittance_id": "Remittance was not found."})
+        from booking.booking_services.remittance_pdf import render_remittance_statement_pdf
+        return FileResponse(
+            BytesIO(render_remittance_statement_pdf(record)),
+            content_type="application/pdf",
+            as_attachment=False,
+            filename=f"{record.reference}.pdf",
+        )
 
 
 class SuperAdminRemittancePayView(APIView):
@@ -1048,8 +1080,11 @@ class SuperAdminRemittancePayView(APIView):
             .filter(id=remittance_id)
             .first()
         )
-        if not record or record.status != OTARemittance.Status.CHECKED:
-            raise ValidationError({"status": "Remittance must be checked before payment."})
+        if not record or record.status not in {
+            OTARemittance.Status.PENDING,
+            OTARemittance.Status.CHECKED,
+        }:
+            raise ValidationError({"status": "Only an unpaid remittance can be paid."})
         actor = _require_passcode_actor(request.data, scope=OTARemittanceActor.Scope.ADMIN, right="payer")
         raw_adjustment = request.data.get("adjustment_amount", "0")
         try:

@@ -26,7 +26,7 @@
               {"key": "X-Booking-Business-ID", "value": "{{business_id}}"},
               {"key": "Content-Type", "value": "application/json"}
             ],
-            "body": {"mode": "raw", "raw": "{\n  \"name\": \"Hotel Payee One\",\n  \"passcode\": \"123456\"\n}"},
+            "body": {"mode": "raw", "raw": "{\n  \"name\": \"Hotel Payee One\",\n  \"passcode\": \"1234\"\n}"},
             "url": "{{booking_base_url}}/admin/remittance-checkers/"
           }
         },
@@ -87,12 +87,19 @@
           ], "url": "{{booking_base_url}}/admin/remittances/{{remittance_id}}/"}
         },
         {
+          "name": "Download remittance statement PDF",
+          "request": {"method": "GET", "header": [
+            {"key": "X-Booking-Admin-Key", "value": "{{booking_admin_key}}"},
+            {"key": "X-Booking-Business-ID", "value": "{{business_id}}"}
+          ], "url": "{{booking_base_url}}/admin/remittances/{{remittance_id}}/pdf/"}
+        },
+        {
           "name": "Confirm received",
           "request": {"method": "POST", "header": [
             {"key": "X-Booking-Admin-Key", "value": "{{booking_admin_key}}"},
             {"key": "X-Booking-Business-ID", "value": "{{business_id}}"},
             {"key": "Content-Type", "value": "application/json"}
-          ], "body": {"mode": "raw", "raw": "{\n  \"actor_id\": \"{{hotel_actor_id}}\",\n  \"passcode\": \"123456\"\n}"}, "url": "{{booking_base_url}}/admin/remittances/{{remittance_id}}/receive/"}
+          ], "body": {"mode": "raw", "raw": "{\n  \"actor_id\": \"{{hotel_actor_id}}\",\n  \"passcode\": \"1234\"\n}"}, "url": "{{booking_base_url}}/admin/remittances/{{remittance_id}}/receive/"}
         }
       ]
     },
@@ -100,8 +107,8 @@
         "name": "Visit77 Superadmin",
       "item": [
         {
-          "name": "Create checker and payer",
-          "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"Finance Admin\",\n  \"passcode\": \"654321\",\n  \"access_rights\": [\"checker\", \"payer\"]\n}"}, "url": "{{booking_base_url}}/superadmin/remittance-actors/"}
+          "name": "Create payer",
+          "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"Finance Admin\",\n  \"passcode\": \"6543\",\n  \"access_rights\": [\"payer\"]\n}"}, "url": "{{booking_base_url}}/superadmin/remittance-actors/"}
         },
         {
           "name": "List admin actors",
@@ -132,14 +139,14 @@
           "request": {"method": "GET", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "url": "{{booking_base_url}}/superadmin/remittances/history/?business_id={{business_id}}&offset=1&limit=20"}
         },
         {
-          "name": "Check remittance",
-          "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"actor_id\": \"{{admin_actor_id}}\",\n  \"passcode\": \"654321\"\n}"}, "url": "{{booking_base_url}}/superadmin/remittances/{{remittance_id}}/check/"}
+          "name": "Download remittance statement PDF",
+          "request": {"method": "GET", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "url": "{{booking_base_url}}/superadmin/remittances/{{remittance_id}}/pdf/"}
         },
         {
           "name": "Pay remittance",
           "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "body": {"mode": "formdata", "formdata": [
             {"key": "actor_id", "value": "{{admin_actor_id}}", "type": "text"},
-            {"key": "passcode", "value": "654321", "type": "text"},
+            {"key": "passcode", "value": "6543", "type": "text"},
             {"key": "adjustment_operator", "value": "+", "description": "Use + to add or - to deduct", "type": "text"},
             {"key": "adjustment_amount", "value": "0", "description": "Positive amount only", "type": "text"},
             {"key": "adjustment_note", "value": "", "type": "text"},
@@ -149,7 +156,7 @@
         },
         {
           "name": "Reopen receipt confirmation",
-          "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"actor_id\": \"{{admin_actor_id}}\",\n  \"passcode\": \"654321\",\n  \"reason\": \"Hotel must confirm receipt\"\n}"}, "url": "{{booking_base_url}}/superadmin/remittances/{{remittance_id}}/reopen-receipt/"}
+          "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"actor_id\": \"{{admin_actor_id}}\",\n  \"passcode\": \"6543\",\n  \"reason\": \"Hotel must confirm receipt\"\n}"}, "url": "{{booking_base_url}}/superadmin/remittances/{{remittance_id}}/reopen-receipt/"}
         }
       ]
     }
