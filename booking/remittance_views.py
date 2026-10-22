@@ -318,6 +318,8 @@ def remittance_data(remittance, detail=False):
         "payer": _action_actor_data(remittance.paid_by),
         "received_at": remittance.received_at,
         "received_by": _action_actor_data(remittance.received_by),
+        "can_confirm_receipt": remittance.status == OTARemittance.Status.PAID,
+        "receipt_confirmation_required": remittance.status == OTARemittance.Status.PAID,
         "booking_ids": list(dict.fromkeys(item.booking_id for item in remittance.items.all())),
     }
     if detail:
@@ -972,6 +974,53 @@ class SuperAdminRemittancePayView(APIView):
             },
         )
         return success({"remittance": remittance_data(record, detail=True)})
+
+
+class SuperAdminRemittanceReopenReceiptView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
+    permission_classes = [IsCoreSuperAdmin]
+
+    @transaction.atomic
+    def post(self, request, remittance_id):
+        record = (
+            OTARemittance.objects.select_for_update()
+            .select_related("hotel", "received_by")
+            .filter(id=remittance_id)
+            .first()
+        )
+        if not record:
+            raise ValidationError({"remittance_id": "Remittance was not found."})
+        if record.status != OTARemittance.Status.RECEIVED:
+            raise ValidationError({"status": "Only a received remittance can be reopened."})
+        if record.received_by_id:
+            raise ValidationError({
+                "status": "This remittance was confirmed by the hotel and cannot be reopened."
+            })
+        actor = _require_passcode_actor(
+            request.data,
+            scope=OTARemittanceActor.Scope.ADMIN,
+            right="payer",
+        )
+        reason = str(request.data.get("reason") or "").strip()
+        record.status = OTARemittance.Status.PAID
+        record.received_at = None
+        record.received_by = None
+        record.save(update_fields=["status", "received_at", "received_by", "updated_at"])
+        Booking.objects.filter(remittance_items__remittance=record).update(
+            settlement_status=Booking.SettlementStatus.PAID,
+            settled_at=record.paid_at,
+        )
+        OTARemittanceAuditLog.objects.create(
+            remittance=record,
+            action="receipt_reopened",
+            actor=actor,
+            actor_name=actor.name,
+            metadata={"reason": reason},
+        )
+        return success({
+            "reopened": True,
+            "remittance": remittance_data(record, detail=True),
+        })
 
 
 class SuperAdminCommissionRateView(APIView):
