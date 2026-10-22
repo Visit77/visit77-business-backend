@@ -356,6 +356,8 @@ def remittance_data(remittance, detail=False):
         "status": display_status,
         "system_generated": remittance.system_generated,
         "historical_backfill": remittance.historical_backfill,
+        "checked_at": remittance.checked_at,
+        "checker": _action_actor_data(remittance.checked_by),
         "paid_at": remittance.paid_at,
         "payer": _action_actor_data(remittance.paid_by),
         "received_at": remittance.received_at,
@@ -512,7 +514,7 @@ class HotelRemittanceListView(APIView):
         records = (
             OTARemittance.objects.filter(hotel=hotel)
             .exclude(status=OTARemittance.Status.ACCRUING)
-            .select_related("hotel", "paid_by", "received_by")
+            .select_related("hotel", "checked_by", "paid_by", "received_by")
             .prefetch_related("items")
             .order_by("-period_to", "-id")
         )
@@ -918,7 +920,7 @@ class SuperAdminRemittanceListView(APIView):
         all_records = list(
             OTARemittance.objects.filter(hotel_id__in=[hotel.id for hotel in page_hotels])
             .exclude(status=OTARemittance.Status.ACCRUING)
-            .select_related("hotel", "paid_by", "received_by")
+            .select_related("hotel", "checked_by", "paid_by", "received_by")
             .prefetch_related("items")
         )
         records_by_hotel = {hotel.id: [] for hotel in page_hotels}
@@ -980,6 +982,10 @@ class SuperAdminRemittanceListView(APIView):
                 "can_pay": bool(action_record and action_record.status in outstanding_statuses),
                 "is_paid": action == "paid",
                 "action_remittance_id": action_record.id if action_record and action else None,
+                "checker": (
+                    _action_actor_data(action_record.checked_by)
+                    if action_record else None
+                ),
                 "payer": (
                     _action_actor_data(action_record.paid_by)
                     if action_record and action_record.status in {
@@ -1023,7 +1029,7 @@ class SuperAdminRemittanceHistoryView(APIView):
 
         records = (
             OTARemittance.objects.select_related(
-                "hotel", "paid_by", "received_by",
+                "hotel", "checked_by", "paid_by", "received_by",
             )
             .exclude(status=OTARemittance.Status.ACCRUING)
             .prefetch_related("items")
@@ -1077,7 +1083,9 @@ class SuperAdminRemittanceDetailView(APIView):
     permission_classes = [IsCoreSuperAdmin]
 
     def get(self, request, remittance_id):
-        record = OTARemittance.objects.select_related("hotel").filter(id=remittance_id).first()
+        record = OTARemittance.objects.select_related(
+            "hotel", "checked_by", "paid_by", "received_by",
+        ).filter(id=remittance_id).first()
         if not record:
             raise ValidationError({"remittance_id": "Remittance was not found."})
         return success({"remittance": remittance_data(record, detail=True)})
