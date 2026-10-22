@@ -149,6 +149,11 @@ def sync_all_payment_ledgers(hotel=None):
     return count
 
 
+def _remittance_reference(remittance):
+    """Build a globally increasing, human-readable remittance reference."""
+    return f"V77-PAY-{remittance.period_to:%y}-{remittance.id:06d}"
+
+
 @transaction.atomic
 def generate_weekly_remittance(
     hotel, period_from, period_to, historical=False, completed=False,
@@ -227,14 +232,19 @@ def generate_weekly_remittance(
             "commission_amount": commission,
             "net_remittance_amount": net,
             "status": status,
-            "reference": f"V77-REM-{period_to:%Y%m%d}-{hotel.core_business_id}",
+            # The final reference needs the database-generated global ID and is
+            # assigned immediately after creation below.
+            "reference": "",
             "historical_backfill": historical,
             "checked_at": timezone.now() if completed else None,
             "paid_at": timezone.now() if completed else None,
             "received_at": timezone.now() if completed else None,
         },
     )
-    if not created:
+    if created:
+        remittance.reference = _remittance_reference(remittance)
+        remittance.save(update_fields=["reference", "updated_at"])
+    else:
         remittance.gross_booking_amount = _money(collections)
         remittance.released_held_funds_amount = _money(releases)
         remittance.tax_amount = _money(tax)
