@@ -137,6 +137,13 @@ def _hotel_city(hotel):
     return value
 
 
+def _hotel_refund_policy(hotel):
+    policy = (hotel.core_snapshot or {}).get("hotel_cancellation_policy")
+    if not isinstance(policy, dict) or not policy.get("type"):
+        return {"type": "non_refundable", "name": "Non-Refundable"}
+    return policy
+
+
 def _remittance_local_datetime(remittance, value):
     try:
         hotel_tz = ZoneInfo(remittance.hotel.timezone or "Asia/Yangon")
@@ -852,9 +859,7 @@ class SuperAdminRemittanceListView(APIView):
         for record in all_records:
             records_by_hotel[record.hotel_id].append(record)
 
-        status = request.query_params.get("status")
         hotel_rows = []
-        serialized_remittances = []
         for hotel in page_hotels:
             hotel_records = records_by_hotel[hotel.id]
             outstanding = sorted(
@@ -886,11 +891,7 @@ class SuperAdminRemittanceListView(APIView):
             outstanding_net_payout = sum(
                 (item.net_remittance_amount for item in outstanding), Decimal("0")
             )
-            visible_records = [
-                item for item in hotel_records if not status or item.status == status
-            ]
-            serialized = [remittance_data(item) for item in visible_records]
-            serialized_remittances.extend(serialized)
+            refund_policy = _hotel_refund_policy(hotel)
             hotel_rows.append({
                 "hotel_id": hotel.id,
                 "core_business_id": hotel.core_business_id,
@@ -898,6 +899,8 @@ class SuperAdminRemittanceListView(APIView):
                 "package": hotel.package,
                 "payout_option": hotel.remittance_payout_option,
                 "payout_option_label": hotel.get_remittance_payout_option_display(),
+                "refund_policy_type": refund_policy["type"],
+                "refund_policy": refund_policy,
                 "address": hotel.address,
                 "city": _hotel_city(hotel),
                 "currency": hotel.base_currency,
@@ -923,7 +926,6 @@ class SuperAdminRemittanceListView(APIView):
                     } else None
                 ),
                 "remittance": remittance_data(action_record) if action_record else None,
-                "remittances": serialized,
             })
 
         total_pages = (total_count + limit - 1) // limit if total_count else 0
@@ -942,7 +944,6 @@ class SuperAdminRemittanceListView(APIView):
             "paid_display_hours": 24,
             "results": hotel_rows,
             "hotel_summaries": hotel_rows,
-            "remittances": serialized_remittances,
         })
 
 
