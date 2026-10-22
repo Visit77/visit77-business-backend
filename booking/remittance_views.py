@@ -361,7 +361,12 @@ class HotelRemittanceActorListCreateView(APIView):
 
     def get(self, request):
         hotel = _hotel_from_request(request)
-        actors = OTARemittanceActor.objects.filter(scope=OTARemittanceActor.Scope.HOTEL, hotel=hotel)
+        actors = OTARemittanceActor.objects.filter(
+            scope=OTARemittanceActor.Scope.HOTEL,
+            hotel=hotel,
+        )
+        if request.query_params.get("include_removed", "false").lower() != "true":
+            actors = actors.filter(is_active=True)
         return success({"actors": [_actor_data(actor) for actor in actors]})
 
     def post(self, request):
@@ -382,12 +387,18 @@ class HotelRemittanceActorDeleteView(APIView):
 
     def delete(self, request, actor_id):
         hotel = _hotel_from_request(request)
-        actor = OTARemittanceActor.objects.filter(id=actor_id, hotel=hotel, is_active=True).first()
+        actor = OTARemittanceActor.objects.filter(
+            id=actor_id,
+            scope=OTARemittanceActor.Scope.HOTEL,
+            hotel=hotel,
+        ).first()
         if not actor:
-            raise ValidationError({"actor_id": "Active payee was not found."})
+            raise ValidationError({"actor_id": "Payee was not found."})
+        if not actor.is_active:
+            return success({"removed": True, "already_removed": True, "actor": _actor_data(actor)})
         actor.is_active, actor.removed_at = False, timezone.now()
         actor.save(update_fields=["is_active", "removed_at"])
-        return success({"removed": True, "actor": _actor_data(actor)})
+        return success({"removed": True, "already_removed": False, "actor": _actor_data(actor)})
 
 
 class SuperAdminRemittanceActorListCreateView(APIView):
@@ -396,6 +407,8 @@ class SuperAdminRemittanceActorListCreateView(APIView):
 
     def get(self, request):
         actors = OTARemittanceActor.objects.filter(scope=OTARemittanceActor.Scope.ADMIN)
+        if request.query_params.get("include_removed", "false").lower() != "true":
+            actors = actors.filter(is_active=True)
         return success({"actors": [_actor_data(actor) for actor in actors]})
 
     def post(self, request):
@@ -421,13 +434,15 @@ class SuperAdminRemittanceActorDeleteView(APIView):
 
     def delete(self, request, actor_id):
         actor = OTARemittanceActor.objects.filter(
-            id=actor_id, scope=OTARemittanceActor.Scope.ADMIN, is_active=True,
+            id=actor_id, scope=OTARemittanceActor.Scope.ADMIN,
         ).first()
         if not actor:
-            raise ValidationError({"actor_id": "Active actor was not found."})
+            raise ValidationError({"actor_id": "Actor was not found."})
+        if not actor.is_active:
+            return success({"removed": True, "already_removed": True, "actor": _actor_data(actor)})
         actor.is_active, actor.removed_at = False, timezone.now()
         actor.save(update_fields=["is_active", "removed_at"])
-        return success({"removed": True, "actor": _actor_data(actor)})
+        return success({"removed": True, "already_removed": False, "actor": _actor_data(actor)})
 
 
 class HotelRemittanceListView(APIView):
