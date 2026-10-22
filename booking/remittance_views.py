@@ -18,9 +18,16 @@ from booking.models import (
     OTARemittance,
     OTARemittanceActor,
     OTARemittanceAuditLog,
+    OTARevenueLedger,
 )
 from booking.authentication import CoreJWTAuthentication
 from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
+from booking.remittance_services import (
+    current_week_period,
+    hotel_timezone,
+    refresh_current_week_remittance,
+    sync_all_payment_ledgers,
+)
 from config.response_formatter import success
 
 
@@ -161,6 +168,57 @@ def _group_remittance_items(remittance, items):
             "date_groups": groups,
         })
     return sections
+
+
+def _pagination(request):
+    try:
+        limit = min(max(int(request.query_params.get("limit", 20)), 1), 100)
+        offset = int(request.query_params.get("offset", 1))
+    except (TypeError, ValueError) as exc:
+        raise ValidationError({"pagination": "limit and offset must be integers."}) from exc
+    if offset < 1:
+        raise ValidationError({"offset": "Must be a page number starting from 1."})
+    return offset, limit
+
+
+def _ledger_item_data(hotel, entry, amount=None):
+    local_effective_at = timezone.localtime(entry.effective_at, hotel_timezone(hotel))
+    return {
+        "ledger_id": str(entry.id),
+        "booking_id": str(entry.booking_id),
+        "booking_code": entry.booking.booking_code,
+        "payment_id": str(entry.payment_id),
+        "type": entry.event_type,
+        "effective_at": entry.effective_at,
+        "effective_date": local_effective_at.date(),
+        "effective_time": local_effective_at.strftime("%H:%M"),
+        "check_in": entry.booking.check_in,
+        "check_out": entry.booking.check_out,
+        "currency": entry.booking.currency,
+        "gross_amount": entry.gross_amount,
+        "amount": entry.gross_amount if amount is None else amount,
+        "tax_amount": entry.tax_amount,
+        "service_charge_amount": entry.service_charge_amount,
+        "refund_amount": entry.refund_amount,
+        "settlement_status": entry.booking.settlement_status,
+    }
+
+
+def _date_grouped_rows(rows):
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(row["effective_date"], []).append(row)
+    return [
+        {
+            "date": effective_date,
+            "items": sorted(
+                grouped[effective_date],
+                key=lambda item: item["effective_at"],
+                reverse=True,
+            ),
+        }
+        for effective_date in sorted(grouped, reverse=True)
+    ]
 
 
 def remittance_data(remittance, detail=False):
@@ -307,8 +365,158 @@ class HotelRemittanceListView(APIView):
 
     def get(self, request):
         hotel = _hotel_from_request(request)
-        records = OTARemittance.objects.filter(hotel=hotel).select_related("hotel").prefetch_related("items")
-        return success({"count": records.count(), "remittances": [remittance_data(item) for item in records]})
+        offset, limit = _pagination(request)
+        records = (
+            OTARemittance.objects.filter(hotel=hotel)
+            .exclude(status=OTARemittance.Status.ACCRUING)
+            .select_related("hotel", "checked_by", "paid_by", "received_by")
+            .prefetch_related("items")
+            .order_by("-period_to", "-id")
+        )
+        total_count = records.count()
+        start = (offset - 1) * limit
+        page_records = list(records[start:start + limit])
+        results = [remittance_data(item) for item in page_records]
+        total_pages = (total_count + limit - 1) // limit if total_count else 0
+        return success({
+            "count": total_count,
+            "offset": offset,
+            "limit": limit,
+            "total_pages": total_pages,
+            "has_previous": offset > 1,
+            "has_next": offset < total_pages,
+            "results": results,
+            "remittances": results,
+        })
+
+
+class HotelAvailableRevenueView(APIView):
+    permission_classes = [HasBookingAdminKey]
+    business_scoped = True
+
+    def get(self, request):
+        hotel = _hotel_from_request(request)
+        period_from, period_to = current_week_period(hotel=hotel)
+        record = refresh_current_week_remittance(hotel)
+        if not record:
+            return success({
+                "period_from": period_from,
+                "period_to": period_to,
+                "currency": hotel.base_currency,
+                "status": OTARemittance.Status.ACCRUING,
+                "booking_collection": Decimal("0"),
+                "released_held_funds": Decimal("0"),
+                "tax_excluded_from_commission": Decimal("0"),
+                "service_charge_excluded_from_commission": Decimal("0"),
+                "commission": Decimal("0"),
+                "refund": Decimal("0"),
+                "available": Decimal("0"),
+                "remittance": None,
+                "grouped_items": [],
+            })
+        data = remittance_data(record, detail=True)
+        return success({
+            "period_from": record.period_from,
+            "period_to": record.period_to,
+            "currency": record.currency,
+            "status": record.status,
+            "booking_collection": record.gross_booking_amount,
+            "released_held_funds": record.released_held_funds_amount,
+            "tax_excluded_from_commission": record.tax_amount,
+            "service_charge_excluded_from_commission": record.service_charge_amount,
+            "commission_rate": record.commission_rate,
+            "commission": record.commission_amount,
+            "refund": record.refund_amount,
+            "available": record.net_remittance_amount,
+            "remittance": data,
+            "grouped_items": data["grouped_items"],
+        })
+
+
+class HotelHeldFundsView(APIView):
+    permission_classes = [HasBookingAdminKey]
+    business_scoped = True
+
+    def get(self, request):
+        hotel = _hotel_from_request(request)
+        sync_all_payment_ledgers(hotel=hotel)
+        offset, limit = _pagination(request)
+        released_payment_ids = OTARevenueLedger.objects.filter(
+            hotel=hotel,
+            event_type=OTARevenueLedger.EventType.HELD_RELEASE,
+        ).values("payment_id")
+        entries = list(
+            OTARevenueLedger.objects.filter(
+                hotel=hotel,
+                event_type=OTARevenueLedger.EventType.HELD,
+            )
+            .exclude(payment_id__in=released_payment_ids)
+            .select_related("booking", "payment")
+            .order_by("-effective_at", "-id")
+        )
+        rows = []
+        for entry in entries:
+            remaining = max(entry.gross_amount - entry.payment.refunded_amount, Decimal("0"))
+            if remaining <= 0:
+                continue
+            row = _ledger_item_data(hotel, entry, amount=remaining)
+            row["held_amount"] = remaining
+            row["refund_amount"] = entry.payment.refunded_amount
+            row["release_date"] = entry.booking.check_in
+            rows.append(row)
+        total_count = len(rows)
+        start = (offset - 1) * limit
+        page_rows = rows[start:start + limit]
+        total_pages = (total_count + limit - 1) // limit if total_count else 0
+        return success({
+            "count": total_count,
+            "offset": offset,
+            "limit": limit,
+            "total_pages": total_pages,
+            "has_previous": offset > 1,
+            "has_next": offset < total_pages,
+            "currency": hotel.base_currency,
+            "total_held_fund": sum((row["held_amount"] for row in rows), Decimal("0")),
+            "results": page_rows,
+            "date_groups": _date_grouped_rows(page_rows),
+        })
+
+
+class HotelRefundsView(APIView):
+    permission_classes = [HasBookingAdminKey]
+    business_scoped = True
+
+    def get(self, request):
+        hotel = _hotel_from_request(request)
+        sync_all_payment_ledgers(hotel=hotel)
+        offset, limit = _pagination(request)
+        entries = (
+            OTARevenueLedger.objects.filter(
+                hotel=hotel,
+                event_type=OTARevenueLedger.EventType.REFUND,
+            )
+            .select_related("booking", "payment")
+            .order_by("-effective_at", "-id")
+        )
+        total_count = entries.count()
+        start = (offset - 1) * limit
+        page_entries = list(entries[start:start + limit])
+        rows = [_ledger_item_data(hotel, entry, amount=entry.refund_amount) for entry in page_entries]
+        total_pages = (total_count + limit - 1) // limit if total_count else 0
+        return success({
+            "count": total_count,
+            "offset": offset,
+            "limit": limit,
+            "total_pages": total_pages,
+            "has_previous": offset > 1,
+            "has_next": offset < total_pages,
+            "currency": hotel.base_currency,
+            "total_refund": sum(
+                entries.values_list("refund_amount", flat=True), Decimal("0")
+            ),
+            "results": rows,
+            "date_groups": _date_grouped_rows(rows),
+        })
 
 
 class HotelRemittanceDetailView(APIView):
@@ -426,6 +634,7 @@ class SuperAdminRemittanceListView(APIView):
 
         all_records = list(
             OTARemittance.objects.filter(hotel_id__in=[hotel.id for hotel in page_hotels])
+            .exclude(status=OTARemittance.Status.ACCRUING)
             .select_related("hotel", "checked_by", "paid_by", "received_by")
             .prefetch_related("items")
         )
@@ -536,6 +745,7 @@ class SuperAdminRemittanceHistoryView(APIView):
             OTARemittance.objects.select_related(
                 "hotel", "checked_by", "paid_by", "received_by",
             )
+            .exclude(status=OTARemittance.Status.ACCRUING)
             .prefetch_related("items")
             .order_by("-period_to", "hotel__name", "-id")
         )
@@ -544,7 +754,10 @@ class SuperAdminRemittanceHistoryView(APIView):
             records = records.filter(hotel__core_business_id=business_id)
 
         status = request.query_params.get("status")
-        valid_statuses = {choice for choice, _label in OTARemittance.Status.choices}
+        valid_statuses = {
+            choice for choice, _label in OTARemittance.Status.choices
+            if choice != OTARemittance.Status.ACCRUING
+        }
         if status:
             if status not in valid_statuses:
                 raise ValidationError({"status": f"Use one of: {', '.join(sorted(valid_statuses))}."})

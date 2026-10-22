@@ -51,11 +51,32 @@
           ], "url": "{{booking_base_url}}/admin/ota-revenue/?status=all"}
         },
         {
-          "name": "List remittances",
+          "name": "Current week available revenue",
           "request": {"method": "GET", "header": [
             {"key": "X-Booking-Admin-Key", "value": "{{booking_admin_key}}"},
             {"key": "X-Booking-Business-ID", "value": "{{business_id}}"}
-          ], "url": "{{booking_base_url}}/admin/remittances/"}
+          ], "url": "{{booking_base_url}}/admin/ota-revenue/available/"}
+        },
+        {
+          "name": "Current held funds",
+          "request": {"method": "GET", "header": [
+            {"key": "X-Booking-Admin-Key", "value": "{{booking_admin_key}}"},
+            {"key": "X-Booking-Business-ID", "value": "{{business_id}}"}
+          ], "url": "{{booking_base_url}}/admin/ota-revenue/held-funds/?offset=1&limit=20"}
+        },
+        {
+          "name": "Refund history",
+          "request": {"method": "GET", "header": [
+            {"key": "X-Booking-Admin-Key", "value": "{{booking_admin_key}}"},
+            {"key": "X-Booking-Business-ID", "value": "{{business_id}}"}
+          ], "url": "{{booking_base_url}}/admin/ota-revenue/refunds/?offset=1&limit=20"}
+        },
+        {
+          "name": "Completed week remittance history",
+          "request": {"method": "GET", "header": [
+            {"key": "X-Booking-Admin-Key", "value": "{{booking_admin_key}}"},
+            {"key": "X-Booking-Business-ID", "value": "{{business_id}}"}
+          ], "url": "{{booking_base_url}}/admin/remittances/?offset=1&limit=20"}
         },
         {
           "name": "Remittance detail with booking IDs",

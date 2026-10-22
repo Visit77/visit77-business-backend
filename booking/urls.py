@@ -65,6 +65,9 @@ from booking.views import (
     WalkInBookingV2View,
 )
 from booking.remittance_views import (
+    HotelAvailableRevenueView,
+    HotelHeldFundsView,
+    HotelRefundsView,
     HotelRemittanceActorDeleteView,
     HotelRemittanceActorListCreateView,
     HotelRemittanceDetailView,
@@ -142,6 +145,9 @@ urlpatterns = [
     ),
     path("admin/ota-records/", OTARecordListView.as_view()),
     path("admin/ota-revenue/", OTARevenueView.as_view()),
+    path("admin/ota-revenue/available/", HotelAvailableRevenueView.as_view()),
+    path("admin/ota-revenue/held-funds/", HotelHeldFundsView.as_view()),
+    path("admin/ota-revenue/refunds/", HotelRefundsView.as_view()),
     path("admin/remittance-checkers/", HotelRemittanceActorListCreateView.as_view()),
     path("admin/remittance-checkers/<uuid:actor_id>/", HotelRemittanceActorDeleteView.as_view()),
     path("admin/remittances/", HotelRemittanceListView.as_view()),

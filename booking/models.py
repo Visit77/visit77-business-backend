@@ -1296,6 +1296,7 @@ class OTARemittance(models.Model):
     """Settlement summary for one hotel and accounting period."""
 
     class Status(models.TextChoices):
+        ACCRUING = "accruing", "Current week accruing"
         PENDING = "pending", "Pending check"
         CHECKED = "checked", "Checked"
         PAID = "paid", "Paid"

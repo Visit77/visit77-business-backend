@@ -5,13 +5,18 @@ from django.db import transaction
 from django.utils import timezone
 
 from booking.models import Booking, Hotel, OTARemittance, OTARemittanceAuditLog, Payment
-from booking.remittance_services import generate_weekly_remittance, hotel_timezone, sync_all_payment_ledgers
+from booking.remittance_services import (
+    generate_weekly_remittance,
+    hotel_timezone,
+    refresh_current_week_remittance,
+    sync_all_payment_ledgers,
+)
 
 
 class Command(BaseCommand):
     help = (
         "Rebuild weekly OTA remittances. Older historical weeks are received, "
-        "the latest completed week is pending, and the current partial week is excluded."
+        "the latest completed week is pending, and the current partial week is rebuilt as accruing."
     )
 
     def handle(self, *args, **options):
@@ -87,4 +92,7 @@ class Command(BaseCommand):
                     )
                 created += int(result is not None)
                 cursor += timedelta(days=7)
+            created += int(
+                refresh_current_week_remittance(hotel, today=today, sync_ledger=False) is not None
+            )
         self.stdout.write(self.style.SUCCESS(f"Backfilled {created} weekly remittance period(s)."))
