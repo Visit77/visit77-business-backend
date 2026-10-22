@@ -984,7 +984,7 @@ class SuperAdminRemittanceReopenReceiptView(APIView):
     def post(self, request, remittance_id):
         record = (
             OTARemittance.objects.select_for_update()
-            .select_related("hotel", "received_by")
+            .select_related("hotel")
             .filter(id=remittance_id)
             .first()
         )
