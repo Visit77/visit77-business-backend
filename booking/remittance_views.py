@@ -132,6 +132,12 @@ def _payment_receipt_url(remittance):
         return None
 
 
+def _absolute_url(request, url):
+    if not url:
+        return None
+    return request.build_absolute_uri(url) if request is not None else url
+
+
 def _filter_remittance_search(queryset, raw_search):
     search = str(raw_search or "").strip()
     if not search:
@@ -304,7 +310,7 @@ def _date_grouped_rows(rows):
     ]
 
 
-def remittance_data(remittance, detail=False):
+def remittance_data(remittance, detail=False, request=None):
     available_amount = remittance.net_remittance_amount - remittance.adjustment_amount
     adjustment_operator = "-" if remittance.adjustment_amount < 0 else "+"
     adjustment_input_amount = abs(remittance.adjustment_amount)
@@ -313,7 +319,13 @@ def remittance_data(remittance, detail=False):
         if remittance.status == OTARemittance.Status.CHECKED
         else remittance.status
     )
-    receipt_url = _payment_receipt_url(remittance)
+    receipt_url = _absolute_url(request, _payment_receipt_url(remittance))
+    hotel_pdf_url = _absolute_url(
+        request, f"/api/v1/admin/remittances/{remittance.id}/pdf/"
+    )
+    superadmin_pdf_url = _absolute_url(
+        request, f"/api/v1/superadmin/remittances/{remittance.id}/pdf/"
+    )
     receipt_is_available = bool(
         receipt_url
         and remittance.status in {
@@ -365,12 +377,8 @@ def remittance_data(remittance, detail=False):
         "can_confirm_receipt": remittance.status == OTARemittance.Status.PAID,
         "receipt_confirmation_required": remittance.status == OTARemittance.Status.PAID,
         "can_view_remittance_pdf": True,
-        "hotel_statement_pdf_url": (
-            f"/api/v1/admin/remittances/{remittance.id}/pdf/"
-        ),
-        "superadmin_statement_pdf_url": (
-            f"/api/v1/superadmin/remittances/{remittance.id}/pdf/"
-        ),
+        "hotel_statement_pdf_url": hotel_pdf_url,
+        "superadmin_statement_pdf_url": superadmin_pdf_url,
         "booking_ids": list(dict.fromkeys(item.booking_id for item in remittance.items.all())),
     }
     if detail:
@@ -530,7 +538,7 @@ class HotelRemittanceListView(APIView):
         total_count = records.count()
         start = (offset - 1) * limit
         page_records = list(records[start:start + limit])
-        results = [remittance_data(item) for item in page_records]
+        results = [remittance_data(item, request=request) for item in page_records]
         total_pages = (total_count + limit - 1) // limit if total_count else 0
         return success({
             "count": total_count,
@@ -590,7 +598,7 @@ class HotelAvailableRevenueView(APIView):
                 "remittance": None,
                 "grouped_items": [],
             })
-        data = remittance_data(record, detail=True)
+        data = remittance_data(record, detail=True, request=request)
         return success({
             "payout_option": hotel.remittance_payout_option,
             "payout_option_label": hotel.get_remittance_payout_option_display(),
@@ -777,7 +785,7 @@ class HotelRemittanceDetailView(APIView):
         record = OTARemittance.objects.select_related("hotel").filter(id=remittance_id, hotel=hotel).first()
         if not record:
             raise ValidationError({"remittance_id": "Remittance was not found."})
-        return success({"remittance": remittance_data(record, detail=True)})
+        return success({"remittance": remittance_data(record, detail=True, request=request)})
 
 
 class HotelRemittancePDFView(APIView):
@@ -819,7 +827,7 @@ class HotelRemittanceReceiveView(APIView):
             settlement_status=Booking.SettlementStatus.RECEIVED, settled_at=record.received_at,
         )
         OTARemittanceAuditLog.objects.create(remittance=record, action="received", actor=actor, actor_name=actor.name)
-        return success({"remittance": remittance_data(record, detail=True)})
+        return success({"remittance": remittance_data(record, detail=True, request=request)})
 
 
 class SuperAdminRemittanceListView(APIView):
@@ -997,7 +1005,10 @@ class SuperAdminRemittanceListView(APIView):
                         OTARemittance.Status.PAID, OTARemittance.Status.RECEIVED,
                     } else None
                 ),
-                "remittance": remittance_data(action_record) if action_record else None,
+                "remittance": (
+                    remittance_data(action_record, request=request)
+                    if action_record else None
+                ),
             })
 
         total_pages = (total_count + limit - 1) // limit if total_count else 0
@@ -1079,7 +1090,7 @@ class SuperAdminRemittanceHistoryView(APIView):
             "has_previous": offset > 1,
             "has_next": offset < total_pages,
             "search": str(search or "").strip(),
-            "results": [remittance_data(item) for item in page_records],
+            "results": [remittance_data(item, request=request) for item in page_records],
         })
 
 
@@ -1093,7 +1104,7 @@ class SuperAdminRemittanceDetailView(APIView):
         ).filter(id=remittance_id).first()
         if not record:
             raise ValidationError({"remittance_id": "Remittance was not found."})
-        return success({"remittance": remittance_data(record, detail=True)})
+        return success({"remittance": remittance_data(record, detail=True, request=request)})
 
 
 class SuperAdminRemittancePDFView(APIView):
@@ -1187,7 +1198,7 @@ class SuperAdminRemittancePayView(APIView):
                 "payment_receipt": record.payment_receipt.name,
             },
         )
-        return success({"remittance": remittance_data(record, detail=True)})
+        return success({"remittance": remittance_data(record, detail=True, request=request)})
 
 
 class SuperAdminRemittanceReopenReceiptView(APIView):
@@ -1233,7 +1244,7 @@ class SuperAdminRemittanceReopenReceiptView(APIView):
         )
         return success({
             "reopened": True,
-            "remittance": remittance_data(record, detail=True),
+            "remittance": remittance_data(record, detail=True, request=request),
         })
 
 
@@ -1307,7 +1318,7 @@ class SuperAdminRemittanceResetToPendingView(APIView):
             "reset": True,
             "action_filter": "need_to_action",
             "action": "pay",
-            "remittance": remittance_data(record, detail=True),
+            "remittance": remittance_data(record, detail=True, request=request),
         })
 
 
