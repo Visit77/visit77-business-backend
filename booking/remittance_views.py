@@ -1232,6 +1232,77 @@ class SuperAdminRemittanceReopenReceiptView(APIView):
         })
 
 
+class SuperAdminRemittanceResetToPendingView(APIView):
+    """Reset one remittance to the unpaid action state for controlled retesting."""
+
+    authentication_classes = [CoreJWTAuthentication]
+    permission_classes = [IsCoreSuperAdmin]
+
+    @transaction.atomic
+    def post(self, request, remittance_id):
+        record = (
+            OTARemittance.objects.select_for_update()
+            .select_related("hotel", "checked_by", "paid_by", "received_by")
+            .filter(id=remittance_id)
+            .first()
+        )
+        if not record:
+            raise ValidationError({"remittance_id": "Remittance was not found."})
+        if record.status == OTARemittance.Status.ACCRUING:
+            raise ValidationError({
+                "status": "A current accruing remittance cannot be reset."
+            })
+
+        actor = _require_passcode_actor(
+            request.data,
+            scope=OTARemittanceActor.Scope.ADMIN,
+            right="payer",
+        )
+        reason = str(request.data.get("reason") or "Remittance action retest").strip()
+        previous_status = record.status
+        previous_receipt = record.payment_receipt.name if record.payment_receipt else ""
+        available_amount = record.net_remittance_amount - record.adjustment_amount
+
+        record.status = OTARemittance.Status.PENDING
+        record.checked_at = None
+        record.checked_by = None
+        record.paid_at = None
+        record.paid_by = None
+        record.received_at = None
+        record.received_by = None
+        record.adjustment_amount = Decimal("0")
+        record.adjustment_note = ""
+        record.net_remittance_amount = available_amount
+        record.payment_reference = ""
+        record.payment_receipt = None
+        record.save(update_fields=[
+            "status", "checked_at", "checked_by", "paid_at", "paid_by",
+            "received_at", "received_by", "adjustment_amount", "adjustment_note",
+            "net_remittance_amount", "payment_reference", "payment_receipt", "updated_at",
+        ])
+        Booking.objects.filter(remittance_items__remittance=record).update(
+            settlement_status=Booking.SettlementStatus.PENDING_REMITTANCE,
+            settled_at=None,
+        )
+        OTARemittanceAuditLog.objects.create(
+            remittance=record,
+            action="reset_to_pending",
+            actor=actor,
+            actor_name=actor.name,
+            metadata={
+                "previous_status": previous_status,
+                "previous_payment_receipt": previous_receipt,
+                "reason": reason,
+            },
+        )
+        return success({
+            "reset": True,
+            "action_filter": "need_to_action",
+            "action": "pay",
+            "remittance": remittance_data(record, detail=True),
+        })
+
+
 class SuperAdminCommissionRateView(APIView):
     authentication_classes = [CoreJWTAuthentication]
     permission_classes = [IsCoreSuperAdmin]

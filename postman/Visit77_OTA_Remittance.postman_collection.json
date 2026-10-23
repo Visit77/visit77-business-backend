@@ -158,6 +158,10 @@
         {
           "name": "Reopen receipt confirmation",
           "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"actor_id\": \"{{admin_actor_id}}\",\n  \"passcode\": \"6543\",\n  \"reason\": \"Hotel must confirm receipt\"\n}"}, "url": "{{booking_base_url}}/superadmin/remittances/{{remittance_id}}/reopen-receipt/"}
+        },
+        {
+          "name": "Reset remittance to pending for retest",
+          "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"actor_id\": \"{{admin_actor_id}}\",\n  \"passcode\": \"6543\",\n  \"reason\": \"Retest need-to-action flow\"\n}"}, "url": "{{booking_base_url}}/superadmin/remittances/{{remittance_id}}/reset-to-pending/"}
         }
       ]
     }

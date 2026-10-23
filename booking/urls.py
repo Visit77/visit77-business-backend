@@ -84,6 +84,7 @@ from booking.remittance_views import (
     SuperAdminRemittancePDFView,
     SuperAdminRemittancePayView,
     SuperAdminRemittanceReopenReceiptView,
+    SuperAdminRemittanceResetToPendingView,
 )
 
 
@@ -123,6 +124,10 @@ urlpatterns = [
     path(
         "superadmin/remittances/<int:remittance_id>/reopen-receipt/",
         SuperAdminRemittanceReopenReceiptView.as_view(),
+    ),
+    path(
+        "superadmin/remittances/<int:remittance_id>/reset-to-pending/",
+        SuperAdminRemittanceResetToPendingView.as_view(),
     ),
     path("superadmin/ota-bookings/", SuperAdminOTABookingListView.as_view()),
     path(
