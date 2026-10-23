@@ -78,6 +78,7 @@ from booking.remittance_views import (
     SuperAdminHotelPayoutOptionView,
     SuperAdminRemittanceActorDeleteView,
     SuperAdminRemittanceActorListCreateView,
+    SuperAdminRemittanceAdjustmentView,
     SuperAdminRemittanceCheckView,
     SuperAdminRemittanceDetailView,
     SuperAdminRemittanceHistoryView,
@@ -85,6 +86,7 @@ from booking.remittance_views import (
     SuperAdminRemittancePDFView,
     SuperAdminRemittancePayView,
     SuperAdminRemittanceReopenReceiptView,
+    SuperAdminRemittanceReceiptView,
     SuperAdminRemittanceResetToPendingView,
 )
 
@@ -122,6 +124,14 @@ urlpatterns = [
     path("superadmin/remittances/<int:remittance_id>/", SuperAdminRemittanceDetailView.as_view()),
     path("superadmin/remittances/<int:remittance_id>/pdf/", SuperAdminRemittancePDFView.as_view()),
     path("superadmin/remittances/<int:remittance_id>/check/", SuperAdminRemittanceCheckView.as_view()),
+    path(
+        "superadmin/remittances/<int:remittance_id>/adjustment/",
+        SuperAdminRemittanceAdjustmentView.as_view(),
+    ),
+    path(
+        "superadmin/remittances/<int:remittance_id>/receipt/",
+        SuperAdminRemittanceReceiptView.as_view(),
+    ),
     path("superadmin/remittances/<int:remittance_id>/pay/", SuperAdminRemittancePayView.as_view()),
     path(
         "superadmin/remittances/<int:remittance_id>/reopen-receipt/",

@@ -138,6 +138,14 @@ def _absolute_url(request, url):
     return request.build_absolute_uri(url) if request is not None else url
 
 
+def _validate_payment_receipt(receipt):
+    extension = str(receipt.name or "").lower().rsplit(".", 1)[-1]
+    if extension not in {"jpg", "jpeg", "pdf"}:
+        raise ValidationError({"receipt": "Only JPEG, JPG, or PDF files are accepted."})
+    if receipt.size > 10 * 1024 * 1024:
+        raise ValidationError({"receipt": "Payment receipt must not exceed 10 MB."})
+
+
 def _filter_remittance_search(queryset, raw_search):
     search = str(raw_search or "").strip()
     if not search:
@@ -356,6 +364,7 @@ def remittance_data(remittance, detail=False, request=None):
             f"{adjustment_input_amount:,.2f}"
         ),
         "adjustment_note": remittance.adjustment_note,
+        "has_adjustment": remittance.adjustment_amount != 0,
         "net_payout": remittance.net_remittance_amount,
         "payment_reference": remittance.payment_reference,
         "payment_receipt_url": receipt_url if receipt_is_available else None,
@@ -1174,6 +1183,152 @@ class SuperAdminRemittanceCheckView(APIView):
         })
 
 
+class SuperAdminRemittanceAdjustmentView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
+    permission_classes = [IsCoreSuperAdmin]
+
+    def _locked_record(self, remittance_id):
+        record = (
+            OTARemittance.objects.select_for_update()
+            .select_related("hotel")
+            .filter(id=remittance_id)
+            .first()
+        )
+        if not record:
+            raise ValidationError({"remittance_id": "Remittance was not found."})
+        if record.status not in {
+            OTARemittance.Status.PENDING,
+            OTARemittance.Status.CHECKED,
+        }:
+            raise ValidationError({
+                "status": "Adjustment can only be changed before payment."
+            })
+        return record
+
+    @transaction.atomic
+    def patch(self, request, remittance_id):
+        record = self._locked_record(remittance_id)
+        raw_amount = request.data.get("adjustment_amount")
+        if raw_amount in (None, ""):
+            raise ValidationError({"adjustment_amount": "This field is required."})
+        try:
+            input_amount = Decimal(str(raw_amount)).quantize(Decimal("0.01"))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValidationError({
+                "adjustment_amount": "Use a positive numeric amount, for example 5000."
+            }) from exc
+        if input_amount <= 0:
+            raise ValidationError({"adjustment_amount": "Amount must be greater than zero."})
+        if input_amount > Decimal("999999999999.99"):
+            raise ValidationError({"adjustment_amount": "Adjustment amount is too large."})
+        operator = str(request.data.get("adjustment_operator") or "").strip()
+        if operator not in {"+", "-"}:
+            raise ValidationError({"adjustment_operator": "Use + or -."})
+        note = str(request.data.get("adjustment_note") or "").strip()
+        if not note:
+            raise ValidationError({"adjustment_note": "A note is required."})
+
+        adjustment = input_amount if operator == "+" else -input_amount
+        available_amount = record.net_remittance_amount - record.adjustment_amount
+        net_payout = available_amount + adjustment
+        if net_payout < 0:
+            raise ValidationError({
+                "adjustment_amount": "Adjustment cannot make net payout negative."
+            })
+        previous_adjustment = record.adjustment_amount
+        record.adjustment_amount = adjustment
+        record.adjustment_note = note
+        record.net_remittance_amount = net_payout
+        record.save(update_fields=[
+            "adjustment_amount", "adjustment_note", "net_remittance_amount", "updated_at",
+        ])
+        OTARemittanceAuditLog.objects.create(
+            remittance=record,
+            action="adjustment_updated",
+            actor_name="Superadmin",
+            metadata={
+                "previous_adjustment_amount": str(previous_adjustment),
+                "adjustment_operator": operator,
+                "adjustment_input_amount": str(input_amount),
+                "adjustment_amount": str(adjustment),
+                "adjustment_note": note,
+                "net_payout": str(net_payout),
+            },
+        )
+        return success({
+            "updated": True,
+            "remittance": remittance_data(record, detail=True, request=request),
+        })
+
+    @transaction.atomic
+    def delete(self, request, remittance_id):
+        record = self._locked_record(remittance_id)
+        previous_adjustment = record.adjustment_amount
+        available_amount = record.net_remittance_amount - previous_adjustment
+        record.adjustment_amount = Decimal("0")
+        record.adjustment_note = ""
+        record.net_remittance_amount = available_amount
+        record.save(update_fields=[
+            "adjustment_amount", "adjustment_note", "net_remittance_amount", "updated_at",
+        ])
+        OTARemittanceAuditLog.objects.create(
+            remittance=record,
+            action="adjustment_deleted",
+            actor_name="Superadmin",
+            metadata={
+                "previous_adjustment_amount": str(previous_adjustment),
+                "net_payout": str(available_amount),
+            },
+        )
+        return success({
+            "deleted": True,
+            "remittance": remittance_data(record, detail=True, request=request),
+        })
+
+
+class SuperAdminRemittanceReceiptView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
+    permission_classes = [IsCoreSuperAdmin]
+
+    @transaction.atomic
+    def patch(self, request, remittance_id):
+        record = (
+            OTARemittance.objects.select_for_update()
+            .select_related("hotel")
+            .filter(id=remittance_id)
+            .first()
+        )
+        if not record:
+            raise ValidationError({"remittance_id": "Remittance was not found."})
+        if record.status not in {
+            OTARemittance.Status.PAID,
+            OTARemittance.Status.RECEIVED,
+        }:
+            raise ValidationError({
+                "status": "Receipt can only be uploaded after payment."
+            })
+        receipt = request.FILES.get("receipt")
+        if not receipt:
+            raise ValidationError({"receipt": "Receipt JPEG, JPG, or PDF is required."})
+        _validate_payment_receipt(receipt)
+        previous_receipt = record.payment_receipt.name if record.payment_receipt else ""
+        record.payment_receipt = receipt
+        record.save(update_fields=["payment_receipt", "updated_at"])
+        OTARemittanceAuditLog.objects.create(
+            remittance=record,
+            action="payment_receipt_updated",
+            actor_name="Superadmin",
+            metadata={
+                "previous_payment_receipt": previous_receipt,
+                "payment_receipt": record.payment_receipt.name,
+            },
+        )
+        return success({
+            "updated": True,
+            "remittance": remittance_data(record, detail=True, request=request),
+        })
+
+
 class SuperAdminRemittancePayView(APIView):
     authentication_classes = [CoreJWTAuthentication]
     permission_classes = [IsCoreSuperAdmin]
@@ -1192,46 +1347,19 @@ class SuperAdminRemittancePayView(APIView):
         }:
             raise ValidationError({"status": "Only an unpaid remittance can be paid."})
         actor = _require_passcode_actor(request.data, scope=OTARemittanceActor.Scope.ADMIN, right="payer")
-        raw_adjustment = request.data.get("adjustment_amount", "0")
-        try:
-            adjustment_input = Decimal(str(raw_adjustment)).quantize(Decimal("0.01"))
-        except (InvalidOperation, TypeError, ValueError) as exc:
-            raise ValidationError({"adjustment_amount": "Use a positive numeric amount, for example 5000."}) from exc
-        if adjustment_input < 0:
-            raise ValidationError({
-                "adjustment_amount": "Amount must be positive; send + or - in adjustment_operator."
-            })
-        if adjustment_input > Decimal("999999999999.99"):
-            raise ValidationError({"adjustment_amount": "Adjustment amount is too large."})
-        adjustment_operator = str(request.data.get("adjustment_operator") or "+").strip()
-        if adjustment_operator not in {"+", "-"}:
-            raise ValidationError({"adjustment_operator": "Use + or -."})
-        adjustment = adjustment_input if adjustment_operator == "+" else -adjustment_input
-        adjustment_note = str(request.data.get("adjustment_note") or "").strip()
-        if adjustment and not adjustment_note:
-            raise ValidationError({"adjustment_note": "A note is required when an adjustment is applied."})
         available_amount = record.net_remittance_amount - record.adjustment_amount
-        net_payout = available_amount + adjustment
-        if net_payout < 0:
-            raise ValidationError({"adjustment_amount": "Adjustment cannot make net payout negative."})
         receipt = request.FILES.get("receipt")
-        if not receipt:
-            raise ValidationError({"receipt": "Payment receipt JPEG, JPG, or PDF is required."})
-        extension = str(receipt.name or "").lower().rsplit(".", 1)[-1]
-        if extension not in {"jpg", "jpeg", "pdf"}:
-            raise ValidationError({"receipt": "Only JPEG, JPG, or PDF files are accepted."})
-        if receipt.size > 10 * 1024 * 1024:
-            raise ValidationError({"receipt": "Payment receipt must not exceed 10 MB."})
+        if receipt:
+            _validate_payment_receipt(receipt)
         record.status, record.paid_at, record.paid_by = OTARemittance.Status.PAID, timezone.now(), actor
-        record.adjustment_amount = adjustment
-        record.adjustment_note = adjustment_note
-        record.net_remittance_amount = net_payout
         record.payment_reference = str(request.data.get("payment_reference") or "").strip()
-        record.payment_receipt = receipt
-        record.save(update_fields=[
-            "status", "paid_at", "paid_by", "adjustment_amount", "adjustment_note",
-            "net_remittance_amount", "payment_reference", "payment_receipt", "updated_at",
-        ])
+        update_fields = [
+            "status", "paid_at", "paid_by", "payment_reference", "updated_at",
+        ]
+        if receipt:
+            record.payment_receipt = receipt
+            update_fields.append("payment_receipt")
+        record.save(update_fields=update_fields)
         Booking.objects.filter(remittance_items__remittance=record).update(
             settlement_status=Booking.SettlementStatus.PAID, settled_at=record.paid_at,
         )
@@ -1239,13 +1367,13 @@ class SuperAdminRemittancePayView(APIView):
             remittance=record, action="paid", actor=actor, actor_name=actor.name,
             metadata={
                 "available_amount": str(available_amount),
-                "adjustment_operator": adjustment_operator,
-                "adjustment_input_amount": str(adjustment_input),
-                "adjustment_amount": str(adjustment),
-                "adjustment_note": adjustment_note,
-                "net_payout": str(net_payout),
+                "adjustment_amount": str(record.adjustment_amount),
+                "adjustment_note": record.adjustment_note,
+                "net_payout": str(record.net_remittance_amount),
                 "payment_reference": record.payment_reference,
-                "payment_receipt": record.payment_receipt.name,
+                "payment_receipt": (
+                    record.payment_receipt.name if record.payment_receipt else ""
+                ),
             },
         )
         return success({"remittance": remittance_data(record, detail=True, request=request)})
