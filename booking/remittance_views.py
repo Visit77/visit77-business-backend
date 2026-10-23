@@ -512,8 +512,13 @@ class HotelRemittanceListView(APIView):
         hotel = _hotel_from_request(request)
         offset, limit = _pagination(request)
         records = (
-            OTARemittance.objects.filter(hotel=hotel)
-            .exclude(status=OTARemittance.Status.ACCRUING)
+            OTARemittance.objects.filter(
+                hotel=hotel,
+                status__in=[
+                    OTARemittance.Status.PAID,
+                    OTARemittance.Status.RECEIVED,
+                ],
+            )
             .select_related("hotel", "checked_by", "paid_by", "received_by")
             .prefetch_related("items")
             .order_by("-period_to", "-id")
