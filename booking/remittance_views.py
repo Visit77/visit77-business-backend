@@ -35,7 +35,7 @@ from booking.remittance_services import (
 from config.response_formatter import success
 
 
-ADMIN_RIGHTS = {"payer"}
+ADMIN_RIGHTS = {"checker", "payer"}
 PASSCODE_RE = re.compile(r"^[0-9]{4}$")
 
 
@@ -314,11 +314,7 @@ def remittance_data(remittance, detail=False, request=None):
     available_amount = remittance.net_remittance_amount - remittance.adjustment_amount
     adjustment_operator = "-" if remittance.adjustment_amount < 0 else "+"
     adjustment_input_amount = abs(remittance.adjustment_amount)
-    display_status = (
-        OTARemittance.Status.PENDING
-        if remittance.status == OTARemittance.Status.CHECKED
-        else remittance.status
-    )
+    display_status = remittance.status
     receipt_url = _absolute_url(request, _payment_receipt_url(remittance))
     hotel_pdf_url = _absolute_url(
         request, f"/api/v1/admin/remittances/{remittance.id}/pdf/"
@@ -363,7 +359,6 @@ def remittance_data(remittance, detail=False, request=None):
         "net_payout": remittance.net_remittance_amount,
         "payment_reference": remittance.payment_reference,
         "payment_receipt_url": receipt_url if receipt_is_available else None,
-        "receipt_file_url": receipt_url if receipt_is_available else None,
         "can_view_payment_receipt": receipt_is_available,
         "status": display_status,
         "system_generated": remittance.system_generated,
@@ -390,7 +385,7 @@ def remittance_data(remittance, detail=False, request=None):
         data["grouped_items"] = _group_remittance_items(remittance, items)
         data["audit_logs"] = [
             _audit_data(log)
-            for log in remittance.audit_logs.select_related("actor").exclude(action="checked")
+            for log in remittance.audit_logs.select_related("actor")
         ]
         data["merchant_verification"] = _merchant_verification_data(remittance.hotel)
     return data
@@ -487,7 +482,9 @@ class SuperAdminRemittanceActorListCreateView(APIView):
             raise ValidationError({"name": "Name is required."})
         _validate_actor_passcode(passcode)
         if not rights or set(rights) - ADMIN_RIGHTS:
-            raise ValidationError({"access_rights": "Select payer."})
+            raise ValidationError({
+                "access_rights": "Select checker, payer, or both."
+            })
         actor = OTARemittanceActor.objects.create(
             scope=OTARemittanceActor.Scope.ADMIN, name=name,
             passcode_hash=make_password(passcode), access_rights=rights,
@@ -893,7 +890,10 @@ class SuperAdminRemittanceListView(APIView):
         action_counts = {
             "all": hotels.count(),
             "need_to_pay": hotels.filter(
-                remittance_action_status__in=outstanding_statuses,
+                remittance_action_status=OTARemittance.Status.CHECKED,
+            ).count(),
+            "need_to_check": hotels.filter(
+                remittance_action_status=OTARemittance.Status.PENDING,
             ).count(),
             "paid": hotels.filter(
                 remittance_action_status__isnull=True,
@@ -906,7 +906,9 @@ class SuperAdminRemittanceListView(APIView):
         }
         action_filter = request.query_params.get("action_filter", "all")
         if action_filter == "need_to_pay":
-            hotels = hotels.filter(remittance_action_status__in=outstanding_statuses)
+            hotels = hotels.filter(remittance_action_status=OTARemittance.Status.CHECKED)
+        elif action_filter == "need_to_check":
+            hotels = hotels.filter(remittance_action_status=OTARemittance.Status.PENDING)
         elif action_filter == "paid":
             hotels = hotels.filter(
                 remittance_action_status__isnull=True,
@@ -921,7 +923,7 @@ class SuperAdminRemittanceListView(APIView):
         elif action_filter != "all":
             raise ValidationError({
                 "action_filter": (
-                    "Use all, need_to_action, need_to_pay, or paid."
+                    "Use all, need_to_action, need_to_check, need_to_pay, or paid."
                 )
             })
 
@@ -963,7 +965,7 @@ class SuperAdminRemittanceListView(APIView):
             action = None
             if action_record:
                 action = {
-                    OTARemittance.Status.PENDING: "pay",
+                    OTARemittance.Status.PENDING: "check",
                     OTARemittance.Status.CHECKED: "pay",
                     OTARemittance.Status.PAID: "paid",
                     OTARemittance.Status.RECEIVED: "paid",
@@ -991,8 +993,13 @@ class SuperAdminRemittanceListView(APIView):
                 "oldest_unpaid_period_from": outstanding[0].period_from if outstanding else None,
                 "action": action,
                 "action_label": action.title() if action else None,
-                "action_required": action == "pay",
-                "can_pay": bool(action_record and action_record.status in outstanding_statuses),
+                "action_required": action in {"check", "pay"},
+                "can_check": bool(
+                    action_record and action_record.status == OTARemittance.Status.PENDING
+                ),
+                "can_pay": bool(
+                    action_record and action_record.status == OTARemittance.Status.CHECKED
+                ),
                 "is_paid": action == "paid",
                 "action_remittance_id": action_record.id if action_record and action else None,
                 "checker": (
@@ -1124,6 +1131,49 @@ class SuperAdminRemittancePDFView(APIView):
         )
 
 
+class SuperAdminRemittanceCheckView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
+    permission_classes = [IsCoreSuperAdmin]
+
+    @transaction.atomic
+    def post(self, request, remittance_id):
+        record = (
+            OTARemittance.objects.select_for_update()
+            .select_related("hotel")
+            .filter(id=remittance_id)
+            .first()
+        )
+        if not record:
+            raise ValidationError({"remittance_id": "Remittance was not found."})
+        if record.status != OTARemittance.Status.PENDING:
+            raise ValidationError({
+                "status": "Only a pending remittance can be checked."
+            })
+        actor = _require_passcode_actor(
+            request.data,
+            scope=OTARemittanceActor.Scope.ADMIN,
+            right="checker",
+        )
+        record.status = OTARemittance.Status.CHECKED
+        record.checked_at = timezone.now()
+        record.checked_by = actor
+        record.save(update_fields=["status", "checked_at", "checked_by", "updated_at"])
+        Booking.objects.filter(remittance_items__remittance=record).update(
+            settlement_status=Booking.SettlementStatus.CHECKED,
+            settled_at=None,
+        )
+        OTARemittanceAuditLog.objects.create(
+            remittance=record,
+            action="checked",
+            actor=actor,
+            actor_name=actor.name,
+        )
+        return success({
+            "checked": True,
+            "remittance": remittance_data(record, detail=True, request=request),
+        })
+
+
 class SuperAdminRemittancePayView(APIView):
     authentication_classes = [CoreJWTAuthentication]
     permission_classes = [IsCoreSuperAdmin]
@@ -1136,11 +1186,8 @@ class SuperAdminRemittancePayView(APIView):
             .filter(id=remittance_id)
             .first()
         )
-        if not record or record.status not in {
-            OTARemittance.Status.PENDING,
-            OTARemittance.Status.CHECKED,
-        }:
-            raise ValidationError({"status": "Only an unpaid remittance can be paid."})
+        if not record or record.status != OTARemittance.Status.CHECKED:
+            raise ValidationError({"status": "Only a checked remittance can be paid."})
         actor = _require_passcode_actor(request.data, scope=OTARemittanceActor.Scope.ADMIN, right="payer")
         raw_adjustment = request.data.get("adjustment_amount", "0")
         try:
@@ -1317,7 +1364,7 @@ class SuperAdminRemittanceResetToPendingView(APIView):
         return success({
             "reset": True,
             "action_filter": "need_to_action",
-            "action": "pay",
+            "action": "check",
             "remittance": remittance_data(record, detail=True, request=request),
         })
 

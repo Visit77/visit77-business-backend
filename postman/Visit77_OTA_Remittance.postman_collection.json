@@ -109,7 +109,7 @@
       "item": [
         {
           "name": "Create payer",
-          "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"Finance Admin\",\n  \"passcode\": \"6543\",\n  \"access_rights\": [\"payer\"]\n}"}, "url": "{{booking_base_url}}/superadmin/remittance-actors/"}
+          "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"Finance Admin\",\n  \"passcode\": \"6543\",\n  \"access_rights\": [\"checker\", \"payer\"]\n}"}, "url": "{{booking_base_url}}/superadmin/remittance-actors/"}
         },
         {
           "name": "List admin actors",
@@ -142,6 +142,10 @@
         {
           "name": "Download remittance statement PDF",
           "request": {"method": "GET", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "url": "{{booking_base_url}}/superadmin/remittances/{{remittance_id}}/pdf/"}
+        },
+        {
+          "name": "Check remittance",
+          "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"actor_id\": \"{{admin_actor_id}}\",\n  \"passcode\": \"6543\"\n}"}, "url": "{{booking_base_url}}/superadmin/remittances/{{remittance_id}}/check/"}
         },
         {
           "name": "Pay remittance",
