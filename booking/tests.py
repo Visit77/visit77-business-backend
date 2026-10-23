@@ -3142,6 +3142,29 @@ class BookingApiTests(BookingServiceTests):
         )
         self.assertNotIn("hotel_cancellation_policy", response.data["data"]["records"][0])
 
+        booking.refresh_from_db()
+        searched = self.client.get(
+            "/api/v1/admin/ota-revenue/",
+            {"search": booking.booking_code[-6:]},
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(searched.status_code, 200, searched.data)
+        self.assertEqual(searched.data["data"]["count"], 1)
+        self.assertEqual(
+            searched.data["data"]["records"][0]["booking_code"],
+            booking.booking_code,
+        )
+
+        searched_by_uuid = self.client.get(
+            "/api/v1/admin/ota-revenue/",
+            {"booking_id": str(booking.id)},
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(searched_by_uuid.status_code, 200, searched_by_uuid.data)
+        self.assertEqual(searched_by_uuid.data["data"]["count"], 1)
+
         check_in_filtered = self.client.get(
             "/api/v1/admin/ota-revenue/",
             {"date_from": self.check_in, "date_to": self.check_in},

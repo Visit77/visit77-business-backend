@@ -4,6 +4,7 @@ from datetime import datetime, time, timedelta, timezone as datetime_timezone
 from decimal import Decimal
 import json
 import re
+import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
@@ -1079,6 +1080,13 @@ class OTARevenueView(APIView):
         if parsed_from and parsed_to and parsed_from > parsed_to:
             raise ValidationError({"date_to": "Must be on or after date_from."})
 
+        booking_search = str(
+            request.query_params.get("search")
+            or request.query_params.get("booking_code")
+            or request.query_params.get("booking_id")
+            or ""
+        ).strip()
+
         raw_limit = request.query_params.get("limit")
         raw_offset = request.query_params.get("offset")
         try:
@@ -1117,6 +1125,16 @@ class OTARevenueView(APIView):
             queryset = queryset.filter(check_in__gte=parsed_from)
         if parsed_to:
             queryset = queryset.filter(check_in__lte=parsed_to)
+        if booking_search:
+            booking_lookup = (
+                Q(booking_code__icontains=booking_search)
+                | Q(reference__icontains=booking_search)
+            )
+            try:
+                booking_lookup |= Q(id=uuid.UUID(booking_search))
+            except (ValueError, AttributeError, TypeError):
+                pass
+            queryset = queryset.filter(booking_lookup)
 
         now = timezone.now()
         records = []
