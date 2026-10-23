@@ -1267,16 +1267,14 @@ class SuperAdminRemittanceReopenReceiptView(APIView):
             raise ValidationError({"remittance_id": "Remittance was not found."})
         if record.status != OTARemittance.Status.RECEIVED:
             raise ValidationError({"status": "Only a received remittance can be reopened."})
-        if record.received_by_id:
-            raise ValidationError({
-                "status": "This remittance was confirmed by the hotel and cannot be reopened."
-            })
         actor = _require_passcode_actor(
             request.data,
             scope=OTARemittanceActor.Scope.ADMIN,
             right="payer",
         )
         reason = str(request.data.get("reason") or "").strip()
+        previous_received_at = record.received_at
+        previous_receiver = _action_actor_data(record.received_by)
         record.status = OTARemittance.Status.PAID
         record.received_at = None
         record.received_by = None
@@ -1290,7 +1288,13 @@ class SuperAdminRemittanceReopenReceiptView(APIView):
             action="receipt_reopened",
             actor=actor,
             actor_name=actor.name,
-            metadata={"reason": reason},
+            metadata={
+                "reason": reason,
+                "previous_received_at": (
+                    previous_received_at.isoformat() if previous_received_at else None
+                ),
+                "previous_receiver": previous_receiver,
+            },
         )
         return success({
             "reopened": True,
