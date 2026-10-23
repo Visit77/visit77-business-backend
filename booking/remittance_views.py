@@ -1242,7 +1242,10 @@ class SuperAdminRemittanceResetToPendingView(APIView):
     def post(self, request, remittance_id):
         record = (
             OTARemittance.objects.select_for_update()
-            .select_related("hotel", "checked_by", "paid_by", "received_by")
+            # Only join the required, non-nullable hotel relation while locking.
+            # PostgreSQL rejects FOR UPDATE when nullable actor relations create
+            # outer joins on the locked query.
+            .select_related("hotel")
             .filter(id=remittance_id)
             .first()
         )
