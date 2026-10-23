@@ -965,7 +965,7 @@ class SuperAdminRemittanceListView(APIView):
             action = None
             if action_record:
                 action = {
-                    OTARemittance.Status.PENDING: "check",
+                    OTARemittance.Status.PENDING: "pay",
                     OTARemittance.Status.CHECKED: "pay",
                     OTARemittance.Status.PAID: "paid",
                     OTARemittance.Status.RECEIVED: "paid",
@@ -993,12 +993,12 @@ class SuperAdminRemittanceListView(APIView):
                 "oldest_unpaid_period_from": outstanding[0].period_from if outstanding else None,
                 "action": action,
                 "action_label": action.title() if action else None,
-                "action_required": action in {"check", "pay"},
+                "action_required": action == "pay",
                 "can_check": bool(
                     action_record and action_record.status == OTARemittance.Status.PENDING
                 ),
                 "can_pay": bool(
-                    action_record and action_record.status == OTARemittance.Status.CHECKED
+                    action_record and action_record.status in outstanding_statuses
                 ),
                 "is_paid": action == "paid",
                 "action_remittance_id": action_record.id if action_record and action else None,
@@ -1186,8 +1186,11 @@ class SuperAdminRemittancePayView(APIView):
             .filter(id=remittance_id)
             .first()
         )
-        if not record or record.status != OTARemittance.Status.CHECKED:
-            raise ValidationError({"status": "Only a checked remittance can be paid."})
+        if not record or record.status not in {
+            OTARemittance.Status.PENDING,
+            OTARemittance.Status.CHECKED,
+        }:
+            raise ValidationError({"status": "Only an unpaid remittance can be paid."})
         actor = _require_passcode_actor(request.data, scope=OTARemittanceActor.Scope.ADMIN, right="payer")
         raw_adjustment = request.data.get("adjustment_amount", "0")
         try:
@@ -1364,7 +1367,7 @@ class SuperAdminRemittanceResetToPendingView(APIView):
         return success({
             "reset": True,
             "action_filter": "need_to_action",
-            "action": "check",
+            "action": "pay",
             "remittance": remittance_data(record, detail=True, request=request),
         })
 
