@@ -170,6 +170,35 @@ def _hotel_city(hotel):
     return value
 
 
+TEST_CITY_ID = 999999
+
+
+def _is_test_city_hotel(hotel):
+    city = _hotel_city(hotel)
+    if isinstance(city, dict):
+        city_id = city.get("id")
+        city_name = city.get("name") or city.get("title")
+    else:
+        city_id = None
+        city_name = city
+    return (
+        str(city_id or "").strip() == str(TEST_CITY_ID)
+        or str(city_name or "").strip().casefold() == "test city"
+    )
+
+
+def _boolean_query_param(request, name, default=False):
+    raw_value = request.query_params.get(name)
+    if raw_value in (None, ""):
+        return default
+    value = str(raw_value).strip().lower()
+    if value in {"true", "1"}:
+        return True
+    if value in {"false", "0"}:
+        return False
+    raise ValidationError({name: "Must be true or false."})
+
+
 def _hotel_refund_policy(hotel):
     policy = (hotel.core_snapshot or {}).get("hotel_cancellation_policy")
     if not isinstance(policy, dict) or not policy.get("type"):
@@ -849,6 +878,8 @@ class SuperAdminRemittanceListView(APIView):
         if offset < 1:
             raise ValidationError({"offset": "Must be a page number starting from 1."})
 
+        is_true = _boolean_query_param(request, "is_true", default=False)
+
         paid_cutoff = timezone.now() - timedelta(days=1)
         outstanding_statuses = [OTARemittance.Status.PENDING, OTARemittance.Status.CHECKED]
 
@@ -869,6 +900,15 @@ class SuperAdminRemittanceListView(APIView):
             .values("status")[:1]
         )
         hotels = Hotel.objects.filter(is_active=True)
+        test_city_hotel_ids = [
+            hotel.id
+            for hotel in hotels.only("id", "core_snapshot")
+            if _is_test_city_hotel(hotel)
+        ]
+        if is_true:
+            hotels = hotels.filter(id__in=test_city_hotel_ids)
+        else:
+            hotels = hotels.exclude(id__in=test_city_hotel_ids)
         business_id = request.query_params.get("business_id")
         if business_id:
             hotels = hotels.filter(core_business_id=business_id)
@@ -1041,6 +1081,7 @@ class SuperAdminRemittanceListView(APIView):
             "payout_option": payout_option,
             "payout_counts": payout_counts,
             "paid_display_hours": 24,
+            "is_true": is_true,
             "results": hotel_rows,
             "hotel_summaries": hotel_rows,
         })

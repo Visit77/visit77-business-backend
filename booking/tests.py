@@ -9116,6 +9116,40 @@ class BookingApiTests(BookingServiceTests):
         }
         self.assertEqual(explicit_hotel_ids, {test_hotel.id})
 
+    def test_superadmin_remittances_filter_test_city_with_is_true(self):
+        test_hotel = Hotel.objects.create(
+            core_business_id=999997,
+            name="Remittance Test City Hotel",
+            package=Hotel.Package.OTA_PMS,
+            core_snapshot={
+                "city": {"id": 999999, "name": "Test City"},
+            },
+        )
+        headers = {"HTTP_AUTHORIZATION": f"Bearer {self.core_access_token()}"}
+
+        default_response = self.client.get(
+            "/api/v1/superadmin/remittances/?offset=1&limit=100",
+            **headers,
+        )
+        self.assertEqual(default_response.status_code, 200, default_response.data)
+        default_hotel_ids = {
+            row["hotel_id"] for row in default_response.data["data"]["results"]
+        }
+        self.assertIn(self.hotel.id, default_hotel_ids)
+        self.assertNotIn(test_hotel.id, default_hotel_ids)
+        self.assertFalse(default_response.data["data"]["is_true"])
+
+        test_city_response = self.client.get(
+            "/api/v1/superadmin/remittances/?is_true=true&offset=1&limit=100",
+            **headers,
+        )
+        self.assertEqual(test_city_response.status_code, 200, test_city_response.data)
+        test_city_hotel_ids = {
+            row["hotel_id"] for row in test_city_response.data["data"]["results"]
+        }
+        self.assertEqual(test_city_hotel_ids, {test_hotel.id})
+        self.assertTrue(test_city_response.data["data"]["is_true"])
+
     def test_superadmin_can_update_ota_follow_up_without_history_table(self):
         booking = Booking.objects.create(
             reference="OTA-FOLLOW-UP",
