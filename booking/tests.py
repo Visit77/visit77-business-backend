@@ -9116,7 +9116,12 @@ class BookingApiTests(BookingServiceTests):
         }
         self.assertEqual(explicit_hotel_ids, {test_hotel.id})
 
-    def test_superadmin_remittances_filter_test_city_with_is_true(self):
+    def test_superadmin_remittances_filter_test_city_with_is_test(self):
+        Hotel.objects.create(
+            core_business_id=999996,
+            name="Zulu Remittance Hotel",
+            package=Hotel.Package.OTA_PMS,
+        )
         test_hotel = Hotel.objects.create(
             core_business_id=999997,
             name="Remittance Test City Hotel",
@@ -9137,10 +9142,29 @@ class BookingApiTests(BookingServiceTests):
         }
         self.assertIn(self.hotel.id, default_hotel_ids)
         self.assertNotIn(test_hotel.id, default_hotel_ids)
-        self.assertFalse(default_response.data["data"]["is_true"])
+        self.assertFalse(default_response.data["data"]["is_test"])
+        default_names = [
+            row["hotel_name"] for row in default_response.data["data"]["results"]
+        ]
+        self.assertEqual(default_names, sorted(default_names, key=str.casefold))
+        self.assertEqual(default_response.data["data"]["order_by"], "name_asc")
+
+        descending_response = self.client.get(
+            "/api/v1/superadmin/remittances/?order_by=name_desc&offset=1&limit=100",
+            **headers,
+        )
+        self.assertEqual(descending_response.status_code, 200, descending_response.data)
+        descending_names = [
+            row["hotel_name"] for row in descending_response.data["data"]["results"]
+        ]
+        self.assertEqual(
+            descending_names,
+            sorted(descending_names, key=str.casefold, reverse=True),
+        )
+        self.assertEqual(descending_response.data["data"]["order_by"], "name_desc")
 
         test_city_response = self.client.get(
-            "/api/v1/superadmin/remittances/?is_true=true&offset=1&limit=100",
+            "/api/v1/superadmin/remittances/?is_test=true&offset=1&limit=100",
             **headers,
         )
         self.assertEqual(test_city_response.status_code, 200, test_city_response.data)
@@ -9148,7 +9172,7 @@ class BookingApiTests(BookingServiceTests):
             row["hotel_id"] for row in test_city_response.data["data"]["results"]
         }
         self.assertEqual(test_city_hotel_ids, {test_hotel.id})
-        self.assertTrue(test_city_response.data["data"]["is_true"])
+        self.assertTrue(test_city_response.data["data"]["is_test"])
 
     def test_superadmin_can_update_ota_follow_up_without_history_table(self):
         booking = Booking.objects.create(

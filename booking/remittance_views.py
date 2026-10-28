@@ -878,7 +878,7 @@ class SuperAdminRemittanceListView(APIView):
         if offset < 1:
             raise ValidationError({"offset": "Must be a page number starting from 1."})
 
-        is_true = _boolean_query_param(request, "is_true", default=False)
+        is_test = _boolean_query_param(request, "is_test", default=False)
 
         paid_cutoff = timezone.now() - timedelta(days=1)
         outstanding_statuses = [OTARemittance.Status.PENDING, OTARemittance.Status.CHECKED]
@@ -905,7 +905,7 @@ class SuperAdminRemittanceListView(APIView):
             for hotel in hotels.only("id", "core_snapshot")
             if _is_test_city_hotel(hotel)
         ]
-        if is_true:
+        if is_test:
             hotels = hotels.filter(id__in=test_city_hotel_ids)
         else:
             hotels = hotels.exclude(id__in=test_city_hotel_ids)
@@ -976,7 +976,13 @@ class SuperAdminRemittanceListView(APIView):
                 )
             })
 
-        hotels = hotels.order_by(Lower("name"), "name", "id")
+        order_by = str(request.query_params.get("order_by", "name_asc")).strip().lower()
+        if order_by == "name_asc":
+            hotels = hotels.order_by(Lower("name"), "name", "id")
+        elif order_by == "name_desc":
+            hotels = hotels.order_by(Lower("name").desc(), "-name", "-id")
+        else:
+            raise ValidationError({"order_by": "Use name_asc or name_desc."})
         total_count = hotels.count()
         start = (offset - 1) * limit
         page_hotels = list(hotels[start:start + limit])
@@ -1081,7 +1087,8 @@ class SuperAdminRemittanceListView(APIView):
             "payout_option": payout_option,
             "payout_counts": payout_counts,
             "paid_display_hours": 24,
-            "is_true": is_true,
+            "is_test": is_test,
+            "order_by": order_by,
             "results": hotel_rows,
             "hotel_summaries": hotel_rows,
         })
