@@ -9174,6 +9174,36 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(test_city_hotel_ids, {test_hotel.id})
         self.assertTrue(test_city_response.data["data"]["is_test"])
 
+    def test_superadmin_remittance_counts_do_not_follow_result_filters(self):
+        Hotel.objects.create(
+            core_business_id=999995,
+            name="Twice Weekly Count Hotel",
+            package=Hotel.Package.OTA_PMS,
+            remittance_payout_option=Hotel.RemittancePayoutOption.TWICE_WEEKLY,
+        )
+        headers = {"HTTP_AUTHORIZATION": f"Bearer {self.core_access_token()}"}
+
+        unfiltered = self.client.get(
+            "/api/v1/superadmin/remittances/?offset=1&limit=100",
+            **headers,
+        )
+        payout_filtered = self.client.get(
+            "/api/v1/superadmin/remittances/"
+            "?payout_option=twice_weekly&action_filter=need_to_action&offset=1&limit=100",
+            **headers,
+        )
+
+        self.assertEqual(unfiltered.status_code, 200, unfiltered.data)
+        self.assertEqual(payout_filtered.status_code, 200, payout_filtered.data)
+        self.assertEqual(
+            payout_filtered.data["data"]["action_counts"],
+            unfiltered.data["data"]["action_counts"],
+        )
+        self.assertEqual(
+            payout_filtered.data["data"]["payout_counts"],
+            unfiltered.data["data"]["payout_counts"],
+        )
+
     def test_superadmin_can_update_ota_follow_up_without_history_table(self):
         booking = Booking.objects.create(
             reference="OTA-FOLLOW-UP",

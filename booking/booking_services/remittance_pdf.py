@@ -24,10 +24,11 @@ from reportlab.pdfbase.ttfonts import TTFont
 
 DOCUMENT_FONT = "NotoSansMyanmar"
 DOCUMENT_FONT_BOLD = "NotoSansMyanmar-Bold"
-BLUE = colors.HexColor("#1649C5")
+BLUE = colors.HexColor("#3039F5")
+SECTION_BLUE = colors.HexColor("#2563EB")
 DATE_BLUE = colors.HexColor("#AAB9CC")
 GRID = colors.HexColor("#7E91AD")
-LIGHT_GREY = colors.HexColor("#E8EBEF")
+LIGHT_GREY = colors.HexColor("#EEF3F9")
 MYANMAR_TEXT_RE = re.compile(r"[\u1000-\u109f\uaa60-\uaa7f\ua9e0-\ua9ff]+")
 
 
@@ -154,7 +155,11 @@ def _item_sections(remittance, normal, bold, small):
         rows.sort(key=lambda item: item.ledger_entry.effective_at, reverse=True)
         if not rows:
             continue
-        sections.extend([Spacer(1, 6 * mm), _paragraph(label, bold), Spacer(1, 2 * mm)])
+        section_label = ParagraphStyle(
+            f"RemittanceItemSection-{item_type}", parent=bold,
+            textColor=SECTION_BLUE, fontSize=9.5, leading=13,
+        )
+        sections.extend([Spacer(1, 6 * mm), _paragraph(label.upper(), section_label), Spacer(1, 2 * mm)])
         data = [[
             _paragraph("Time", bold),
             _paragraph("Booking ID", bold),
@@ -214,8 +219,8 @@ def render_remittance_statement_pdf(remittance):
         pagesize=A4,
         leftMargin=18 * mm,
         rightMargin=18 * mm,
-        topMargin=15 * mm,
-        bottomMargin=15 * mm,
+        topMargin=12 * mm,
+        bottomMargin=10 * mm,
         title=f"Remittance {remittance.reference}",
     )
     styles = getSampleStyleSheet()
@@ -234,26 +239,51 @@ def render_remittance_statement_pdf(remittance):
     )
     right = ParagraphStyle("RemittanceRight", parent=normal, alignment=TA_RIGHT)
     center = ParagraphStyle("RemittanceCenter", parent=bold, alignment=TA_CENTER)
+    issuer_header = ParagraphStyle(
+        "RemittanceIssuerHeader", parent=normal, fontSize=9.5, leading=15,
+    )
+    issuer_name = ParagraphStyle(
+        "RemittanceIssuerName", parent=issuer_header,
+        fontName="Helvetica-Bold", fontSize=16, leading=18,
+    )
 
     story = []
     image_dir = Path(__file__).resolve().parents[1] / "static" / "booking" / "images"
-    logo = Image(str(image_dir / "visit77-icon.png"), width=18 * mm, height=17 * mm)
-    issuer = _paragraph(
-        "Visit 77 Company Limited\n#10-06, Panchan Tower, Bargayar Street, "
-        "San Chaung Tsp., Yangon, Myanmar. 11111\ncontact.myanmar@visit77.com, "
-        "(+95) 988 577 0011",
-        normal,
+    logo = Image(str(image_dir / "visit77-icon.png"), width=25 * mm, height=23.75 * mm)
+    issuer = Table(
+        [
+            [Paragraph("Visit 77 Company Limited", issuer_name)],
+            [Paragraph(
+                "#10-06, Panchan Tower, Bargayar Street, San Chaung Tsp., "
+                "Yangon, Myanmar. 11111",
+                issuer_header,
+            )],
+            [Paragraph(
+                "<u><font color='#0066CC'>contact.myanmar@visit77.com</font></u>, "
+                "(+95) 988 577 0011",
+                issuer_header,
+            )],
+        ],
+        colWidths=[137 * mm],
+        style=TableStyle([
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]),
     )
-    header = Table([[logo, issuer]], colWidths=[26 * mm, 140 * mm])
+    header = Table([[logo, issuer]], colWidths=[29 * mm, 137 * mm])
     header.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
         ("RIGHTPADDING", (0, 0), (-1, -1), 2),
     ]))
-    story.extend([header, Spacer(1, 3 * mm)])
-    rule = Table([[""]], colWidths=[166 * mm], rowHeights=[1.2 * mm])
-    rule.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), BLUE)]))
-    story.extend([rule, Spacer(1, 6 * mm)])
+    story.extend([Spacer(1, 10 * mm), header, Spacer(1, 3 * mm)])
+    rule = Table([[""]], colWidths=[166 * mm], rowHeights=[0.4])
+    rule.setStyle(TableStyle([(
+        "BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#263142"),
+    )]))
+    story.extend([rule, Spacer(1, 8 * mm)])
 
     statement_date = remittance.created_at
     meta = Table([
@@ -317,6 +347,8 @@ def render_remittance_statement_pdf(remittance):
     payment_table = Table(payment_data, colWidths=[105 * mm, 61 * mm])
     payment_table.setStyle(TableStyle([
         ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#999999")),
+        ("BACKGROUND", (0, 6), (-1, 6), LIGHT_GREY),
+        ("BACKGROUND", (0, 8), (-1, 8), LIGHT_GREY),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 5),
         ("RIGHTPADDING", (0, 0), (-1, -1), 5),
@@ -336,14 +368,18 @@ def render_remittance_statement_pdf(remittance):
 
     def decorate_page(canvas, document):
         canvas.saveState()
-        canvas.setFillColor(colors.white)
-        canvas.rect(0, 0, A4[0], A4[1], stroke=0, fill=1)
-        canvas.setStrokeColor(BLUE)
-        canvas.setLineWidth(0.7)
-        canvas.rect(6 * mm, 6 * mm, A4[0] - 12 * mm, A4[1] - 12 * mm)
-        canvas.setFont("Helvetica", 7)
-        canvas.setFillColor(colors.HexColor("#555555"))
-        canvas.drawRightString(A4[0] - 10 * mm, 10 * mm, str(document.page))
+        canvas.setFillColor(BLUE)
+        canvas.rect(
+            -0.5 * mm, A4[1] - (1.8 * mm), A4[0] + (1 * mm), 2 * mm,
+            stroke=0, fill=1,
+        )
+        footer_y = 9 * mm
+        canvas.setStrokeColor(colors.HexColor("#D9E0EA"))
+        canvas.setLineWidth(0.5)
+        canvas.line(18 * mm, footer_y + 5 * mm, A4[0] - 18 * mm, footer_y + 5 * mm)
+        canvas.setFont("Helvetica", 8)
+        canvas.setFillColor(colors.black)
+        canvas.drawRightString(A4[0] - 18 * mm, footer_y, f"Page {document.page}")
         canvas.restoreState()
 
     doc.build(story, onFirstPage=decorate_page, onLaterPages=decorate_page)

@@ -760,6 +760,13 @@ class HotelHeldFundsView(APIView):
         start = (offset - 1) * limit
         page_rows = rows[start:start + limit]
         total_pages = (total_count + limit - 1) // limit if total_count else 0
+        total_held_fund = sum(
+            (row["held_amount"] for row in rows), Decimal("0")
+        )
+        total_refund = sum(
+            (row["refund_amount"] for row in rows), Decimal("0")
+        )
+        date_groups = _date_grouped_rows(page_rows)
         return success({
             "count": total_count,
             "offset": offset,
@@ -768,9 +775,16 @@ class HotelHeldFundsView(APIView):
             "has_previous": offset > 1,
             "has_next": offset < total_pages,
             "currency": hotel.base_currency,
-            "total_held_fund": sum((row["held_amount"] for row in rows), Decimal("0")),
+            "total_held_fund": total_held_fund,
             "results": page_rows,
-            "date_groups": _date_grouped_rows(page_rows),
+            "date_groups": date_groups,
+            "grouped_items": [{
+                "type": OTARevenueLedger.EventType.HELD,
+                "label": "Held Fund",
+                "total_amount": total_held_fund,
+                "total_refund": total_refund,
+                "date_groups": date_groups,
+            }],
         })
 
 
@@ -918,13 +932,34 @@ class SuperAdminRemittanceListView(APIView):
         )
 
         paid_statuses = [OTARemittance.Status.PAID, OTARemittance.Status.RECEIVED]
+        # Facet counts describe the complete hotel scope selected by is_test and
+        # business_id. Keep them stable while payout/action filters only change
+        # the paginated results displayed below.
+        count_hotels = hotels
         payout_counts = {
-            "all": hotels.count(),
-            "weekly": hotels.filter(
+            "all": count_hotels.count(),
+            "weekly": count_hotels.filter(
                 remittance_payout_option=Hotel.RemittancePayoutOption.WEEKLY,
             ).count(),
-            "twice_weekly": hotels.filter(
+            "twice_weekly": count_hotels.filter(
                 remittance_payout_option=Hotel.RemittancePayoutOption.TWICE_WEEKLY,
+            ).count(),
+        }
+        action_counts = {
+            "all": count_hotels.count(),
+            "need_to_pay": count_hotels.filter(
+                remittance_action_status=OTARemittance.Status.CHECKED,
+            ).count(),
+            "need_to_check": count_hotels.filter(
+                remittance_action_status=OTARemittance.Status.PENDING,
+            ).count(),
+            "paid": count_hotels.filter(
+                remittance_action_status__isnull=True,
+                recent_paid_remittance_status__in=paid_statuses,
+            ).count(),
+            "need_to_action": count_hotels.filter(
+                Q(remittance_action_status=OTARemittance.Status.PENDING)
+                | Q(remittance_action_status=OTARemittance.Status.CHECKED)
             ).count(),
         }
         payout_option = request.query_params.get("payout_option", "all")
@@ -936,23 +971,6 @@ class SuperAdminRemittanceListView(APIView):
         elif payout_option != "all":
             raise ValidationError({"payout_option": "Use all, weekly, or twice_weekly."})
 
-        action_counts = {
-            "all": hotels.count(),
-            "need_to_pay": hotels.filter(
-                remittance_action_status=OTARemittance.Status.CHECKED,
-            ).count(),
-            "need_to_check": hotels.filter(
-                remittance_action_status=OTARemittance.Status.PENDING,
-            ).count(),
-            "paid": hotels.filter(
-                remittance_action_status__isnull=True,
-                recent_paid_remittance_status__in=paid_statuses,
-            ).count(),
-            "need_to_action": hotels.filter(
-                Q(remittance_action_status=OTARemittance.Status.PENDING)
-                | Q(remittance_action_status=OTARemittance.Status.CHECKED)
-            ).count(),
-        }
         action_filter = request.query_params.get("action_filter", "all")
         if action_filter == "need_to_pay":
             hotels = hotels.filter(remittance_action_status=OTARemittance.Status.CHECKED)
