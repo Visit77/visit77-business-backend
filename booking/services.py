@@ -3710,10 +3710,26 @@ def paid_room_type_count_no_show_candidates(as_of=None):
 @transaction.atomic
 def restore_paid_room_type_count_no_show_booking(booking, as_of=None):
     """Restore one eligible historical count-mode OTA booking to confirmed."""
-    booking = paid_room_type_count_no_show_candidates(as_of=as_of).select_for_update().filter(
+    as_of = as_of or timezone.localdate()
+    # Lock only the Booking row. The candidate queryset joins payments and
+    # therefore uses DISTINCT; PostgreSQL does not allow FOR UPDATE together
+    # with DISTINCT.
+    booking = Booking.objects.select_for_update().select_related("hotel").filter(
         pk=booking.pk,
     ).first()
-    if not booking:
+    has_paid_payment = bool(booking) and Payment.objects.filter(
+        booking=booking,
+        status=Payment.Status.PAID,
+        paid_at__isnull=False,
+    ).exists()
+    if not (
+        booking
+        and booking.source == Booking.Source.OTA
+        and booking.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT
+        and booking.status == Booking.Status.CANCELED
+        and booking.check_in < as_of
+        and has_paid_payment
+    ):
         raise ValidationError(
             "Only paid, canceled, past OTA room-type-count bookings can be restored."
         )
