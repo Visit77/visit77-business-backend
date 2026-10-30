@@ -3652,12 +3652,18 @@ def auto_cancel_no_show_reservations(as_of=None):
 
     OTA-only hotels cannot perform PMS check-in, so absence of a check-in event
     is not evidence of a no-show and must never auto-cancel their bookings.
+
+    Room-type-count bookings also have no physical-room check-in lifecycle.
+    Keep them confirmed after arrival so their OTA revenue and settlement
+    records remain intact, regardless of the hotel's subscribed package.
     """
     as_of = as_of or timezone.localdate()
     booking_ids = list(
         Booking.objects.filter(
             status=Booking.Status.CONFIRMED,
             check_in__lt=as_of,
+        ).exclude(
+            inventory_mode=Hotel.InventoryMode.ROOM_TYPE_COUNT,
         ).filter(
             Q(hotel__package__in=[Hotel.Package.PMS, Hotel.Package.OTA_PMS])
             | Q(hotel__package=Hotel.Package.FREE)
@@ -3680,6 +3686,59 @@ def auto_cancel_no_show_reservations(as_of=None):
             continue
         canceled += 1
     return canceled
+
+
+def paid_room_type_count_no_show_candidates(as_of=None):
+    """Return paid, past OTA count-mode bookings canceled by the old flow.
+
+    Historical auto no-show cancellations did not record a dedicated audit
+    marker. These deliberately narrow predicates are therefore the recovery
+    boundary agreed for the backfill; unpaid/expired and physical-room
+    bookings are never candidates.
+    """
+    as_of = as_of or timezone.localdate()
+    return Booking.objects.filter(
+        source=Booking.Source.OTA,
+        inventory_mode=Hotel.InventoryMode.ROOM_TYPE_COUNT,
+        status=Booking.Status.CANCELED,
+        check_in__lt=as_of,
+        payments__status=Payment.Status.PAID,
+        payments__paid_at__isnull=False,
+    ).distinct()
+
+
+@transaction.atomic
+def restore_paid_room_type_count_no_show_booking(booking, as_of=None):
+    """Restore one eligible historical count-mode OTA booking to confirmed."""
+    booking = paid_room_type_count_no_show_candidates(as_of=as_of).select_for_update().filter(
+        pk=booking.pk,
+    ).first()
+    if not booking:
+        raise ValidationError(
+            "Only paid, canceled, past OTA room-type-count bookings can be restored."
+        )
+
+    booking.status = Booking.Status.CONFIRMED
+    booking.hold_expires_at = None
+    booking.save(update_fields=["status", "hold_expires_at", "updated_at"])
+
+    if booking.hotel.inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
+        for room_type in RoomType.objects.filter(booking_rooms__booking=booking).distinct():
+            reconcile_daily_inventory_for_room_type(
+                room_type,
+                booking.check_in,
+                booking.check_out,
+            )
+
+    # Keep revenue/settlement data in sync after the booking becomes active
+    # again. Existing ledger entries are updated idempotently.
+    from booking.remittance_services import sync_payment_ledger
+    for payment in booking.payments.filter(
+        status=Payment.Status.PAID,
+        paid_at__isnull=False,
+    ):
+        sync_payment_ledger(payment)
+    return booking
 
 
 @transaction.atomic
