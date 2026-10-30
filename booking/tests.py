@@ -17,7 +17,7 @@ from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, 
 from booking.integrations.core import CoreIntegrationError, sync_business_from_core
 from booking.booking_services.invoice_charges import calculate_invoice_charges
 from booking.serializers import BookingRoomSerializer, InvoiceSerializer, PublicHotelSerializer
-from booking.services import apply_check_in_invoice_adjustments, auto_assign_physical_rooms_for_booking, auto_cancel_no_show_reservations, availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, estimate_booking, record_payment, refund_payment, refund_quote, sync_guest_profile
+from booking.services import apply_check_in_invoice_adjustments, auto_assign_physical_rooms_for_booking, auto_cancel_no_show_reservations, availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, estimate_booking, record_payment, refund_payment, refund_quote, restore_paid_room_type_count_no_show_booking, sync_guest_profile
 
 
 class BookingServiceTests(TestCase):
@@ -1598,6 +1598,60 @@ class BookingServiceTests(TestCase):
         booking.refresh_from_db()
         self.assertEqual(canceled_count, 0)
         self.assertEqual(booking.status, Booking.Status.CONFIRMED)
+
+    def test_auto_cancel_no_show_skips_room_type_count_for_any_package(self):
+        for index, package in enumerate([
+            Hotel.Package.OTA,
+            Hotel.Package.PMS,
+            Hotel.Package.OTA_PMS,
+        ]):
+            with self.subTest(package=package):
+                self.hotel.package = package
+                self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
+                self.hotel.save(update_fields=["package", "inventory_mode"])
+
+                payload = self.payload()
+                payload["check_in"] += timedelta(days=index * 3)
+                payload["check_out"] += timedelta(days=index * 3)
+                booking, _ = create_booking(payload)
+                record_payment(booking, {
+                    "provider": "cash",
+                    "amount": booking.grand_total,
+                    "status": Payment.Status.PAID,
+                })
+                self.assertEqual(
+                    booking.inventory_mode,
+                    Hotel.InventoryMode.ROOM_TYPE_COUNT,
+                )
+
+                canceled_count = auto_cancel_no_show_reservations(
+                    as_of=booking.check_in + timedelta(days=1),
+                )
+
+                booking.refresh_from_db()
+                self.assertEqual(canceled_count, 0)
+                self.assertEqual(booking.status, Booking.Status.CONFIRMED)
+
+    def test_restore_paid_canceled_room_type_count_booking_to_confirmed(self):
+        self.hotel.inventory_mode = Hotel.InventoryMode.ROOM_TYPE_COUNT
+        self.hotel.save(update_fields=["inventory_mode"])
+        booking, _ = create_booking(self.payload())
+        record_payment(booking, {
+            "provider": "cash",
+            "amount": booking.grand_total,
+            "status": Payment.Status.PAID,
+        })
+        cancel_booking(booking)
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, Booking.Status.CANCELED)
+
+        restored = restore_paid_room_type_count_no_show_booking(
+            booking,
+            as_of=booking.check_in + timedelta(days=1),
+        )
+
+        restored.refresh_from_db()
+        self.assertEqual(restored.status, Booking.Status.CONFIRMED)
 
     def test_extra_bed_is_priced_for_each_night(self):
         self.rate_plan.extra_bed_price = Decimal("30000")
