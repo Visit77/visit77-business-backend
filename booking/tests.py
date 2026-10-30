@@ -13,11 +13,12 @@ from rest_framework.test import APIClient
 from rest_framework.exceptions import ValidationError
 from rest_framework_simplejwt.backends import TokenBackend
 
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, InvoiceLine, MealPlan, OTABookingFollowUp, OTABookingNotification, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, InvoiceLine, MealPlan, OTABookingFollowUp, OTABookingNotification, OTAInventoryClosure, OTARevenueLedger, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import CoreIntegrationError, sync_business_from_core
 from booking.booking_services.invoice_charges import calculate_invoice_charges
 from booking.serializers import BookingRoomSerializer, InvoiceSerializer, PublicHotelSerializer
 from booking.services import apply_check_in_invoice_adjustments, auto_assign_physical_rooms_for_booking, auto_cancel_no_show_reservations, availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, estimate_booking, record_payment, refund_payment, refund_quote, restore_paid_room_type_count_no_show_booking, sync_guest_profile
+from booking.remittance_services import sync_payment_ledger
 
 
 class BookingServiceTests(TestCase):
@@ -3252,6 +3253,54 @@ class BookingApiTests(BookingServiceTests):
             "type": "non_refundable",
             "name": "Non-Refundable",
         })
+
+    @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
+    def test_ota_revenue_excludes_later_pms_invoice_payments(self):
+        payload = self.payload()
+        payload["source"] = Booking.Source.OTA
+        booking, _ = create_booking(payload)
+        ota_amount = booking.grand_total
+        ota_payment = record_payment(booking, {
+            "provider": Payment.Provider.CASH,
+            "amount": ota_amount,
+            "status": Payment.Status.PAID,
+        })
+        pms_invoice = create_invoice(
+            booking,
+            Invoice.Type.EXTRA_SERVICE,
+            [{
+                "description": "Hotel-side meal plan",
+                "quantity": 1,
+                "unit_price": Decimal("39900"),
+            }],
+            charge_scope=Invoice.ChargeScope.PMS,
+        )
+        pms_payment = record_payment(booking, {
+            "invoice_id": pms_invoice.id,
+            "provider": Payment.Provider.CASH,
+            "amount": Decimal("39900"),
+            "status": Payment.Status.PAID,
+        })
+
+        sync_payment_ledger(ota_payment)
+        self.assertEqual(sync_payment_ledger(pms_payment), [])
+        self.assertEqual(
+            set(OTARevenueLedger.objects.values_list("payment_id", flat=True)),
+            {ota_payment.id},
+        )
+
+        response = self.client.get(
+            "/api/v1/admin/ota-revenue/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["count"], 1)
+        self.assertEqual(
+            response.data["data"]["records"][0]["gross_amount"],
+            f"{ota_amount:.2f}",
+        )
 
     def test_admin_meal_plan_list_supports_business_default_and_package_type_filters(self):
         matching = MealPlan.objects.create(

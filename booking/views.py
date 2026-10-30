@@ -1116,9 +1116,22 @@ class OTARevenueView(APIView):
                 hotel__core_business_id=core_business_id,
                 source=Booking.Source.OTA,
                 payments__status__in=paid_statuses,
+                payments__invoice__charge_scope=Invoice.ChargeScope.OTA,
+                payments__invoice__invoice_type=Invoice.Type.ROOM_BOOKING,
             )
             .select_related("hotel")
-            .prefetch_related("rooms", "payments")
+            .prefetch_related(
+                "rooms",
+                Prefetch(
+                    "payments",
+                    queryset=Payment.objects.filter(
+                        status__in=paid_statuses,
+                        invoice__charge_scope=Invoice.ChargeScope.OTA,
+                        invoice__invoice_type=Invoice.Type.ROOM_BOOKING,
+                    ).select_related("invoice"),
+                    to_attr="ota_revenue_payments",
+                ),
+            )
             .distinct()
         )
         if parsed_from:
@@ -1150,7 +1163,7 @@ class OTARevenueView(APIView):
             "remaining_amount": Decimal("0"),
         }
         for booking in queryset.order_by("-created_at", "-id"):
-            payments = [payment for payment in booking.payments.all() if payment.status in paid_statuses]
+            payments = booking.ota_revenue_payments
             gross_amount = sum((payment.amount for payment in payments), Decimal("0"))
             refunded_amount = sum((payment.refunded_amount for payment in payments), Decimal("0"))
             remaining_amount = max(gross_amount - refunded_amount, Decimal("0"))
