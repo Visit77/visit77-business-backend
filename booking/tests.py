@@ -13,11 +13,12 @@ from rest_framework.test import APIClient
 from rest_framework.exceptions import ValidationError
 from rest_framework_simplejwt.backends import TokenBackend
 
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, InvoiceLine, MealPlan, OTABookingFollowUp, OTABookingNotification, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, InvoiceLine, MealPlan, OTABookingFollowUp, OTABookingNotification, OTAInventoryClosure, OTARevenueLedger, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import CoreIntegrationError, sync_business_from_core
 from booking.booking_services.invoice_charges import calculate_invoice_charges
 from booking.serializers import BookingRoomSerializer, InvoiceSerializer, PublicHotelSerializer
 from booking.services import apply_check_in_invoice_adjustments, auto_assign_physical_rooms_for_booking, auto_cancel_no_show_reservations, availability_for_hotel, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, ensure_daily_inventory_for_room_type, estimate_booking, record_payment, refund_payment, refund_quote, restore_paid_room_type_count_no_show_booking, sync_guest_profile
+from booking.remittance_services import sync_payment_ledger
 
 
 class BookingServiceTests(TestCase):
@@ -3196,6 +3197,29 @@ class BookingApiTests(BookingServiceTests):
         )
         self.assertNotIn("hotel_cancellation_policy", response.data["data"]["records"][0])
 
+        booking.refresh_from_db()
+        searched = self.client.get(
+            "/api/v1/admin/ota-revenue/",
+            {"search": booking.booking_code[-6:]},
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(searched.status_code, 200, searched.data)
+        self.assertEqual(searched.data["data"]["count"], 1)
+        self.assertEqual(
+            searched.data["data"]["records"][0]["booking_code"],
+            booking.booking_code,
+        )
+
+        searched_by_uuid = self.client.get(
+            "/api/v1/admin/ota-revenue/",
+            {"booking_id": str(booking.id)},
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(searched_by_uuid.status_code, 200, searched_by_uuid.data)
+        self.assertEqual(searched_by_uuid.data["data"]["count"], 1)
+
         check_in_filtered = self.client.get(
             "/api/v1/admin/ota-revenue/",
             {"date_from": self.check_in, "date_to": self.check_in},
@@ -3229,6 +3253,54 @@ class BookingApiTests(BookingServiceTests):
             "type": "non_refundable",
             "name": "Non-Refundable",
         })
+
+    @override_settings(BOOKING_ADMIN_API_KEY="test-admin-key")
+    def test_ota_revenue_excludes_later_pms_invoice_payments(self):
+        payload = self.payload()
+        payload["source"] = Booking.Source.OTA
+        booking, _ = create_booking(payload)
+        ota_amount = booking.grand_total
+        ota_payment = record_payment(booking, {
+            "provider": Payment.Provider.CASH,
+            "amount": ota_amount,
+            "status": Payment.Status.PAID,
+        })
+        pms_invoice = create_invoice(
+            booking,
+            Invoice.Type.EXTRA_SERVICE,
+            [{
+                "description": "Hotel-side meal plan",
+                "quantity": 1,
+                "unit_price": Decimal("39900"),
+            }],
+            charge_scope=Invoice.ChargeScope.PMS,
+        )
+        pms_payment = record_payment(booking, {
+            "invoice_id": pms_invoice.id,
+            "provider": Payment.Provider.CASH,
+            "amount": Decimal("39900"),
+            "status": Payment.Status.PAID,
+        })
+
+        sync_payment_ledger(ota_payment)
+        self.assertEqual(sync_payment_ledger(pms_payment), [])
+        self.assertEqual(
+            set(OTARevenueLedger.objects.values_list("payment_id", flat=True)),
+            {ota_payment.id},
+        )
+
+        response = self.client.get(
+            "/api/v1/admin/ota-revenue/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["count"], 1)
+        self.assertEqual(
+            response.data["data"]["records"][0]["gross_amount"],
+            f"{ota_amount:.2f}",
+        )
 
     def test_admin_meal_plan_list_supports_business_default_and_package_type_filters(self):
         matching = MealPlan.objects.create(
@@ -9146,6 +9218,94 @@ class BookingApiTests(BookingServiceTests):
             for row in test_city_dashboard.data["data"]["results"]
         }
         self.assertEqual(explicit_hotel_ids, {test_hotel.id})
+
+    def test_superadmin_remittances_filter_test_city_with_is_test(self):
+        Hotel.objects.create(
+            core_business_id=999996,
+            name="Zulu Remittance Hotel",
+            package=Hotel.Package.OTA_PMS,
+        )
+        test_hotel = Hotel.objects.create(
+            core_business_id=999997,
+            name="Remittance Test City Hotel",
+            package=Hotel.Package.OTA_PMS,
+            core_snapshot={
+                "city": {"id": 999999, "name": "Test City"},
+            },
+        )
+        headers = {"HTTP_AUTHORIZATION": f"Bearer {self.core_access_token()}"}
+
+        default_response = self.client.get(
+            "/api/v1/superadmin/remittances/?offset=1&limit=100",
+            **headers,
+        )
+        self.assertEqual(default_response.status_code, 200, default_response.data)
+        default_hotel_ids = {
+            row["hotel_id"] for row in default_response.data["data"]["results"]
+        }
+        self.assertIn(self.hotel.id, default_hotel_ids)
+        self.assertNotIn(test_hotel.id, default_hotel_ids)
+        self.assertFalse(default_response.data["data"]["is_test"])
+        default_names = [
+            row["hotel_name"] for row in default_response.data["data"]["results"]
+        ]
+        self.assertEqual(default_names, sorted(default_names, key=str.casefold))
+        self.assertEqual(default_response.data["data"]["order_by"], "name_asc")
+
+        descending_response = self.client.get(
+            "/api/v1/superadmin/remittances/?order_by=name_desc&offset=1&limit=100",
+            **headers,
+        )
+        self.assertEqual(descending_response.status_code, 200, descending_response.data)
+        descending_names = [
+            row["hotel_name"] for row in descending_response.data["data"]["results"]
+        ]
+        self.assertEqual(
+            descending_names,
+            sorted(descending_names, key=str.casefold, reverse=True),
+        )
+        self.assertEqual(descending_response.data["data"]["order_by"], "name_desc")
+
+        test_city_response = self.client.get(
+            "/api/v1/superadmin/remittances/?is_test=true&offset=1&limit=100",
+            **headers,
+        )
+        self.assertEqual(test_city_response.status_code, 200, test_city_response.data)
+        test_city_hotel_ids = {
+            row["hotel_id"] for row in test_city_response.data["data"]["results"]
+        }
+        self.assertEqual(test_city_hotel_ids, {test_hotel.id})
+        self.assertTrue(test_city_response.data["data"]["is_test"])
+
+    def test_superadmin_remittance_counts_do_not_follow_result_filters(self):
+        Hotel.objects.create(
+            core_business_id=999995,
+            name="Twice Weekly Count Hotel",
+            package=Hotel.Package.OTA_PMS,
+            remittance_payout_option=Hotel.RemittancePayoutOption.TWICE_WEEKLY,
+        )
+        headers = {"HTTP_AUTHORIZATION": f"Bearer {self.core_access_token()}"}
+
+        unfiltered = self.client.get(
+            "/api/v1/superadmin/remittances/?offset=1&limit=100",
+            **headers,
+        )
+        payout_filtered = self.client.get(
+            "/api/v1/superadmin/remittances/"
+            "?payout_option=twice_weekly&action_filter=need_to_action&offset=1&limit=100",
+            **headers,
+        )
+
+        self.assertEqual(unfiltered.status_code, 200, unfiltered.data)
+        self.assertEqual(payout_filtered.status_code, 200, payout_filtered.data)
+        self.assertEqual(
+            payout_filtered.data["data"]["action_counts"],
+            unfiltered.data["data"]["action_counts"],
+        )
+        self.assertEqual(
+            payout_filtered.data["data"]["payout_counts"],
+            unfiltered.data["data"]["payout_counts"],
+        )
 
     def test_superadmin_can_update_ota_follow_up_without_history_table(self):
         booking = Booking.objects.create(

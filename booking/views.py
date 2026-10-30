@@ -4,6 +4,7 @@ from datetime import datetime, time, timedelta, timezone as datetime_timezone
 from decimal import Decimal
 import json
 import re
+import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
@@ -1079,6 +1080,13 @@ class OTARevenueView(APIView):
         if parsed_from and parsed_to and parsed_from > parsed_to:
             raise ValidationError({"date_to": "Must be on or after date_from."})
 
+        booking_search = str(
+            request.query_params.get("search")
+            or request.query_params.get("booking_code")
+            or request.query_params.get("booking_id")
+            or ""
+        ).strip()
+
         raw_limit = request.query_params.get("limit")
         raw_offset = request.query_params.get("offset")
         try:
@@ -1108,15 +1116,38 @@ class OTARevenueView(APIView):
                 hotel__core_business_id=core_business_id,
                 source=Booking.Source.OTA,
                 payments__status__in=paid_statuses,
+                payments__invoice__charge_scope=Invoice.ChargeScope.OTA,
+                payments__invoice__invoice_type=Invoice.Type.ROOM_BOOKING,
             )
             .select_related("hotel")
-            .prefetch_related("rooms", "payments")
+            .prefetch_related(
+                "rooms",
+                Prefetch(
+                    "payments",
+                    queryset=Payment.objects.filter(
+                        status__in=paid_statuses,
+                        invoice__charge_scope=Invoice.ChargeScope.OTA,
+                        invoice__invoice_type=Invoice.Type.ROOM_BOOKING,
+                    ).select_related("invoice"),
+                    to_attr="ota_revenue_payments",
+                ),
+            )
             .distinct()
         )
         if parsed_from:
             queryset = queryset.filter(check_in__gte=parsed_from)
         if parsed_to:
             queryset = queryset.filter(check_in__lte=parsed_to)
+        if booking_search:
+            booking_lookup = (
+                Q(booking_code__icontains=booking_search)
+                | Q(reference__icontains=booking_search)
+            )
+            try:
+                booking_lookup |= Q(id=uuid.UUID(booking_search))
+            except (ValueError, AttributeError, TypeError):
+                pass
+            queryset = queryset.filter(booking_lookup)
 
         now = timezone.now()
         records = []
@@ -1132,7 +1163,7 @@ class OTARevenueView(APIView):
             "remaining_amount": Decimal("0"),
         }
         for booking in queryset.order_by("-created_at", "-id"):
-            payments = [payment for payment in booking.payments.all() if payment.status in paid_statuses]
+            payments = booking.ota_revenue_payments
             gross_amount = sum((payment.amount for payment in payments), Decimal("0"))
             refunded_amount = sum((payment.refunded_amount for payment in payments), Decimal("0"))
             remaining_amount = max(gross_amount - refunded_amount, Decimal("0"))

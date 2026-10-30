@@ -10,14 +10,16 @@
     {"key": "superadmin_token", "value": ""},
     {"key": "admin_actor_id", "value": ""},
     {"key": "hotel_actor_id", "value": ""},
-    {"key": "remittance_id", "value": ""}
+    {"key": "hotel_id", "value": ""},
+    {"key": "remittance_id", "value": ""},
+    {"key": "remittance_reference", "value": ""}
   ],
   "item": [
     {
       "name": "Hotel",
       "item": [
         {
-          "name": "Create hotel checker",
+          "name": "Create hotel payee",
           "request": {
             "method": "POST",
             "header": [
@@ -25,19 +27,19 @@
               {"key": "X-Booking-Business-ID", "value": "{{business_id}}"},
               {"key": "Content-Type", "value": "application/json"}
             ],
-            "body": {"mode": "raw", "raw": "{\n  \"name\": \"Hotel Checker One\",\n  \"passcode\": \"123456\"\n}"},
+            "body": {"mode": "raw", "raw": "{\n  \"name\": \"Hotel Payee One\",\n  \"passcode\": \"1234\"\n}"},
             "url": "{{booking_base_url}}/admin/remittance-checkers/"
           }
         },
         {
-          "name": "List hotel checkers",
+          "name": "List hotel payees",
           "request": {"method": "GET", "header": [
             {"key": "X-Booking-Admin-Key", "value": "{{booking_admin_key}}"},
             {"key": "X-Booking-Business-ID", "value": "{{business_id}}"}
           ], "url": "{{booking_base_url}}/admin/remittance-checkers/"}
         },
         {
-          "name": "Remove hotel checker",
+          "name": "Remove hotel payee",
           "request": {"method": "DELETE", "header": [
             {"key": "X-Booking-Admin-Key", "value": "{{booking_admin_key}}"},
             {"key": "X-Booking-Business-ID", "value": "{{business_id}}"}
@@ -51,11 +53,32 @@
           ], "url": "{{booking_base_url}}/admin/ota-revenue/?status=all"}
         },
         {
-          "name": "List remittances",
+          "name": "Current week available revenue",
           "request": {"method": "GET", "header": [
             {"key": "X-Booking-Admin-Key", "value": "{{booking_admin_key}}"},
             {"key": "X-Booking-Business-ID", "value": "{{business_id}}"}
-          ], "url": "{{booking_base_url}}/admin/remittances/"}
+          ], "url": "{{booking_base_url}}/admin/ota-revenue/available/"}
+        },
+        {
+          "name": "Current held funds",
+          "request": {"method": "GET", "header": [
+            {"key": "X-Booking-Admin-Key", "value": "{{booking_admin_key}}"},
+            {"key": "X-Booking-Business-ID", "value": "{{business_id}}"}
+          ], "url": "{{booking_base_url}}/admin/ota-revenue/held-funds/?offset=1&limit=20"}
+        },
+        {
+          "name": "Refund history",
+          "request": {"method": "GET", "header": [
+            {"key": "X-Booking-Admin-Key", "value": "{{booking_admin_key}}"},
+            {"key": "X-Booking-Business-ID", "value": "{{business_id}}"}
+          ], "url": "{{booking_base_url}}/admin/ota-revenue/refunds/?offset=1&limit=20"}
+        },
+        {
+          "name": "Completed week remittance history",
+          "request": {"method": "GET", "header": [
+            {"key": "X-Booking-Admin-Key", "value": "{{booking_admin_key}}"},
+            {"key": "X-Booking-Business-ID", "value": "{{business_id}}"}
+          ], "url": "{{booking_base_url}}/admin/remittances/?search={{remittance_reference}}&offset=1&limit=20"}
         },
         {
           "name": "Remittance detail with booking IDs",
@@ -65,12 +88,19 @@
           ], "url": "{{booking_base_url}}/admin/remittances/{{remittance_id}}/"}
         },
         {
+          "name": "Download remittance statement PDF",
+          "request": {"method": "GET", "header": [
+            {"key": "X-Booking-Admin-Key", "value": "{{booking_admin_key}}"},
+            {"key": "X-Booking-Business-ID", "value": "{{business_id}}"}
+          ], "url": "{{booking_base_url}}/admin/remittances/{{remittance_id}}/pdf/"}
+        },
+        {
           "name": "Confirm received",
           "request": {"method": "POST", "header": [
             {"key": "X-Booking-Admin-Key", "value": "{{booking_admin_key}}"},
             {"key": "X-Booking-Business-ID", "value": "{{business_id}}"},
             {"key": "Content-Type", "value": "application/json"}
-          ], "body": {"mode": "raw", "raw": "{\n  \"actor_id\": \"{{hotel_actor_id}}\",\n  \"passcode\": \"123456\"\n}"}, "url": "{{booking_base_url}}/admin/remittances/{{remittance_id}}/receive/"}
+          ], "body": {"mode": "raw", "raw": "{\n  \"actor_id\": \"{{hotel_actor_id}}\",\n  \"passcode\": \"1234\"\n}"}, "url": "{{booking_base_url}}/admin/remittances/{{remittance_id}}/receive/"}
         }
       ]
     },
@@ -78,8 +108,8 @@
         "name": "Visit77 Superadmin",
       "item": [
         {
-          "name": "Create checker and payer",
-          "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"Finance Admin\",\n  \"passcode\": \"654321\",\n  \"access_rights\": [\"checker\", \"payer\"]\n}"}, "url": "{{booking_base_url}}/superadmin/remittance-actors/"}
+          "name": "Create payer",
+          "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"Finance Admin\",\n  \"passcode\": \"6543\",\n  \"access_rights\": [\"checker\", \"payer\"]\n}"}, "url": "{{booking_base_url}}/superadmin/remittance-actors/"}
         },
         {
           "name": "List admin actors",
@@ -94,20 +124,58 @@
           "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"package\": \"ota\",\n  \"rate\": \"5.00\"\n}"}, "url": "{{booking_base_url}}/superadmin/remittance-commission-rates/"}
         },
         {
+          "name": "Get hotel payout option",
+          "request": {"method": "GET", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "url": "{{booking_base_url}}/superadmin/hotels/{{hotel_id}}/remittance-payout-option/"}
+        },
+        {
+          "name": "Set hotel payout option",
+          "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"payout_option\": \"twice_weekly\"\n}"}, "url": "{{booking_base_url}}/superadmin/hotels/{{hotel_id}}/remittance-payout-option/"}
+        },
+        {
           "name": "List remittances",
-          "request": {"method": "GET", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "url": "{{booking_base_url}}/superadmin/remittances/?offset=1&limit=20"}
+          "request": {"method": "GET", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "url": "{{booking_base_url}}/superadmin/remittances/?payout_option=all&action_filter=need_to_action&offset=1&limit=20"}
         },
         {
           "name": "Remittance history",
-          "request": {"method": "GET", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "url": "{{booking_base_url}}/superadmin/remittances/history/?business_id={{business_id}}&offset=1&limit=20"}
+          "request": {"method": "GET", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "url": "{{booking_base_url}}/superadmin/remittances/history/?business_id={{business_id}}&search={{remittance_reference}}&offset=1&limit=20"}
+        },
+        {
+          "name": "Download remittance statement PDF",
+          "request": {"method": "GET", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "url": "{{booking_base_url}}/superadmin/remittances/{{remittance_id}}/pdf/"}
         },
         {
           "name": "Check remittance",
-          "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"actor_id\": \"{{admin_actor_id}}\",\n  \"passcode\": \"654321\"\n}"}, "url": "{{booking_base_url}}/superadmin/remittances/{{remittance_id}}/check/"}
+          "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"actor_id\": \"{{admin_actor_id}}\",\n  \"passcode\": \"6543\"\n}"}, "url": "{{booking_base_url}}/superadmin/remittances/{{remittance_id}}/check/"}
+        },
+        {
+          "name": "Create or update remittance adjustment",
+          "request": {"method": "PATCH", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"adjustment_operator\": \"+\",\n  \"adjustment_amount\": \"5000\",\n  \"adjustment_note\": \"Manual payout correction\"\n}"}, "url": "{{booking_base_url}}/superadmin/remittances/{{remittance_id}}/adjustment/"}
+        },
+        {
+          "name": "Delete remittance adjustment",
+          "request": {"method": "DELETE", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "url": "{{booking_base_url}}/superadmin/remittances/{{remittance_id}}/adjustment/"}
         },
         {
           "name": "Pay remittance",
-          "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"actor_id\": \"{{admin_actor_id}}\",\n  \"passcode\": \"654321\",\n  \"payment_reference\": \"BANK-TXN-001\"\n}"}, "url": "{{booking_base_url}}/superadmin/remittances/{{remittance_id}}/pay/"}
+          "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "body": {"mode": "formdata", "formdata": [
+            {"key": "actor_id", "value": "{{admin_actor_id}}", "type": "text"},
+            {"key": "passcode", "value": "6543", "type": "text"},
+            {"key": "payment_reference", "value": "BANK-TXN-001", "type": "text"}
+          ]}, "url": "{{booking_base_url}}/superadmin/remittances/{{remittance_id}}/pay/"}
+        },
+        {
+          "name": "Upload or replace payment receipt",
+          "request": {"method": "PATCH", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "body": {"mode": "formdata", "formdata": [
+            {"key": "receipt", "type": "file", "src": []}
+          ]}, "url": "{{booking_base_url}}/superadmin/remittances/{{remittance_id}}/receipt/"}
+        },
+        {
+          "name": "Reopen receipt confirmation",
+          "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"actor_id\": \"{{admin_actor_id}}\",\n  \"passcode\": \"6543\",\n  \"reason\": \"Hotel must confirm receipt\"\n}"}, "url": "{{booking_base_url}}/superadmin/remittances/{{remittance_id}}/reopen-receipt/"}
+        },
+        {
+          "name": "Reset remittance to pending for retest",
+          "request": {"method": "POST", "auth": {"type": "bearer", "bearer": [{"key": "token", "value": "{{superadmin_token}}", "type": "string"}]}, "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"actor_id\": \"{{admin_actor_id}}\",\n  \"passcode\": \"6543\",\n  \"reason\": \"Retest need-to-action flow\"\n}"}, "url": "{{booking_base_url}}/superadmin/remittances/{{remittance_id}}/reset-to-pending/"}
         }
       ]
     }

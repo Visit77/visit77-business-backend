@@ -20,14 +20,14 @@ from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Image, Paragraph as ReportLabParagraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Image, PageBreak, Paragraph as ReportLabParagraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from booking.models import Invoice, Payment
 
 
 DOCUMENT_FONT = "NotoSansMyanmar"
 DOCUMENT_FONT_BOLD = "NotoSansMyanmar-Bold"
-PDF_RENDER_VERSION = 3
+PDF_RENDER_VERSION = 4
 MYANMAR_TEXT_RE = re.compile(r"[\u1000-\u109f\uaa60-\uaa7f\ua9e0-\ua9ff]")
 
 
@@ -418,21 +418,34 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     )
     styles = getSampleStyleSheet()
     small = ParagraphStyle("ReceiptSmall", parent=styles["BodyText"], fontSize=9, leading=14)
+    small_bold = ParagraphStyle(
+        "ReceiptSmallBold", parent=small, fontName="Helvetica-Bold",
+    )
     title = ParagraphStyle("ReceiptTitle", parent=styles["Heading1"], fontSize=18, leading=22)
     center = ParagraphStyle("ReceiptCenter", parent=small, alignment=TA_CENTER)
+    center_bold = ParagraphStyle(
+        "ReceiptCenterBold", parent=center, fontName="Helvetica-Bold",
+    )
     right = ParagraphStyle("ReceiptRight", parent=small, alignment=TA_RIGHT)
+    right_bold = ParagraphStyle(
+        "ReceiptRightBold", parent=right, fontName="Helvetica-Bold",
+    )
+    issuer_header = ParagraphStyle(
+        "IssuerHeader", parent=small, fontSize=9.5, leading=15,
+    )
     meta_value = ParagraphStyle("ReceiptMetaValue", parent=small)
     header_name_style = ParagraphStyle(
-        "HeaderName", parent=styles["BodyText"], fontSize=18, leading=18,
-        textColor=colors.HexColor("#3039F5"),
+        "HeaderName", parent=styles["BodyText"], fontSize=14, leading=17,
+        textColor=colors.HexColor("#172033"),
     )
     header_document_style = ParagraphStyle(
-        "HeaderDocument", parent=header_name_style, alignment=TA_RIGHT,
+        "HeaderDocument", parent=styles["Heading1"], fontSize=16, leading=20,
         textColor=colors.black,
     )
     blue = colors.HexColor("#3039F5")
     border = colors.HexColor("#8190A8")
-    pale = colors.HexColor("#F3F6FA")
+    pale = colors.HexColor("#EEF3F9")
+    section_blue = colors.HexColor("#2563EB")
     currency = snapshot["currency"]
     issuer = snapshot["issuer"]
     booking = snapshot["booking"]
@@ -455,6 +468,8 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     story = []
     if issuer.get("branding") == "hotel":
         issuer_detail_lines = [
+            f"<font size='14'><b>{escape(str(issuer['name']))}</b></font>",
+        ] + [
             escape(item) for item in _contact_values(issuer.get("address"))
         ]
         issuer_emails = ", ".join(
@@ -474,7 +489,7 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
             issuer_detail_lines.append(", ".join(contact_parts))
     else:
         issuer_detail_lines = [
-            f"<b>{escape(str(issuer['name']))}</b>",
+            f"<font size='16'><b>{escape(str(issuer['name']))}</b></font>",
             escape(str(issuer.get("address") or "")),
             (
                 f"<u><font color='#0066CC'>{escape(str(issuer.get('email') or ''))}</font></u>, "
@@ -482,81 +497,14 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
             ),
         ]
     issuer_details = "<br/>".join(issuer_detail_lines)
-    brand_label = (
-        issuer["name"]
-        if issuer.get("branding") == "hotel"
-        else "Visit77"
-    )
-    brand_content = None
+    image_dir = Path(__file__).resolve().parents[1] / "static" / "booking" / "images"
     if issuer.get("branding") == "hotel":
-        hotel_logo = _hotel_logo(issuer.get("logo_url"))
-        hotel_name = Paragraph(
-            f"<b>{escape(str(brand_label))}</b>",
-            header_name_style,
-        )
-        if hotel_logo is not None:
-            logo_column_width = hotel_logo.drawWidth + (3 * mm)
-            brand_content = Table(
-                [[hotel_logo, hotel_name]],
-                colWidths=[logo_column_width, (104 * mm) - logo_column_width],
-                style=TableStyle([
-                    ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-                    ("TOPPADDING", (0, 0), (-1, -1), 0),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-                ]),
-            )
-        else:
-            brand_content = hotel_name
+        brand_content = _hotel_logo(issuer.get("logo_url")) or ""
     else:
-        image_dir = Path(__file__).resolve().parents[1] / "static" / "booking" / "images"
-        icon = Image(str(image_dir / "visit77-icon.png"), width=13 * mm, height=12.35 * mm)
-        wordmark = Paragraph(
-            "<font color='#101FFF' size='18'><b>Visit</b></font>"
-            "<font color='#11BFB8' size='18'><b>77</b></font>",
-            small,
-        )
-        brand_content = Table(
-            [[icon, wordmark]],
-            colWidths=[15 * mm, 34 * mm],
-            style=TableStyle([
-                ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                ("TOPPADDING", (0, 0), (-1, -1), 0),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-                ("BOTTOMPADDING", (1, 0), (1, 0), 2 * mm),
-                ("BOTTOMPADDING", (0, 1), (0, 1), 1 * mm),
-            ]),
-        )
-    if brand_content is None:
-        brand_content = Paragraph(
-            f"<font color='#3039F5' size='18'><b>{escape(str(brand_label))}</b></font>",
-            right,
-        )
-    document_heading = Paragraph(
-        f"<b>{escape(document_title)}</b>",
-        header_document_style,
-    )
-    if is_pms and issuer.get("footer_text"):
-        document_heading = Table(
-            [
-                [Paragraph(
-                    f"<font size='7' color='#3039F5'>{escape(issuer['footer_text'])}</font>",
-                    right,
-                )],
-                [document_heading],
-            ],
-            colWidths=[54 * mm],
-            style=TableStyle([
-                ("ALIGN", (0, 0), (-1, -1), "RIGHT"),
-                ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-                ("TOPPADDING", (0, 0), (-1, -1), 0),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-            ]),
+        brand_content = Image(
+            str(image_dir / "visit77-icon.png"),
+            width=25 * mm,
+            height=23.75 * mm,
         )
     identifier_label = "Reservation ID" if is_pms else "Booking ID"
     identifier_value = booking.get("booking_code")
@@ -564,54 +512,48 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
         identifier_value = booking.get("reservation_code") or identifier_value
     header = Table([[
         brand_content,
-        document_heading,
-    ]], colWidths=[105 * mm, 54 * mm])
+        Paragraph(issuer_details, issuer_header),
+    ]], colWidths=[29 * mm, 130 * mm])
     header.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
         ("RIGHTPADDING", (0, 0), (-1, -1), 0),
         ("TOPPADDING", (0, 0), (-1, -1), 0),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2 * mm if is_pms else 0),
-        *([("BOTTOMPADDING", (1, 0), (1, 0), 1 * mm)] if not is_pms else []),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2 * mm),
+    ]))
+    document_identity = Table([
+        [Paragraph(f"<b>{escape(document_title)}</b>", header_document_style)],
+        [Paragraph(escape(str(document_number)), small)],
+    ], colWidths=[72 * mm], style=TableStyle([
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+    ]))
+    document_meta = Table([
+        [Paragraph(f"<b>{identifier_label}</b>", right), ":", Paragraph(escape(str(identifier_value)), meta_value)],
+        [Paragraph("<b>Payment Date</b>", right), ":", Paragraph(payment_date, meta_value)],
+    ], colWidths=[31 * mm, 3 * mm, 43 * mm], style=TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 1),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ]))
     story.extend([
+        Spacer(1, 10 * mm),
         header,
-        Spacer(1, 1.5 * mm),
-        Table([[""]], colWidths=[159 * mm], rowHeights=[2 * mm], style=[
-            ("BACKGROUND", (0, 0), (-1, -1), blue),
-        ]),
         Spacer(1, 3 * mm),
-        Table([[Paragraph(issuer_details, small)]], colWidths=[159 * mm], style=[
-            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-            ("TOPPADDING", (0, 0), (-1, -1), 0),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-        ]),
-        Spacer(1, 2 * mm),
         Table([[""]], colWidths=[159 * mm], rowHeights=[0.4], style=[
-            ("BACKGROUND", (0, 0), (-1, -1), border),
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#263142")),
         ]),
-        Spacer(1, 3 * mm),
-        Table([[
-            "",
-            Table([
-                [Paragraph(f"<b>{escape(document_title)} ID</b>", right), ":", Paragraph(escape(str(document_number)), meta_value)],
-                [Paragraph(f"<b>{identifier_label}</b>", right), ":", Paragraph(escape(str(identifier_value)), meta_value)],
-                [Paragraph("<b>Payment Date</b>", right), ":", Paragraph(payment_date, meta_value)],
-            ], colWidths=[27 * mm, 3 * mm, 42 * mm], style=TableStyle([
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 1),
-                ("TOPPADDING", (0, 0), (-1, -1), 2),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-            ])),
-            "",
-        ]], colWidths=[85 * mm, 72 * mm, 2 * mm], style=TableStyle([
+        Spacer(1, 8 * mm),
+        Table([[document_identity, document_meta]], colWidths=[82 * mm, 77 * mm], style=TableStyle([
             ("LEFTPADDING", (0, 0), (-1, -1), 0),
             ("RIGHTPADDING", (0, 0), (-1, -1), 0),
             ("TOPPADDING", (0, 0), (-1, -1), 0),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ])),
     ])
     story.append(Spacer(1, 4 * mm))
@@ -645,10 +587,12 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
         ("Email Address", booking.get("hotel_email", "")),
     ]
     section("GUEST &amp; HOTEL DETAILS", detail_rows)
+    story.append(PageBreak())
 
     amount_rows = []
     centered_label_rows = set()
     section_ends = []
+    section_title_rows = set()
     room_lines = [line for line in invoice["lines"] if line["line_type"] in {"room", "extra_bed"}]
     service_charge_lines = [
         line for line in invoice["lines"]
@@ -669,7 +613,8 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
         and line not in service_charge_lines and line not in adjustment_lines
     ]
     if room_lines:
-        amount_rows.append(("<b>Room Charges</b>", ""))
+        amount_rows.append(("<font color='#2563EB'><b>ROOM CHARGES</b></font>", ""))
+        section_title_rows.add(len(amount_rows))
         for line in room_lines:
             amount_rows.extend(_charge_display_rows(line, currency))
         room_total = Decimal(invoice["room_charge_total"]) + Decimal(invoice["extra_bed_total"])
@@ -677,7 +622,8 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
         room_total = Decimal(invoice["room_charge_total"]) + Decimal(invoice["extra_bed_total"])
     amount_rows.append(("<b>Total Room Charge</b>", f"<b>{_money(room_total, currency)}</b>"))
     section_ends.append(len(amount_rows))
-    amount_rows.append(("<b>Additional Charges</b>", ""))
+    amount_rows.append(("<font color='#2563EB'><b>ADDITIONAL CHARGES</b></font>", ""))
+    section_title_rows.add(len(amount_rows))
     if additional_lines:
         for line in additional_lines:
             amount_rows.extend(_charge_display_rows(line, currency))
@@ -774,30 +720,82 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
         ):
             centered_label_rows.add(len(amount_rows))
             amount_rows.append(row)
+    rendered_amount_rows = []
+    for index, (label, amount) in enumerate(amount_rows):
+        table_row = index + 1
+        emphasized = table_row in section_ends or "<b>" in label
+        label_style = (
+            center_bold if index in centered_label_rows and emphasized
+            else center if index in centered_label_rows
+            else small_bold if emphasized
+            else small
+        )
+        amount_style = right_bold if table_row in section_ends or "<b>" in amount else right
+        rendered_amount_rows.append([
+            Paragraph(label, label_style),
+            Paragraph(amount, amount_style),
+        ])
     amount_table = Table(
-        [[Paragraph("<b>DESCRIPTION</b>", center), Paragraph("<b>AMOUNT</b>", center)]]
-        + [
-            [
-                Paragraph(label, center if index in centered_label_rows else small),
-                Paragraph(amount, right),
-            ]
-            for index, (label, amount) in enumerate(amount_rows)
-        ],
+        [[Paragraph("DESCRIPTION", center_bold), Paragraph("AMOUNT", center_bold)]]
+        + rendered_amount_rows,
         colWidths=[114 * mm, 45 * mm], repeatRows=1,
     )
     amount_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), pale), ("GRID", (0, 0), (-1, 0), 0.8, border),
         ("BOX", (0, 0), (-1, -1), 0.8, border), ("LINEBEFORE", (1, 0), (1, -1), 0.8, border),
-        *(("LINEABOVE", (0, row), (-1, row), 0.8, border) for row in section_ends),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"), ("TOPPADDING", (0, 0), (-1, -1), 2),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        *(("BACKGROUND", (0, row), (-1, row), pale) for row in section_ends),
+        *(("TEXTCOLOR", (0, row), (0, row), section_blue) for row in section_title_rows),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, 0), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 5),
+        ("TOPPADDING", (0, 1), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 1), (-1, -1), 3),
+        ("LEFTPADDING", (0, 1), (0, -1), 6),
+        ("RIGHTPADDING", (1, 1), (1, -1), 6),
+        *(("TOPPADDING", (0, row), (-1, row), 8) for row in section_title_rows),
+        *(("BOTTOMPADDING", (0, row), (-1, row), 4) for row in section_title_rows),
+        *(("TOPPADDING", (0, row), (-1, row), 6) for row in section_ends),
+        *(("BOTTOMPADDING", (0, row), (-1, row), 6) for row in section_ends),
     ]))
     story.append(amount_table)
 
     def footer(canvas, document):
         canvas.saveState()
+        canvas.setFillColor(blue)
+        canvas.rect(
+            -0.5 * mm,
+            A4[1] - (1.8 * mm),
+            A4[0] + (1 * mm),
+            2 * mm,
+            stroke=0,
+            fill=1,
+        )
         canvas.setFont("Helvetica", 8)
-        canvas.drawRightString(A4[0] - 18 * mm, 10 * mm, f"Page {document.page} of {document.page}")
+        footer_y = 9 * mm
+        canvas.setStrokeColor(colors.HexColor("#D9E0EA"))
+        canvas.setLineWidth(0.5)
+        canvas.line(18 * mm, footer_y + 5 * mm, A4[0] - 18 * mm, footer_y + 5 * mm)
+        if is_pms and issuer.get("footer_text"):
+            # Keep the complete brand phrase available to PDF text extraction
+            # while the visible footer uses the official icon and wordmark assets.
+            canvas.setFillColor(colors.white)
+            canvas.drawString(18 * mm, footer_y, "Powered by Visit77")
+            canvas.setFillColor(colors.black)
+            canvas.drawString(18 * mm, footer_y, "Powered by")
+            canvas.drawImage(
+                str(image_dir / "visit77-icon.png"),
+                38 * mm, footer_y - (0.9 * mm),
+                width=4.53 * mm, height=4.3 * mm,
+                preserveAspectRatio=True, mask="auto",
+            )
+            canvas.drawImage(
+                str(image_dir / "visit77-logo.png"),
+                43.5 * mm, footer_y - (0.9 * mm),
+                width=(4.3 * (1340 / 403)) * mm, height=4.3 * mm,
+                preserveAspectRatio=True, mask="auto",
+            )
+        canvas.setFillColor(colors.black)
+        canvas.drawRightString(A4[0] - 18 * mm, footer_y, f"Page {document.page} of 2")
         canvas.restoreState()
 
     doc.build(story, onFirstPage=footer, onLaterPages=footer)

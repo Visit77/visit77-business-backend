@@ -14,7 +14,11 @@ from booking.booking_services.sms import (
     SMS_RETRYABLE_EXCEPTIONS,
 )
 from booking.integrations.core import CoreClient
-from booking.remittance_services import generate_previous_week_remittances, sync_all_payment_ledgers
+from booking.remittance_services import (
+    generate_previous_week_remittances,
+    refresh_current_week_remittances,
+    sync_all_payment_ledgers,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -199,13 +203,17 @@ def auto_cancel_no_show_reservations_task():
 @shared_task
 def sync_ota_revenue_ledger_task():
     count = sync_all_payment_ledgers()
-    return f"Synchronized {count} OTA payment ledger record(s)."
+    current = refresh_current_week_remittances()
+    return (
+        f"Synchronized {count} OTA payment ledger record(s) and refreshed "
+        f"{len(current)} current-week remittance(s)."
+    )
 
 
 @shared_task
 def generate_weekly_ota_remittances_task():
     records = generate_previous_week_remittances()
-    return f"Generated {len(records)} weekly OTA remittance(s)."
+    return f"Generated {len(records)} scheduled OTA remittance period(s)."
 
 
 

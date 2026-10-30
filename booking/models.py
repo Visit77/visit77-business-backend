@@ -50,6 +50,10 @@ class Hotel(models.Model):
         ROOM_TYPE_COUNT = "room_type_count", "Room type count"
         PHYSICAL_ROOM = "physical_room", "Physical room"
 
+    class RemittancePayoutOption(models.TextChoices):
+        WEEKLY = "weekly", "One time a week"
+        TWICE_WEEKLY = "twice_weekly", "Two times a week"
+
     core_business_id = models.PositiveBigIntegerField(unique=True)
     document_code = models.CharField(max_length=4, unique=True, editable=False)
     name = models.CharField(max_length=255)
@@ -59,6 +63,12 @@ class Hotel(models.Model):
     cover_image_url = models.URLField(max_length=1000, blank=True)
     base_currency = models.CharField(max_length=3, default="MMK")
     package = models.CharField(max_length=24, choices=Package.choices, default=Package.OTA)
+    remittance_payout_option = models.CharField(
+        max_length=24,
+        choices=RemittancePayoutOption.choices,
+        default=RemittancePayoutOption.WEEKLY,
+        db_index=True,
+    )
     inventory_mode = models.CharField(
         max_length=24,
         choices=InventoryMode.choices,
@@ -1296,6 +1306,7 @@ class OTARemittance(models.Model):
     """Settlement summary for one hotel and accounting period."""
 
     class Status(models.TextChoices):
+        ACCRUING = "accruing", "Current week accruing"
         PENDING = "pending", "Pending check"
         CHECKED = "checked", "Checked"
         PAID = "paid", "Paid"
@@ -1318,6 +1329,16 @@ class OTARemittance(models.Model):
     commission_rate = models.DecimalField(max_digits=7, decimal_places=4, default=5)
     commission_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     net_remittance_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    adjustment_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    adjustment_note = models.TextField(blank=True)
+    payment_reference = models.CharField(max_length=255, blank=True)
+    payment_receipt = models.FileField(
+        upload_to="booking/remittance-receipts/%Y/%m/",
+        storage=get_private_document_storage,
+        null=True,
+        blank=True,
+        editable=False,
+    )
     status = models.CharField(
         max_length=16,
         choices=Status.choices,

@@ -10,6 +10,7 @@ from django.utils.dateparse import parse_datetime
 from booking.models import (
     Booking,
     Hotel,
+    Invoice,
     OTACommissionRate,
     OTARemittance,
     OTARemittanceAuditLog,
@@ -67,11 +68,28 @@ def _refund_time(payment):
     return parsed or payment.paid_at or payment.created_at
 
 
+def is_ota_revenue_payment(payment):
+    """Return whether a payment belongs to the original OTA booking sale.
+
+    PMS invoices created later for meals, extensions, damage, and other hotel
+    charges remain PMS revenue even when their parent booking originated on
+    OTA. They must never enter Visit77 commission or remittance calculations.
+    """
+    invoice = payment.invoice
+    return bool(
+        invoice
+        and invoice.charge_scope == Invoice.ChargeScope.OTA
+        and invoice.invoice_type == Invoice.Type.ROOM_BOOKING
+    )
+
+
 @transaction.atomic
 def sync_payment_ledger(payment):
-    payment = Payment.objects.select_related("booking__hotel").get(pk=payment.pk)
+    payment = Payment.objects.select_related("booking__hotel", "invoice").get(pk=payment.pk)
     booking = payment.booking
     if booking.source != Booking.Source.OTA or not payment.paid_at:
+        return []
+    if not is_ota_revenue_payment(payment):
         return []
     if payment.status not in {Payment.Status.PAID, Payment.Status.PARTIALLY_REFUNDED, Payment.Status.REFUNDED}:
         return []
@@ -137,9 +155,11 @@ def sync_payment_ledger(payment):
 def sync_all_payment_ledgers(hotel=None):
     qs = Payment.objects.filter(
         booking__source=Booking.Source.OTA,
+        invoice__charge_scope=Invoice.ChargeScope.OTA,
+        invoice__invoice_type=Invoice.Type.ROOM_BOOKING,
         status__in=[Payment.Status.PAID, Payment.Status.PARTIALLY_REFUNDED, Payment.Status.REFUNDED],
         paid_at__isnull=False,
-    ).select_related("booking__hotel")
+    ).select_related("booking__hotel", "invoice")
     if hotel:
         qs = qs.filter(booking__hotel=hotel)
     count = 0
@@ -150,10 +170,130 @@ def sync_all_payment_ledgers(hotel=None):
 
 
 @transaction.atomic
-def generate_weekly_remittance(hotel, period_from, period_to, historical=False, completed=False):
+def cleanup_non_ota_revenue_ledgers(hotel=None):
+    """Remove PMS-side payments accidentally copied into OTA settlement."""
+    eligible_payment_ids = Payment.objects.filter(
+        invoice__charge_scope=Invoice.ChargeScope.OTA,
+        invoice__invoice_type=Invoice.Type.ROOM_BOOKING,
+    ).values("id")
+    invalid = OTARevenueLedger.objects.exclude(
+        payment_id__in=eligible_payment_ids,
+    )
+    if hotel:
+        invalid = invalid.filter(hotel=hotel)
+    invalid_ids = list(invalid.values_list("id", flat=True))
+    affected_remittance_ids = list(
+        OTARemittanceItem.objects.filter(ledger_entry_id__in=invalid_ids)
+        .values_list("remittance_id", flat=True)
+        .distinct()
+    )
+    removed_items, _ = OTARemittanceItem.objects.filter(
+        ledger_entry_id__in=invalid_ids,
+    ).delete()
+    removed_ledgers, _ = OTARevenueLedger.objects.filter(id__in=invalid_ids).delete()
+
+    updated_remittances = 0
+    deleted_remittances = 0
+    for remittance in OTARemittance.objects.select_for_update().select_related("hotel").filter(
+        id__in=affected_remittance_ids,
+    ):
+        items = list(remittance.items.all())
+        if not items:
+            remittance.delete()
+            deleted_remittances += 1
+            continue
+        collections = sum(
+            (item.gross_amount for item in items if item.item_type == OTARevenueLedger.EventType.BOOKING_COLLECTION),
+            Decimal("0"),
+        )
+        releases = sum(
+            (item.gross_amount for item in items if item.item_type == OTARevenueLedger.EventType.HELD_RELEASE),
+            Decimal("0"),
+        )
+        commission_types = {
+            OTARevenueLedger.EventType.BOOKING_COLLECTION,
+            OTARevenueLedger.EventType.HELD_RELEASE,
+        }
+        tax = sum(
+            (item.tax_amount for item in items if item.item_type in commission_types),
+            Decimal("0"),
+        )
+        service_charge = sum(
+            (item.service_charge_amount for item in items if item.item_type in commission_types),
+            Decimal("0"),
+        )
+        refunds = sum(
+            (item.refund_amount for item in items if item.item_type == OTARevenueLedger.EventType.REFUND),
+            Decimal("0"),
+        )
+        rate = commission_rate_for(remittance.hotel)
+        commissionable = max(collections + releases - tax - service_charge, Decimal("0"))
+        commission = _money(commissionable * rate / Decimal("100"))
+        base_net = _money(collections + releases - commission - refunds)
+        remittance.gross_booking_amount = _money(collections)
+        remittance.released_held_funds_amount = _money(releases)
+        remittance.tax_amount = _money(tax)
+        remittance.service_charge_amount = _money(service_charge)
+        remittance.refund_amount = _money(refunds)
+        remittance.commission_rate = rate
+        remittance.commission_amount = commission
+        remittance.net_remittance_amount = _money(
+            base_net + remittance.adjustment_amount
+        )
+        remittance.save(update_fields=[
+            "gross_booking_amount", "released_held_funds_amount", "tax_amount",
+            "service_charge_amount", "refund_amount", "commission_rate",
+            "commission_amount", "net_remittance_amount", "updated_at",
+        ])
+        updated_remittances += 1
+    return {
+        "removed_ledgers": removed_ledgers,
+        "removed_items": removed_items,
+        "updated_remittances": updated_remittances,
+        "deleted_remittances": deleted_remittances,
+    }
+
+
+def _remittance_reference(remittance):
+    """Build a globally increasing, human-readable remittance reference."""
+    return f"V77-PAY-{remittance.period_to:%y}-{remittance.id:06d}"
+
+
+@transaction.atomic
+def generate_weekly_remittance(
+    hotel, period_from, period_to, historical=False, completed=False,
+    accruing=False,
+):
     tz = hotel_timezone(hotel)
     start = datetime.combine(period_from, time.min, tzinfo=tz)
     end = datetime.combine(period_to + timedelta(days=1), time.min, tzinfo=tz)
+    remittance = OTARemittance.objects.select_for_update().filter(
+        hotel=hotel,
+        period_from=period_from,
+        period_to=period_to,
+        currency=hotel.base_currency,
+    ).first()
+    if (
+        remittance
+        and remittance.items.exists()
+        and (remittance.checked_by_id or remittance.paid_by_id or remittance.received_by_id)
+    ):
+        return remittance
+    # A retry of the Monday finalizer must not roll an already checked/paid
+    # statement back to pending. The rolling current-week record is the only
+    # ordinary statement that is recalculated in place.
+    if (
+        remittance
+        and not accruing
+        and not historical
+        and not completed
+        and remittance.status != OTARemittance.Status.ACCRUING
+        and remittance.items.exists()
+    ):
+        return remittance
+    assigned_elsewhere = OTARemittanceItem.objects.all()
+    if remittance:
+        assigned_elsewhere = assigned_elsewhere.exclude(remittance=remittance)
     entries = list(
         OTARevenueLedger.objects.select_for_update().filter(
             hotel=hotel,
@@ -164,11 +304,11 @@ def generate_weekly_remittance(hotel, period_from, period_to, historical=False, 
             | Q(event_type=OTARevenueLedger.EventType.HELD_RELEASE)
             | Q(event_type=OTARevenueLedger.EventType.REFUND)
         ).exclude(
-            id__in=OTARemittanceItem.objects.values("ledger_entry_id")
+            id__in=assigned_elsewhere.values("ledger_entry_id")
         ).select_related("booking")
     )
     if not entries:
-        return None
+        return remittance
     collections = sum((e.gross_amount for e in entries if e.event_type == OTARevenueLedger.EventType.BOOKING_COLLECTION), Decimal("0"))
     releases = sum((e.gross_amount for e in entries if e.event_type == OTARevenueLedger.EventType.HELD_RELEASE), Decimal("0"))
     tax = sum((e.tax_amount for e in entries if e.event_type in {OTARevenueLedger.EventType.BOOKING_COLLECTION, OTARevenueLedger.EventType.HELD_RELEASE}), Decimal("0"))
@@ -180,7 +320,11 @@ def generate_weekly_remittance(hotel, period_from, period_to, historical=False, 
     commissionable = max(collections + releases - tax - service_charge, Decimal("0"))
     commission = _money(commissionable * rate / Decimal("100"))
     net = _money(collections + releases - commission - refunds)
-    status = OTARemittance.Status.RECEIVED if completed else OTARemittance.Status.PENDING
+    status = (
+        OTARemittance.Status.ACCRUING if accruing
+        else OTARemittance.Status.RECEIVED if completed
+        else OTARemittance.Status.PENDING
+    )
     remittance, created = OTARemittance.objects.get_or_create(
         hotel=hotel, period_from=period_from, period_to=period_to, currency=hotel.base_currency,
         defaults={
@@ -193,16 +337,19 @@ def generate_weekly_remittance(hotel, period_from, period_to, historical=False, 
             "commission_amount": commission,
             "net_remittance_amount": net,
             "status": status,
-            "reference": f"V77-REM-{period_to:%Y%m%d}-{hotel.core_business_id}",
+            # The final reference needs the database-generated global ID and is
+            # assigned immediately after creation below.
+            "reference": "",
             "historical_backfill": historical,
             "checked_at": timezone.now() if completed else None,
             "paid_at": timezone.now() if completed else None,
             "received_at": timezone.now() if completed else None,
         },
     )
-    if not created and remittance.items.exists():
-        return remittance
-    if not created:
+    if created:
+        remittance.reference = _remittance_reference(remittance)
+        remittance.save(update_fields=["reference", "updated_at"])
+    else:
         remittance.gross_booking_amount = _money(collections)
         remittance.released_held_funds_amount = _money(releases)
         remittance.tax_amount = _money(tax)
@@ -218,29 +365,113 @@ def generate_weekly_remittance(hotel, period_from, period_to, historical=False, 
         remittance.received_at = timezone.now() if completed else None
         remittance.save()
     for entry in entries:
-        OTARemittanceItem.objects.create(
-            remittance=remittance, ledger_entry=entry, booking=entry.booking,
-            item_type=entry.event_type, gross_amount=entry.gross_amount,
-            tax_amount=entry.tax_amount,
-            service_charge_amount=entry.service_charge_amount,
-            refund_amount=entry.refund_amount,
+        OTARemittanceItem.objects.update_or_create(
+            ledger_entry=entry,
+            defaults={
+                "remittance": remittance,
+                "booking": entry.booking,
+                "item_type": entry.event_type,
+                "gross_amount": entry.gross_amount,
+                "tax_amount": entry.tax_amount,
+                "service_charge_amount": entry.service_charge_amount,
+                "refund_amount": entry.refund_amount,
+            },
         )
     bookings = Booking.objects.filter(id__in={entry.booking_id for entry in entries})
     bookings.update(
-        settlement_status=Booking.SettlementStatus.RECEIVED if completed else Booking.SettlementStatus.PENDING_REMITTANCE,
+        settlement_status=(
+            Booking.SettlementStatus.AVAILABLE if accruing
+            else Booking.SettlementStatus.RECEIVED if completed
+            else Booking.SettlementStatus.PENDING_REMITTANCE
+        ),
         settled_at=timezone.now() if completed else None,
     )
-    OTARemittanceAuditLog.objects.create(
-        remittance=remittance,
-        action="historical_backfill" if historical else "system_generated",
-        actor_name="System",
-    )
+    if created:
+        OTARemittanceAuditLog.objects.create(
+            remittance=remittance,
+            action=(
+                "current_week_accruing" if accruing
+                else "historical_backfill" if historical
+                else "system_generated"
+            ),
+            actor_name="System",
+        )
+    elif not accruing and remittance.audit_logs.filter(action="current_week_accruing").exists():
+        OTARemittanceAuditLog.objects.get_or_create(
+            remittance=remittance,
+            action="weekly_finalized",
+            defaults={"actor_name": "System"},
+        )
     return remittance
 
 
+def current_week_period(today=None, hotel=None):
+    if today is None:
+        today = (
+            timezone.now().astimezone(hotel_timezone(hotel)).date()
+            if hotel else timezone.localdate()
+        )
+    start = today - timedelta(days=today.weekday())
+    return start, start + timedelta(days=6)
+
+
+def active_payout_period(hotel, today=None):
+    monday, sunday = current_week_period(today, hotel=hotel)
+    local_today = today or timezone.now().astimezone(hotel_timezone(hotel)).date()
+    if hotel.remittance_payout_option == Hotel.RemittancePayoutOption.TWICE_WEEKLY:
+        wednesday = monday + timedelta(days=2)
+        if local_today <= wednesday:
+            return monday, wednesday
+        return monday + timedelta(days=3), sunday
+    return monday, sunday
+
+
+def refresh_current_week_remittance(hotel, today=None, sync_ledger=True):
+    if sync_ledger:
+        sync_all_payment_ledgers(hotel=hotel)
+    local_today = today or timezone.now().astimezone(hotel_timezone(hotel)).date()
+    week_from, _week_to = current_week_period(local_today, hotel=hotel)
+    start, end = active_payout_period(hotel, local_today)
+    stale_periods = list(
+        OTARemittance.objects.filter(
+            hotel=hotel,
+            status=OTARemittance.Status.ACCRUING,
+            period_to__lt=local_today,
+        ).values_list("period_from", "period_to")
+    )
+    for period_from, period_to in stale_periods:
+        generate_weekly_remittance(hotel, period_from, period_to)
+    if (
+        hotel.remittance_payout_option == Hotel.RemittancePayoutOption.TWICE_WEEKLY
+        and local_today.weekday() >= 3
+    ):
+        first_period_to = week_from + timedelta(days=2)
+        generate_weekly_remittance(hotel, week_from, first_period_to)
+    return generate_weekly_remittance(hotel, start, end, accruing=True)
+
+
+def refresh_current_week_remittances(today=None):
+    return [
+        result
+        for hotel in Hotel.objects.filter(is_active=True)
+        if (result := refresh_current_week_remittance(
+            hotel, today=today, sync_ledger=False,
+        ))
+    ]
+
+
 def generate_previous_week_remittances(today=None):
-    today = today or timezone.localdate()
-    current_monday = today - timedelta(days=today.weekday())
-    start, end = current_monday - timedelta(days=7), current_monday - timedelta(days=1)
     sync_all_payment_ledgers()
-    return [result for hotel in Hotel.objects.filter(is_active=True) if (result := generate_weekly_remittance(hotel, start, end))]
+    results = []
+    for hotel in Hotel.objects.filter(is_active=True):
+        current_monday, _current_sunday = current_week_period(today, hotel=hotel)
+        if hotel.remittance_payout_option == Hotel.RemittancePayoutOption.TWICE_WEEKLY:
+            start = current_monday - timedelta(days=4)
+            end = current_monday - timedelta(days=1)
+        else:
+            start = current_monday - timedelta(days=7)
+            end = current_monday - timedelta(days=1)
+        result = generate_weekly_remittance(hotel, start, end)
+        if result:
+            results.append(result)
+    return results
