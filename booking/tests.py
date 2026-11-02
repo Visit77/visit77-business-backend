@@ -9322,6 +9322,11 @@ class BookingApiTests(BookingServiceTests):
             name="Alpha Hotel Without Remittance",
             package=Hotel.Package.OTA,
         )
+        Hotel.objects.create(
+            core_business_id=7802,
+            name="PMS Hotel Excluded From Payment List",
+            package=Hotel.Package.PMS,
+        )
         today = timezone.localdate()
         pending = OTARemittance.objects.create(
             hotel=self.hotel,

@@ -1152,7 +1152,10 @@ class SuperAdminRemittancePaymentListView(APIView):
         offset, limit = _pagination(request)
 
         is_test = _boolean_query_param(request, "is_test", default=False)
-        hotels = Hotel.objects.filter(is_active=True)
+        hotels = Hotel.objects.filter(
+            is_active=True,
+            package__in=[Hotel.Package.OTA, Hotel.Package.OTA_PMS],
+        )
         test_city_hotel_ids = [
             hotel.id
             for hotel in hotels.only("id", "core_snapshot")
