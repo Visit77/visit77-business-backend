@@ -429,6 +429,42 @@ def remittance_data(remittance, detail=False, request=None):
     return data
 
 
+def _admin_remittance_history_data(remittance, request):
+    """Compact row used by the admin payment-history table."""
+    data = remittance_data(remittance, request=request)
+    merchant = _merchant_verification_data(remittance.hotel)
+    data.update({
+        "statement_date": _remittance_local_datetime(
+            remittance, remittance.created_at,
+        ).date(),
+        "account_number": merchant["payment_account_number"],
+        "beneficiary_name": merchant["beneficiary_name"],
+        "bank_or_mobile_wallet_name": merchant["bank_or_mobile_wallet_name"],
+        "branch": merchant["branch"],
+        "merchant_verification": merchant,
+    })
+    return data
+
+
+def _group_admin_remittance_history(rows):
+    groups = {}
+    for row in rows:
+        group = groups.setdefault(row["statement_date"], {
+            "date": row["statement_date"],
+            "count": 0,
+            "total_amounts": {},
+            "remittances": [],
+        })
+        currency = row["currency"]
+        group["count"] += 1
+        group["total_amounts"][currency] = (
+            group["total_amounts"].get(currency, Decimal("0"))
+            + row["net_payout"]
+        )
+        group["remittances"].append(row)
+    return list(groups.values())
+
+
 def _hotel_from_request(request):
     business_id = getattr(request, "booking_core_business_id", None)
     if not business_id:
@@ -1131,7 +1167,6 @@ class SuperAdminRemittanceHistoryView(APIView):
             )
             .exclude(status=OTARemittance.Status.ACCRUING)
             .prefetch_related("items")
-            .order_by("-period_to", "hotel__name", "-id")
         )
         business_id = request.query_params.get("business_id")
         if business_id:
@@ -1141,6 +1176,17 @@ class SuperAdminRemittanceHistoryView(APIView):
             "remittance_id"
         )
         records = _filter_remittance_search(records, search)
+
+        for parameter, lookup in (
+            ("date_from", "created_at__date__gte"),
+            ("date_to", "created_at__date__lte"),
+        ):
+            raw_value = request.query_params.get(parameter)
+            if raw_value:
+                value = parse_date(raw_value)
+                if not value:
+                    raise ValidationError({parameter: "Use YYYY-MM-DD format."})
+                records = records.filter(**{lookup: value})
 
         status = request.query_params.get("status")
         valid_statuses = {
@@ -1160,9 +1206,47 @@ class SuperAdminRemittanceHistoryView(APIView):
                     raise ValidationError({parameter: "Use YYYY-MM-DD format."})
                 records = records.filter(**{lookup: value})
 
+        # These counters follow the search/date/business scope, but remain stable
+        # when the user switches between the history tabs.
+        unpaid_statuses = [OTARemittance.Status.PENDING, OTARemittance.Status.CHECKED]
+        paid_statuses = [OTARemittance.Status.PAID, OTARemittance.Status.RECEIVED]
+        unpaid_count = records.filter(status__in=unpaid_statuses).count()
+        no_receipt_lookup = (
+            Q(status__in=paid_statuses)
+            & (Q(payment_receipt__isnull=True) | Q(payment_receipt=""))
+        )
+        no_receipt_count = records.filter(no_receipt_lookup).count()
+        all_count = records.count()
+
+        history_filter = str(
+            request.query_params.get("history_filter", "all")
+        ).strip().lower()
+        if history_filter == "unpaid":
+            records = records.filter(status__in=unpaid_statuses)
+        elif history_filter == "no_receipt":
+            records = records.filter(no_receipt_lookup)
+        elif history_filter != "all":
+            raise ValidationError({
+                "history_filter": "Use all, unpaid, or no_receipt.",
+            })
+
+        order_by = str(
+            request.query_params.get("order_by", "date_desc")
+        ).strip().lower()
+        if order_by == "date_desc":
+            records = records.order_by("-created_at", Lower("hotel__name"), "-id")
+        elif order_by == "date_asc":
+            records = records.order_by("created_at", Lower("hotel__name"), "id")
+        else:
+            raise ValidationError({"order_by": "Use date_desc or date_asc."})
+
         total_count = records.count()
         start = (offset - 1) * limit
         page_records = list(records[start:start + limit])
+        rows = [
+            _admin_remittance_history_data(item, request)
+            for item in page_records
+        ]
         total_pages = (total_count + limit - 1) // limit if total_count else 0
         return success({
             "count": total_count,
@@ -1172,7 +1256,14 @@ class SuperAdminRemittanceHistoryView(APIView):
             "has_previous": offset > 1,
             "has_next": offset < total_pages,
             "search": str(search or "").strip(),
-            "results": [remittance_data(item, request=request) for item in page_records],
+            "history_filter": history_filter,
+            "history_counts": {
+                "all": all_count,
+                "unpaid": unpaid_count,
+                "no_receipt": no_receipt_count,
+            },
+            "order_by": order_by,
+            "results": _group_admin_remittance_history(rows),
         })
 
 

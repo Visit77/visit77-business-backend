@@ -13,7 +13,7 @@ from rest_framework.test import APIClient
 from rest_framework.exceptions import ValidationError
 from rest_framework_simplejwt.backends import TokenBackend
 
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, InvoiceLine, MealPlan, OTABookingFollowUp, OTABookingNotification, OTAInventoryClosure, OTARevenueLedger, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, InvoiceLine, MealPlan, OTABookingFollowUp, OTABookingNotification, OTAInventoryClosure, OTARemittance, OTARevenueLedger, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import CoreIntegrationError, sync_business_from_core
 from booking.booking_services.invoice_charges import calculate_invoice_charges
 from booking.serializers import BookingRoomSerializer, InvoiceSerializer, PublicHotelSerializer
@@ -9306,6 +9306,67 @@ class BookingApiTests(BookingServiceTests):
             payout_filtered.data["data"]["payout_counts"],
             unfiltered.data["data"]["payout_counts"],
         )
+
+    def test_superadmin_remittance_history_groups_statement_dates_and_hides_accruing(self):
+        self.hotel.core_snapshot = {
+            "merchant_verification": {
+                "payment_account_number": "999-101",
+                "beneficiary_name": "Boston Company Ltd.",
+                "bank_name": "KBZ",
+                "branch": "Myaynigone",
+            },
+        }
+        self.hotel.save(update_fields=["core_snapshot"])
+        today = timezone.localdate()
+        pending = OTARemittance.objects.create(
+            hotel=self.hotel,
+            period_from=today - timedelta(days=14),
+            period_to=today - timedelta(days=8),
+            status=OTARemittance.Status.PENDING,
+            reference="V77-PAY-26-000001",
+            net_remittance_amount=Decimal("1500000"),
+        )
+        paid = OTARemittance.objects.create(
+            hotel=self.hotel,
+            period_from=today - timedelta(days=7),
+            period_to=today - timedelta(days=1),
+            status=OTARemittance.Status.PAID,
+            reference="V77-PAY-26-000002",
+            net_remittance_amount=Decimal("1260000"),
+            paid_at=timezone.now(),
+        )
+        OTARemittance.objects.create(
+            hotel=self.hotel,
+            period_from=today,
+            period_to=today + timedelta(days=6),
+            status=OTARemittance.Status.ACCRUING,
+            reference="",
+            net_remittance_amount=Decimal("999999"),
+        )
+
+        response = self.client.get(
+            "/api/v1/superadmin/remittances/history/?offset=1&limit=20",
+            HTTP_AUTHORIZATION=f"Bearer {self.core_access_token()}",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.data["data"]
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(data["history_counts"], {
+            "all": 2,
+            "unpaid": 1,
+            "no_receipt": 1,
+        })
+        rows = [row for group in data["results"] for row in group["remittances"]]
+        self.assertEqual({row["id"] for row in rows}, {pending.id, paid.id})
+        self.assertEqual(rows[0]["account_number"], "999-101")
+        self.assertEqual(rows[0]["beneficiary_name"], "Boston Company Ltd.")
+        self.assertEqual(rows[0]["bank_or_mobile_wallet_name"], "KBZ")
+        self.assertNotIn(Decimal("999999"), {
+            amount
+            for group in data["results"]
+            for amount in group["total_amounts"].values()
+        })
 
     def test_superadmin_can_update_ota_follow_up_without_history_table(self):
         booking = Booking.objects.create(
