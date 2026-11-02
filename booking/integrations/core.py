@@ -301,6 +301,11 @@ def sync_business_from_core(core_business_id: int, client=None, *, preserve_acce
                 "usd_price",
                 default=default_price if rate_currency == "USD" else None,
             )
+            market = rate_payload.get("guest_market")
+            if room_type.room_price_setup and market in {"local", "foreign"}:
+                currency_suffix = "usd" if base_currency == "USD" else "mmk"
+                base_price = getattr(room_type, f"{market}_{currency_suffix}_price") or 0
+                usd_display_price = getattr(room_type, f"{market}_usd_price")
             extra_bed_price = _first_present(rate_payload, "extra_bed_price", default=0)
             extra_bed_base_price = _first_present(
                 rate_payload,
@@ -345,6 +350,10 @@ def sync_business_from_core(core_business_id: int, client=None, *, preserve_acce
         room_type.rate_plans.filter(source=RatePlan.Source.CORE).exclude(
             core_rate_plan_id__in=synced_core_rate_plan_ids,
         ).update(is_active=False)
+        if room_type.room_price_setup:
+            from booking.room_pricing import sync_market_price
+            for market in ("local", "foreign"):
+                sync_market_price(room_type, market)
         synced_room_type_meal_plan_ids = []
         for link_payload in payload.get("meal_plans", []) or []:
             meal_payload = link_payload.get("meal_plan") or {}

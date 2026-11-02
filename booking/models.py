@@ -212,6 +212,11 @@ class RoomType(models.Model):
     default_inventory = models.PositiveSmallIntegerField(default=0)
     room_type_count_inventory = models.PositiveSmallIntegerField(default=0)
     room_type_count_configured = models.BooleanField(default=False)
+    room_price_setup = models.BooleanField(default=False, db_index=True)
+    local_mmk_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    local_usd_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    foreign_mmk_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    foreign_usd_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     booking_enabled = models.BooleanField(default=True)
     core_active = models.BooleanField(default=True)
     core_snapshot = models.JSONField(default=dict, blank=True)
@@ -437,6 +442,32 @@ class RatePlan(models.Model):
                 update_fields.update({"extra_bed_price", "extra_bed_base_price"})
             kwargs["update_fields"] = update_fields
         super().save(*args, **kwargs)
+
+
+class RoomPriceDiscount(models.Model):
+    class TimingMode(models.TextChoices):
+        MANUAL = "manual", "Start now, end manually"
+        SCHEDULED = "scheduled", "Scheduled"
+
+    room_type = models.ForeignKey(RoomType, on_delete=models.CASCADE, related_name="price_discounts")
+    timing_mode = models.CharField(max_length=16, choices=TimingMode.choices)
+    start_date = models.DateField()
+    end_date = models.DateField(null=True, blank=True)
+    local_mmk_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    local_usd_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    foreign_mmk_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    foreign_usd_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    local_mmk_percentage = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
+    local_usd_percentage = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
+    foreign_mmk_percentage = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
+    foreign_usd_percentage = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-start_date", "-id"]
+        indexes = [models.Index(fields=["room_type", "start_date", "end_date", "ended_at"], name="room_price_discount_dates_idx")]
 
 
 class DailyInventory(models.Model):

@@ -22,6 +22,7 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 
+from booking.room_pricing_views import RoomPricingMixin
 from booking.authentication import CoreJWTAuthentication
 from booking.booking_services.invoice_charges import (
     InvoiceChargesSerializer,
@@ -4339,11 +4340,11 @@ class HotelViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins.L
         return self._invoice_charges(request, "pms_invoice_charges")
 
 
-class RoomTypeViewSet(AdminModelViewSet):
+class RoomTypeViewSet(RoomPricingMixin, AdminModelViewSet):
     queryset = RoomType.objects.select_related("hotel")
     serializer_class = RoomTypeSerializer
     filterset_fields = ["hotel", "core_room_type_id", "booking_enabled", "core_active"]
-    http_method_names = ["get", "patch", "head", "options"]
+    http_method_names = ["get", "post", "put", "patch", "head", "options"]
     business_lookup = "hotel__core_business_id"
 
     def get_queryset(self):

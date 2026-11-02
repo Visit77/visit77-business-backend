@@ -663,7 +663,7 @@ class RoomTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = RoomType
         fields = "__all__"
-        read_only_fields = ["hotel", "core_room_type_id", "name", "description", "cover_image_url", "max_adults", "max_children", "max_occupancy", "core_active", "core_snapshot", "synced_at"]
+        read_only_fields = ["hotel", "core_room_type_id", "name", "description", "cover_image_url", "max_adults", "max_children", "max_occupancy", "core_active", "core_snapshot", "synced_at", "room_price_setup", "local_mmk_price", "local_usd_price", "foreign_mmk_price", "foreign_usd_price"]
 
 
 class MealPlanSerializer(serializers.ModelSerializer):

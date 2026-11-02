@@ -367,6 +367,7 @@
                                   {{ taxes }}
                                 </td>
                               </tr>
+                              {% if has_invoice_discount %}
                               <tr>
                                 <td style="color:#64748b;padding:4px 0">
                                   Discount
@@ -376,6 +377,7 @@
                                   -<!-- -->{{ discount }}
                                 </td>
                               </tr>
+                              {% endif %}
                             </table>
                             <div
                               style="border-top:1px dashed #cbd5e1;margin:12px 0"></div>

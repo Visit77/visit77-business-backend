@@ -11,6 +11,7 @@ from rest_framework.exceptions import ValidationError
 import logging
 logger = logging.getLogger(__name__)
 
+from booking.room_pricing import discounted_room_amounts, guest_price_fields
 from booking.add_on_templates import validate_configuration_values
 from booking.booking_services.invoice_charges import (
     booking_charge_dimensions,
@@ -639,10 +640,9 @@ def _resolve_booking_breakfast(room_type, requested, guest_market):
     return snapshot, unit_price
 
 
-def _rate_amounts(rule, rate_plan):
-    if rule is None:
-        return rate_plan.base_price, rate_plan.usd_display_price
-    return rule.base_price, rule.usd_display_price
+def _rate_amounts(rule, rate_plan, stay_date, guest_market, discounts):
+    base, usd = (rule.base_price, rule.usd_display_price) if rule is not None else (rate_plan.base_price, rate_plan.usd_display_price)
+    return discounted_room_amounts(base, usd, discounts, stay_date, guest_market, rate_plan.currency)
 
 
 def room_type_booking_options(room_type):
@@ -1095,7 +1095,8 @@ def availability_for_hotels(
         hotel_id__in=hotel_ids,
         booking_enabled=True,
         core_active=True,
-    ).select_related("hotel").prefetch_related("meal_plan_links", "meal_plan_links__meal_plan").order_by("hotel_id", "id"))
+        room_price_setup=True,
+    ).select_related("hotel").prefetch_related("meal_plan_links", "meal_plan_links__meal_plan", "price_discounts").order_by("hotel_id", "id"))
     room_type_ids = [room_type.id for room_type in room_types]
     inventory = {
         (row.room_type_id, row.stay_date): row
@@ -1160,6 +1161,7 @@ def availability_for_hotels(
                     default=0,
                 ),
             )
+        discounts = list(room_type.price_discounts.all())
         room_plans = []
         for plan in plans_by_room_type[room_type.id]:
             overrides = overrides_by_plan[plan.id]
@@ -1181,9 +1183,18 @@ def availability_for_hotels(
             nightly = []
             for day in dates:
                 rule = overrides.get(day) or periods.get(day)
-                base_price, usd_price = _rate_amounts(rule, plan)
+                base_price, usd_price = _rate_amounts(rule, plan, day, guest_market, discounts)
                 selected_display_currency = display_currency or room_type.hotel.base_currency
+                original_base, original_usd = (
+                    (rule.base_price, rule.usd_display_price) if rule is not None
+                    else (plan.base_price, plan.usd_display_price)
+                )
+                guest_prices = guest_price_fields(
+                    _display_amount(original_base, original_usd, selected_display_currency),
+                    _display_amount(base_price, usd_price, selected_display_currency),
+                )
                 nightly.append({
+                    **guest_prices,
                     "date": str(day),
                     "base_price": base_price,
                     "usd_display_price": usd_price,
@@ -1200,6 +1211,12 @@ def availability_for_hotels(
                 "base_currency": room_type.hotel.base_currency,
                 "display_currency": display_currency or room_type.hotel.base_currency,
                 "currency": room_type.hotel.base_currency,
+                **{field: nightly[0][field] for field in (
+                    "has_discount", "original_price", "discount_percentage", "discount_price",
+                )},
+                "effective_base_price": nightly[0]["base_price"],
+                "effective_usd_display_price": nightly[0]["usd_display_price"],
+                "effective_display_price": nightly[0]["display_price"],
                 "default_base_price": plan.base_price,
                 "default_usd_display_price": plan.usd_display_price,
                 "default_display_price": _display_amount(
@@ -1277,23 +1294,26 @@ def availability_for_hotels(
                 "size_sqft": snapshot.get("size_sqft"),
                 "default_prices": {
                     "local": {
-                        "base_price": snapshot.get("local_base_price"),
+                        "base_price": room_type.local_mmk_price if room_type.hotel.base_currency == "MMK" else room_type.local_usd_price,
                         "base_currency": snapshot.get("local_base_currency") or room_type.hotel.base_currency,
-                        "usd_display_price": snapshot.get("local_usd_display_price"),
+                        "usd_display_price": room_type.local_usd_price,
                     },
                     "foreign": {
-                        "base_price": snapshot.get("foreign_base_price"),
+                        "base_price": room_type.foreign_mmk_price if room_type.hotel.base_currency == "MMK" else room_type.foreign_usd_price,
                         "base_currency": snapshot.get("foreign_base_currency") or room_type.hotel.base_currency,
-                        "usd_display_price": snapshot.get("foreign_usd_display_price"),
+                        "usd_display_price": room_type.foreign_usd_price,
                     },
                 },
                 "default_price": {
+                    **{field: default_rate_plan[field] for field in (
+                        "has_discount", "original_price", "discount_percentage", "discount_price",
+                    )},
                     "rate_plan_id": default_rate_plan["id"],
                     "guest_market": default_rate_plan["guest_market"],
-                    "base_price": default_rate_plan["default_base_price"],
+                    "base_price": default_rate_plan["effective_base_price"],
                     "base_currency": default_rate_plan["base_currency"],
-                    "usd_display_price": default_rate_plan["default_usd_display_price"],
-                    "display_price": default_rate_plan["default_display_price"],
+                    "usd_display_price": default_rate_plan["effective_usd_display_price"],
+                    "display_price": default_rate_plan["effective_display_price"],
                     "display_currency": default_rate_plan["display_currency"],
                 },
                 "extra_bed_price": {
@@ -1447,6 +1467,7 @@ def estimate_booking(data):
                 core_room_type_id=requested["core_room_type_id"],
                 booking_enabled=True,
                 core_active=True,
+                room_price_setup=True,
             )
             rate_plan = RatePlan.objects.get(
                 id=requested["rate_plan_id"],
@@ -1479,6 +1500,7 @@ def estimate_booking(data):
             preference_snapshot.get("guaranteed_constraints") or {},
             quantity,
         )
+        discounts = list(room_type.price_discounts.all())
         daily_rate_rows = {row.stay_date: row for row in DailyRate.objects.filter(rate_plan=rate_plan, stay_date__in=dates)}
         periods = _period_by_date(rate_plan, dates)
         nightly_option_total = (option_total / len(dates)) if dates else Decimal("0")
@@ -1489,7 +1511,7 @@ def estimate_booking(data):
         breakfast_stay_total = Decimal("0")
         for day in dates:
             rule = daily_rate_rows.get(day) or periods.get(day)
-            unit_price, usd_display_price = _rate_amounts(rule, rate_plan)
+            unit_price, usd_display_price = _rate_amounts(rule, rate_plan, day, guest_market, discounts)
             extra_bed_total = rate_plan.extra_bed_base_price * extra_beds
             meal_plan_night_total = sum((
                 _meal_plan_nightly_total(link, plan, guest_market, quantity)
@@ -1731,7 +1753,7 @@ def create_booking(data, idempotency_key=None):
     uses_common_guest_counts = "adults" in data or "children" in data
     for requested in data["rooms"]:
         try:
-            room_type = RoomType.objects.get(hotel=hotel, core_room_type_id=requested["core_room_type_id"], booking_enabled=True, core_active=True)
+            room_type = RoomType.objects.get(hotel=hotel, core_room_type_id=requested["core_room_type_id"], booking_enabled=True, core_active=True, room_price_setup=True)
             rate_plan = RatePlan.objects.get(
                 id=requested["rate_plan_id"],
                 room_type=room_type,
@@ -1811,6 +1833,7 @@ def create_booking(data, idempotency_key=None):
             preference_snapshot=preference_snapshot,
             option_total=option_total,
         )
+        discounts = list(room_type.price_discounts.all())
         daily_rate_rows = {row.stay_date: row for row in DailyRate.objects.filter(rate_plan=rate_plan, stay_date__in=dates)}
         periods = _period_by_date(rate_plan, dates)
         arrival_rule = daily_rate_rows.get(check_in) or periods.get(check_in)
@@ -1829,7 +1852,7 @@ def create_booking(data, idempotency_key=None):
         nightly_option_total = (option_total / len(dates)) if dates else Decimal("0")
         for day in dates:
             rule = daily_rate_rows.get(day) or periods.get(day)
-            unit_price, _usd_display_price = _rate_amounts(rule, rate_plan)
+            unit_price, _usd_display_price = _rate_amounts(rule, rate_plan, day, guest_market, discounts)
             extra_bed_total = rate_plan.extra_bed_base_price * requested.get("extra_beds", 0)
             meal_plan_night_total = sum((
                 _meal_plan_nightly_total(link, plan, guest_market, quantity)
