@@ -9317,6 +9317,11 @@ class BookingApiTests(BookingServiceTests):
             },
         }
         self.hotel.save(update_fields=["core_snapshot"])
+        hotel_without_remittance = Hotel.objects.create(
+            core_business_id=7801,
+            name="Alpha Hotel Without Remittance",
+            package=Hotel.Package.OTA,
+        )
         today = timezone.localdate()
         pending = OTARemittance.objects.create(
             hotel=self.hotel,
@@ -9357,11 +9362,22 @@ class BookingApiTests(BookingServiceTests):
             "unpaid": 1,
             "no_received": 1,
         })
-        rows = [row for group in data["results"] for row in group["remittances"]]
-        self.assertEqual({row["id"] for row in rows}, {pending.id, paid.id})
-        self.assertEqual(rows[0]["account_number"], "999-101")
-        self.assertEqual(rows[0]["beneficiary_name"], "Boston Company Ltd.")
-        self.assertEqual(rows[0]["bank_or_mobile_wallet_name"], "KBZ")
+        for group in data["results"]:
+            self.assertEqual(
+                {row["hotel_id"] for row in group["hotels"]},
+                {self.hotel.id, hotel_without_remittance.id},
+            )
+        rows = [row for group in data["results"] for row in group["hotels"]]
+        remittance_ids = {
+            row["remittance"]["id"]
+            for row in rows
+            if row["remittance"] is not None
+        }
+        self.assertEqual(remittance_ids, {pending.id, paid.id})
+        hotel_rows = [row for row in rows if row["hotel_id"] == self.hotel.id]
+        self.assertEqual(hotel_rows[0]["account_number"], "999-101")
+        self.assertEqual(hotel_rows[0]["beneficiary_name"], "Boston Company Ltd.")
+        self.assertEqual(hotel_rows[0]["bank_or_mobile_wallet_name"], "KBZ")
         self.assertNotIn(Decimal("999999"), {
             amount
             for group in data["results"]
@@ -9377,9 +9393,13 @@ class BookingApiTests(BookingServiceTests):
         filtered_rows = [
             row
             for group in no_received.data["data"]["results"]
-            for row in group["remittances"]
+            for row in group["hotels"]
+            if row["remittance"] is not None
         ]
-        self.assertEqual([row["id"] for row in filtered_rows], [paid.id])
+        self.assertEqual(
+            [row["remittance"]["id"] for row in filtered_rows],
+            [paid.id],
+        )
 
         history = self.client.get(
             "/api/v1/superadmin/remittances/history/?offset=1&limit=20",

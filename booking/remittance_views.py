@@ -429,40 +429,36 @@ def remittance_data(remittance, detail=False, request=None):
     return data
 
 
-def _admin_remittance_payment_data(remittance, request):
-    """Compact row used by the admin payment-list table."""
-    data = remittance_data(remittance, request=request)
-    merchant = _merchant_verification_data(remittance.hotel)
-    data.update({
-        "statement_date": _remittance_local_datetime(
-            remittance, remittance.created_at,
-        ).date(),
-        "account_number": merchant["payment_account_number"],
+def _admin_remittance_payment_hotel_data(hotel, remittance, request):
+    """One hotel row for a payment-list payout date."""
+    merchant = _merchant_verification_data(hotel)
+    return {
+        "hotel_id": hotel.id,
+        "core_business_id": hotel.core_business_id,
+        "hotel_name": hotel.name,
+        "currency": remittance.currency if remittance else hotel.base_currency,
+        "net_amount": remittance.net_remittance_amount if remittance else None,
         "beneficiary_name": merchant["beneficiary_name"],
+        "account_number": merchant["payment_account_number"],
         "bank_or_mobile_wallet_name": merchant["bank_or_mobile_wallet_name"],
         "branch": merchant["branch"],
         "merchant_verification": merchant,
-    })
-    return data
-
-
-def _group_admin_remittance_payments(rows):
-    groups = {}
-    for row in rows:
-        group = groups.setdefault(row["statement_date"], {
-            "date": row["statement_date"],
-            "count": 0,
-            "total_amounts": {},
-            "remittances": [],
-        })
-        currency = row["currency"]
-        group["count"] += 1
-        group["total_amounts"][currency] = (
-            group["total_amounts"].get(currency, Decimal("0"))
-            + row["net_payout"]
-        )
-        group["remittances"].append(row)
-    return list(groups.values())
+        "status": remittance.status if remittance else None,
+        "is_paid": bool(remittance and remittance.status in {
+            OTARemittance.Status.PAID,
+            OTARemittance.Status.RECEIVED,
+        }),
+        "is_received": bool(
+            remittance and remittance.status == OTARemittance.Status.RECEIVED
+        ),
+        "payment_receipt_url": (
+            _absolute_url(request, _payment_receipt_url(remittance))
+            if remittance else None
+        ),
+        "remittance": (
+            remittance_data(remittance, request=request) if remittance else None
+        ),
+    }
 
 
 def _hotel_from_request(request):
@@ -1153,40 +1149,50 @@ class SuperAdminRemittancePaymentListView(APIView):
     permission_classes = [IsCoreSuperAdmin]
 
     def get(self, request):
-        try:
-            limit = min(max(int(request.query_params.get("limit", 20)), 1), 100)
-            offset = int(request.query_params.get("offset", 1))
-        except (TypeError, ValueError) as exc:
-            raise ValidationError({"pagination": "limit and offset must be integers."}) from exc
-        if offset < 1:
-            raise ValidationError({"offset": "Must be a page number starting from 1."})
+        offset, limit = _pagination(request)
 
-        records = (
+        is_test = _boolean_query_param(request, "is_test", default=False)
+        hotels = Hotel.objects.filter(is_active=True)
+        test_city_hotel_ids = [
+            hotel.id
+            for hotel in hotels.only("id", "core_snapshot")
+            if _is_test_city_hotel(hotel)
+        ]
+        if is_test:
+            hotels = hotels.filter(id__in=test_city_hotel_ids)
+        else:
+            hotels = hotels.exclude(id__in=test_city_hotel_ids)
+
+        business_id = request.query_params.get("business_id")
+        if business_id:
+            hotels = hotels.filter(core_business_id=business_id)
+        hotels = hotels.order_by(Lower("name"), "name", "id")
+        hotel_ids = list(hotels.values_list("id", flat=True))
+
+        scoped_records = (
             OTARemittance.objects.select_related(
                 "hotel", "checked_by", "paid_by", "received_by",
             )
+            .filter(hotel_id__in=hotel_ids)
             .exclude(status=OTARemittance.Status.ACCRUING)
             .prefetch_related("items")
         )
-        business_id = request.query_params.get("business_id")
-        if business_id:
-            records = records.filter(hotel__core_business_id=business_id)
 
         search = request.query_params.get("search") or request.query_params.get(
             "remittance_id"
         )
-        records = _filter_remittance_search(records, search)
+        scoped_records = _filter_remittance_search(scoped_records, search)
 
-        for parameter, lookup in (
-            ("date_from", "created_at__date__gte"),
-            ("date_to", "created_at__date__lte"),
-        ):
+        for parameter, lookup in (("date_from", "period_to__gte"), ("date_to", "period_to__lte")):
             raw_value = request.query_params.get(parameter)
             if raw_value:
                 value = parse_date(raw_value)
                 if not value:
                     raise ValidationError({parameter: "Use YYYY-MM-DD format."})
-                records = records.filter(**{lookup: value})
+                # Payment-list dates are the day after the covered period ends.
+                scoped_records = scoped_records.filter(**{
+                    lookup: value - timedelta(days=1),
+                })
 
         status = request.query_params.get("status")
         valid_statuses = {
@@ -1196,7 +1202,7 @@ class SuperAdminRemittancePaymentListView(APIView):
         if status:
             if status not in valid_statuses:
                 raise ValidationError({"status": f"Use one of: {', '.join(sorted(valid_statuses))}."})
-            records = records.filter(status=status)
+            scoped_records = scoped_records.filter(status=status)
 
         for parameter, lookup in (("period_from", "period_from__gte"), ("period_to", "period_to__lte")):
             raw_value = request.query_params.get(parameter)
@@ -1204,15 +1210,16 @@ class SuperAdminRemittancePaymentListView(APIView):
                 value = parse_date(raw_value)
                 if not value:
                     raise ValidationError({parameter: "Use YYYY-MM-DD format."})
-                records = records.filter(**{lookup: value})
+                scoped_records = scoped_records.filter(**{lookup: value})
 
         # These counters follow the search/date/business scope, but remain stable
         # when the user switches between the history tabs.
         unpaid_statuses = [OTARemittance.Status.PENDING, OTARemittance.Status.CHECKED]
-        unpaid_count = records.filter(status__in=unpaid_statuses).count()
+        unpaid_count = scoped_records.filter(status__in=unpaid_statuses).count()
         no_received_lookup = Q(status=OTARemittance.Status.PAID)
-        no_received_count = records.filter(no_received_lookup).count()
-        all_count = records.count()
+        no_received_count = scoped_records.filter(no_received_lookup).count()
+        all_count = scoped_records.count()
+        records = scoped_records
 
         payment_filter = str(
             request.query_params.get("payment_filter")
@@ -1231,22 +1238,58 @@ class SuperAdminRemittancePaymentListView(APIView):
             request.query_params.get("order_by", "date_desc")
         ).strip().lower()
         if order_by == "date_desc":
-            records = records.order_by("-created_at", Lower("hotel__name"), "-id")
+            date_ordering = "-period_to"
         elif order_by == "date_asc":
-            records = records.order_by("created_at", Lower("hotel__name"), "id")
+            date_ordering = "period_to"
         else:
             raise ValidationError({"order_by": "Use date_desc or date_asc."})
 
-        total_count = records.count()
+        payout_period_ends = records.order_by(date_ordering).values_list(
+            "period_to", flat=True,
+        ).distinct()
+        total_count = payout_period_ends.count()
         start = (offset - 1) * limit
-        page_records = list(records[start:start + limit])
-        rows = [
-            _admin_remittance_payment_data(item, request)
-            for item in page_records
-        ]
+        page_period_ends = list(payout_period_ends[start:start + limit])
+        page_records = list(
+            records.filter(period_to__in=page_period_ends)
+            .order_by(date_ordering, Lower("hotel__name"), "-id")
+        )
+        records_by_period_hotel = {}
+        for record in page_records:
+            records_by_period_hotel.setdefault(
+                (record.period_to, record.hotel_id), record,
+            )
+
+        page_hotels = list(hotels)
+        results = []
+        for period_to in page_period_ends:
+            total_amounts = {}
+            rows = []
+            for hotel in page_hotels:
+                remittance = records_by_period_hotel.get((period_to, hotel.id))
+                rows.append(_admin_remittance_payment_hotel_data(
+                    hotel, remittance, request,
+                ))
+                if remittance:
+                    total_amounts[remittance.currency] = (
+                        total_amounts.get(remittance.currency, Decimal("0"))
+                        + remittance.net_remittance_amount
+                    )
+            results.append({
+                "date": period_to + timedelta(days=1),
+                "hotel_count": len(rows),
+                "remittance_count": sum(
+                    1 for row in rows if row["remittance"] is not None
+                ),
+                "total_amounts": total_amounts,
+                "hotels": rows,
+            })
+
         total_pages = (total_count + limit - 1) // limit if total_count else 0
         return success({
             "count": total_count,
+            "date_count": total_count,
+            "hotel_count": len(page_hotels),
             "offset": offset,
             "limit": limit,
             "total_pages": total_pages,
@@ -1259,8 +1302,9 @@ class SuperAdminRemittancePaymentListView(APIView):
                 "unpaid": unpaid_count,
                 "no_received": no_received_count,
             },
+            "is_test": is_test,
             "order_by": order_by,
-            "results": _group_admin_remittance_payments(rows),
+            "results": results,
         })
 
 
