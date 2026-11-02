@@ -9355,7 +9355,7 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(data["history_counts"], {
             "all": 2,
             "unpaid": 1,
-            "no_receipt": 1,
+            "no_received": 1,
         })
         rows = [row for group in data["results"] for row in group["remittances"]]
         self.assertEqual({row["id"] for row in rows}, {pending.id, paid.id})
@@ -9367,6 +9367,19 @@ class BookingApiTests(BookingServiceTests):
             for group in data["results"]
             for amount in group["total_amounts"].values()
         })
+
+        no_received = self.client.get(
+            "/api/v1/superadmin/remittances/history/"
+            "?history_filter=no_received&offset=1&limit=20",
+            HTTP_AUTHORIZATION=f"Bearer {self.core_access_token()}",
+        )
+        self.assertEqual(no_received.status_code, 200, no_received.data)
+        filtered_rows = [
+            row
+            for group in no_received.data["data"]["results"]
+            for row in group["remittances"]
+        ]
+        self.assertEqual([row["id"] for row in filtered_rows], [paid.id])
 
     def test_superadmin_can_update_ota_follow_up_without_history_table(self):
         booking = Booking.objects.create(

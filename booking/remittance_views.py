@@ -1209,13 +1209,9 @@ class SuperAdminRemittanceHistoryView(APIView):
         # These counters follow the search/date/business scope, but remain stable
         # when the user switches between the history tabs.
         unpaid_statuses = [OTARemittance.Status.PENDING, OTARemittance.Status.CHECKED]
-        paid_statuses = [OTARemittance.Status.PAID, OTARemittance.Status.RECEIVED]
         unpaid_count = records.filter(status__in=unpaid_statuses).count()
-        no_receipt_lookup = (
-            Q(status__in=paid_statuses)
-            & (Q(payment_receipt__isnull=True) | Q(payment_receipt=""))
-        )
-        no_receipt_count = records.filter(no_receipt_lookup).count()
+        no_received_lookup = Q(status=OTARemittance.Status.PAID)
+        no_received_count = records.filter(no_received_lookup).count()
         all_count = records.count()
 
         history_filter = str(
@@ -1223,11 +1219,11 @@ class SuperAdminRemittanceHistoryView(APIView):
         ).strip().lower()
         if history_filter == "unpaid":
             records = records.filter(status__in=unpaid_statuses)
-        elif history_filter == "no_receipt":
-            records = records.filter(no_receipt_lookup)
+        elif history_filter == "no_received":
+            records = records.filter(no_received_lookup)
         elif history_filter != "all":
             raise ValidationError({
-                "history_filter": "Use all, unpaid, or no_receipt.",
+                "history_filter": "Use all, unpaid, or no_received.",
             })
 
         order_by = str(
@@ -1260,7 +1256,7 @@ class SuperAdminRemittanceHistoryView(APIView):
             "history_counts": {
                 "all": all_count,
                 "unpaid": unpaid_count,
-                "no_receipt": no_receipt_count,
+                "no_received": no_received_count,
             },
             "order_by": order_by,
             "results": _group_admin_remittance_history(rows),
