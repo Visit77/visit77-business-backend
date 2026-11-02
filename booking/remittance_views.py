@@ -429,8 +429,8 @@ def remittance_data(remittance, detail=False, request=None):
     return data
 
 
-def _admin_remittance_history_data(remittance, request):
-    """Compact row used by the admin payment-history table."""
+def _admin_remittance_payment_data(remittance, request):
+    """Compact row used by the admin payment-list table."""
     data = remittance_data(remittance, request=request)
     merchant = _merchant_verification_data(remittance.hotel)
     data.update({
@@ -446,7 +446,7 @@ def _admin_remittance_history_data(remittance, request):
     return data
 
 
-def _group_admin_remittance_history(rows):
+def _group_admin_remittance_payments(rows):
     groups = {}
     for row in rows:
         group = groups.setdefault(row["statement_date"], {
@@ -1148,7 +1148,7 @@ class SuperAdminRemittanceListView(APIView):
         })
 
 
-class SuperAdminRemittanceHistoryView(APIView):
+class SuperAdminRemittancePaymentListView(APIView):
     authentication_classes = [CoreJWTAuthentication]
     permission_classes = [IsCoreSuperAdmin]
 
@@ -1214,16 +1214,17 @@ class SuperAdminRemittanceHistoryView(APIView):
         no_received_count = records.filter(no_received_lookup).count()
         all_count = records.count()
 
-        history_filter = str(
-            request.query_params.get("history_filter", "all")
+        payment_filter = str(
+            request.query_params.get("payment_filter")
+            or request.query_params.get("history_filter", "all")
         ).strip().lower()
-        if history_filter == "unpaid":
+        if payment_filter == "unpaid":
             records = records.filter(status__in=unpaid_statuses)
-        elif history_filter == "no_received":
+        elif payment_filter == "no_received":
             records = records.filter(no_received_lookup)
-        elif history_filter != "all":
+        elif payment_filter != "all":
             raise ValidationError({
-                "history_filter": "Use all, unpaid, or no_received.",
+                "payment_filter": "Use all, unpaid, or no_received.",
             })
 
         order_by = str(
@@ -1240,7 +1241,7 @@ class SuperAdminRemittanceHistoryView(APIView):
         start = (offset - 1) * limit
         page_records = list(records[start:start + limit])
         rows = [
-            _admin_remittance_history_data(item, request)
+            _admin_remittance_payment_data(item, request)
             for item in page_records
         ]
         total_pages = (total_count + limit - 1) // limit if total_count else 0
@@ -1252,14 +1253,79 @@ class SuperAdminRemittanceHistoryView(APIView):
             "has_previous": offset > 1,
             "has_next": offset < total_pages,
             "search": str(search or "").strip(),
-            "history_filter": history_filter,
-            "history_counts": {
+            "payment_filter": payment_filter,
+            "payment_counts": {
                 "all": all_count,
                 "unpaid": unpaid_count,
                 "no_received": no_received_count,
             },
             "order_by": order_by,
-            "results": _group_admin_remittance_history(rows),
+            "results": _group_admin_remittance_payments(rows),
+        })
+
+
+class SuperAdminRemittanceHistoryView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
+    permission_classes = [IsCoreSuperAdmin]
+
+    def get(self, request):
+        offset, limit = _pagination(request)
+        records = (
+            OTARemittance.objects.select_related(
+                "hotel", "checked_by", "paid_by", "received_by",
+            )
+            .exclude(status=OTARemittance.Status.ACCRUING)
+            .prefetch_related("items")
+            .order_by("-period_to", "hotel__name", "-id")
+        )
+        business_id = request.query_params.get("business_id")
+        if business_id:
+            records = records.filter(hotel__core_business_id=business_id)
+
+        search = request.query_params.get("search") or request.query_params.get(
+            "remittance_id"
+        )
+        records = _filter_remittance_search(records, search)
+
+        status = request.query_params.get("status")
+        valid_statuses = {
+            choice for choice, _label in OTARemittance.Status.choices
+            if choice != OTARemittance.Status.ACCRUING
+        }
+        if status:
+            if status not in valid_statuses:
+                raise ValidationError({
+                    "status": f"Use one of: {', '.join(sorted(valid_statuses))}.",
+                })
+            records = records.filter(status=status)
+
+        for parameter, lookup in (
+            ("period_from", "period_from__gte"),
+            ("period_to", "period_to__lte"),
+        ):
+            raw_value = request.query_params.get(parameter)
+            if raw_value:
+                value = parse_date(raw_value)
+                if not value:
+                    raise ValidationError({parameter: "Use YYYY-MM-DD format."})
+                records = records.filter(**{lookup: value})
+
+        total_count = records.count()
+        start = (offset - 1) * limit
+        page_records = list(records[start:start + limit])
+        total_pages = (total_count + limit - 1) // limit if total_count else 0
+        return success({
+            "count": total_count,
+            "offset": offset,
+            "limit": limit,
+            "total_pages": total_pages,
+            "has_previous": offset > 1,
+            "has_next": offset < total_pages,
+            "search": str(search or "").strip(),
+            "results": [
+                remittance_data(item, request=request)
+                for item in page_records
+            ],
         })
 
 

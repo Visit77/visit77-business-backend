@@ -9307,7 +9307,7 @@ class BookingApiTests(BookingServiceTests):
             unfiltered.data["data"]["payout_counts"],
         )
 
-    def test_superadmin_remittance_history_groups_statement_dates_and_hides_accruing(self):
+    def test_superadmin_remittance_payment_list_groups_dates_and_hides_accruing(self):
         self.hotel.core_snapshot = {
             "merchant_verification": {
                 "payment_account_number": "999-101",
@@ -9345,14 +9345,14 @@ class BookingApiTests(BookingServiceTests):
         )
 
         response = self.client.get(
-            "/api/v1/superadmin/remittances/history/?offset=1&limit=20",
+            "/api/v1/superadmin/remittances/payment-list/?offset=1&limit=20",
             HTTP_AUTHORIZATION=f"Bearer {self.core_access_token()}",
         )
 
         self.assertEqual(response.status_code, 200, response.data)
         data = response.data["data"]
         self.assertEqual(data["count"], 2)
-        self.assertEqual(data["history_counts"], {
+        self.assertEqual(data["payment_counts"], {
             "all": 2,
             "unpaid": 1,
             "no_received": 1,
@@ -9369,8 +9369,8 @@ class BookingApiTests(BookingServiceTests):
         })
 
         no_received = self.client.get(
-            "/api/v1/superadmin/remittances/history/"
-            "?history_filter=no_received&offset=1&limit=20",
+            "/api/v1/superadmin/remittances/payment-list/"
+            "?payment_filter=no_received&offset=1&limit=20",
             HTTP_AUTHORIZATION=f"Bearer {self.core_access_token()}",
         )
         self.assertEqual(no_received.status_code, 200, no_received.data)
@@ -9380,6 +9380,19 @@ class BookingApiTests(BookingServiceTests):
             for row in group["remittances"]
         ]
         self.assertEqual([row["id"] for row in filtered_rows], [paid.id])
+
+        history = self.client.get(
+            "/api/v1/superadmin/remittances/history/?offset=1&limit=20",
+            HTTP_AUTHORIZATION=f"Bearer {self.core_access_token()}",
+        )
+        self.assertEqual(history.status_code, 200, history.data)
+        history_data = history.data["data"]
+        self.assertNotIn("payment_counts", history_data)
+        self.assertNotIn("payment_filter", history_data)
+        self.assertEqual(
+            {row["id"] for row in history_data["results"]},
+            {pending.id, paid.id},
+        )
 
     def test_superadmin_can_update_ota_follow_up_without_history_table(self):
         booking = Booking.objects.create(

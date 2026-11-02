@@ -83,6 +83,7 @@ from booking.remittance_views import (
     SuperAdminRemittanceDetailView,
     SuperAdminRemittanceHistoryView,
     SuperAdminRemittanceListView,
+    SuperAdminRemittancePaymentListView,
     SuperAdminRemittancePDFView,
     SuperAdminRemittancePayView,
     SuperAdminRemittanceReopenReceiptView,
@@ -121,6 +122,10 @@ urlpatterns = [
     ),
     path("superadmin/remittances/", SuperAdminRemittanceListView.as_view()),
     path("superadmin/remittances/history/", SuperAdminRemittanceHistoryView.as_view()),
+    path(
+        "superadmin/remittances/payment-list/",
+        SuperAdminRemittancePaymentListView.as_view(),
+    ),
     path("superadmin/remittances/<int:remittance_id>/", SuperAdminRemittanceDetailView.as_view()),
     path("superadmin/remittances/<int:remittance_id>/pdf/", SuperAdminRemittancePDFView.as_view()),
     path("superadmin/remittances/<int:remittance_id>/check/", SuperAdminRemittanceCheckView.as_view()),
