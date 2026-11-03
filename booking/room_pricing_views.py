@@ -24,6 +24,9 @@ class RoomPricingMixin:
         return {
             "room_type_id": room_type.id, "core_room_type_id": room_type.core_room_type_id,
             "room_price_setup": room_type.room_price_setup,
+            "discounts": RoomPriceDiscountSerializer(
+                room_type.price_discounts.all(), many=True, context={"room_type": room_type},
+            ).data,
             **{field: getattr(room_type, field) for field in PRICE_FIELDS},
             "rate_plans": RatePlanSerializer(room_type.rate_plans.filter(is_active=True).order_by("id"), many=True).data,
         }
@@ -56,6 +59,24 @@ class RoomPricingMixin:
         serializer.is_valid(raise_exception=True)
         discount = serializer.save()
         return success(RoomPriceDiscountSerializer(discount, context=context).data, status_code=201)
+
+    @action(detail=True, methods=["get", "patch", "put"], url_path=r"discounts/(?P<discount_id>[0-9]+)")
+    @transaction.atomic
+    def discount_detail(self, request, pk=None, discount_id=None):
+        room_type = RoomType.objects.select_for_update().get(pk=self.get_object().pk)
+        try:
+            discount = room_type.price_discounts.select_for_update().get(pk=discount_id)
+        except RoomPriceDiscount.DoesNotExist:
+            raise NotFound("Room price discount was not found.")
+        context = {"room_type": room_type}
+        if request.method == "GET":
+            return success(RoomPriceDiscountSerializer(discount, context=context).data)
+        serializer = RoomPriceDiscountSerializer(
+            discount, data=request.data, partial=request.method == "PATCH", context=context,
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return success(serializer.data)
 
     @action(detail=True, methods=["post"], url_path=r"discounts/(?P<discount_id>[0-9]+)/end")
     @transaction.atomic

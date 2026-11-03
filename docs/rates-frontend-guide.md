@@ -407,6 +407,7 @@ fields. Configure prices in Booking Engine after creation:
 ```text
 GET/PATCH/PUT /api/v1/admin/room-types/{id}/room-price/
 GET/POST      /api/v1/admin/room-types/{id}/discounts/
+GET/PATCH/PUT /api/v1/admin/room-types/{id}/discounts/{discount_id}/
 POST          /api/v1/admin/room-types/{id}/discounts/{discount_id}/end/
 ```
 
@@ -531,3 +532,34 @@ Room card example (existing fields retain their payable values):
   }
 }
 ```
+
+
+### Admin Room Price screen: embedded campaigns and Edit
+
+`GET /api/v1/admin/room-types/`, `GET /api/v1/admin/room-types/{id}/`, and
+`GET/PATCH/PUT /api/v1/admin/room-types/{id}/room-price/` include a read-only
+`discounts` array alongside the four normal price fields. Each entry includes
+`id`, all four payable amounts, calculated percentage fields, `timing_mode`,
+`start_date`, `end_date`, `status`, and `ended_at`. An unconfigured/no-campaign
+room returns `discounts: []`. The array includes active, scheduled and historical
+campaigns, ordered by latest start date and ID. Show active campaigns in the
+current Discount Room Price section, scheduled campaigns in the upcoming
+section, and use each entry's ID for Edit/End.
+
+Edit an active or scheduled campaign:
+
+```http
+PATCH /api/v1/admin/room-types/{id}/discounts/{discount_id}/
+Content-Type: application/json
+```
+
+```json
+{"local_mmk_price": "75000.00", "local_usd_price": null}
+```
+
+Omitted amounts/dates remain unchanged. Null clears an amount and its stored
+percentage; at least one amount must remain. Percentages are recalculated
+against the current normal room prices. Editing a manual campaign preserves
+its original start date. Ended or expired campaigns are read-only; create a new
+campaign. Edit/End does not reprice existing booking-night snapshots. Campaigns
+are prefetched once for the room list rather than fetched separately per room.

@@ -548,6 +548,14 @@ class RoomBoardQuerySerializer(serializers.Serializer):
 
 
 class RoomTypeSerializer(serializers.ModelSerializer):
+    discounts = serializers.SerializerMethodField()
+
+    def get_discounts(self, obj):
+        from booking.room_pricing_serializers import RoomPriceDiscountSerializer
+        return RoomPriceDiscountSerializer(
+            obj.price_discounts.all(), many=True, context={"room_type": obj},
+        ).data
+
     core_business_id = serializers.IntegerField(source="hotel.core_business_id", read_only=True)
     meal_plans = serializers.SerializerMethodField()
     breakfast = serializers.SerializerMethodField()

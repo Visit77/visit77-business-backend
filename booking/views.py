@@ -4394,7 +4394,7 @@ class RoomTypeViewSet(RoomPricingMixin, AdminModelViewSet):
             ),
         ).order_by(ota_order, "building", "floor", "room_number", "id")
         return queryset.prefetch_related(
-            "meal_plan_links", "meal_plan_links__meal_plan",
+            "meal_plan_links", "meal_plan_links__meal_plan", "price_discounts",
             Prefetch(
                 "physical_rooms",
                 queryset=room_queryset,

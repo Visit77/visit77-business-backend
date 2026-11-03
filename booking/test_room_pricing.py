@@ -267,3 +267,85 @@ class RoomPricingTests(TestCase):
         self.assertEqual(room["default_price"]["discount_percentage"], 20)
         self.assertEqual(room["default_price"]["discount_price"], 80000)
         self.assertIsNone(room["rate_plans"][0]["nightly_prices"][1]["discount_price"])
+
+    def admin_client(self, business_id="77"):
+        client = APIClient()
+        client.credentials(HTTP_X_BOOKING_ADMIN_KEY="key", HTTP_X_BOOKING_BUSINESS_ID=business_id)
+        return client
+
+    @override_settings(BOOKING_ADMIN_API_KEY="key")
+    def test_admin_room_list_detail_and_price_setup_include_discounts(self):
+        discount = self.discount(timing_mode="manual", local_usd_price="20")
+        client = self.admin_client()
+        root = f"/api/v1/admin/room-types/{self.room_type.id}"
+        for url in (root + "/", root + "/room-price/"):
+            response = client.get(url)
+            self.assertEqual(response.status_code, 200, response.data)
+            row = response.data["data"]["discounts"][0]
+            self.assertEqual(row["id"], discount.id)
+            self.assertEqual(row["status"], "active")
+            self.assertEqual(Decimal(str(row["local_mmk_price"])), Decimal("80000"))
+            self.assertEqual(Decimal(str(row["local_mmk_percentage"])), Decimal("20"))
+        response = client.get("/api/v1/admin/room-types/")
+        rows = response.data["data"]
+        if isinstance(rows, dict):
+            rows = rows["results"]
+        self.assertEqual(rows[0]["discounts"][0]["id"], discount.id)
+        # No campaigns is an explicit empty array for rendering Add Discount.
+        discount.delete()
+        self.assertEqual(client.get(root + "/").data["data"]["discounts"], [])
+
+    @override_settings(BOOKING_ADMIN_API_KEY="key")
+    def test_admin_can_edit_discount_amounts_and_recalculate_percentage(self):
+        discount = self.discount(timing_mode="manual", local_usd_price="20")
+        discount.start_date = timezone.localdate() - timedelta(days=2)
+        discount.save(update_fields=["start_date"])
+        original_start = discount.start_date
+        client = self.admin_client()
+        url = f"/api/v1/admin/room-types/{self.room_type.id}/discounts/{discount.id}/"
+        self.assertEqual(client.get(url).data["data"]["id"], discount.id)
+        response = client.patch(url, {"local_mmk_price": "75000", "local_usd_price": None}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        discount.refresh_from_db()
+        self.assertEqual(discount.local_mmk_price, Decimal("75000"))
+        self.assertEqual(discount.local_mmk_percentage, Decimal("25"))
+        self.assertIsNone(discount.local_usd_price)
+        self.assertIsNone(discount.local_usd_percentage)
+        self.assertEqual(discount.start_date, original_start)
+        self.assertEqual(response.data["data"]["status"], "active")
+        bad = client.patch(url, {"local_mmk_price": None}, format="json")
+        self.assertEqual(bad.status_code, 400)
+        discount.refresh_from_db()
+        self.assertEqual(discount.local_mmk_price, Decimal("75000"))
+
+    @override_settings(BOOKING_ADMIN_API_KEY="key")
+    def test_edit_scheduled_dates_scope_and_ended_campaign(self):
+        discount = self.discount()
+        client = self.admin_client()
+        root = f"/api/v1/admin/room-types/{self.room_type.id}"
+        url = root + f"/discounts/{discount.id}/"
+        response = client.patch(url, {"end_date": str(self.end), "local_mmk_price": "70000"}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        discount.refresh_from_db()
+        self.assertEqual(discount.end_date, self.end)
+        self.assertEqual(discount.local_mmk_percentage, Decimal("30"))
+        self.assertEqual(client.patch(url, {"end_date": str(self.start - timedelta(days=1))}, format="json").status_code, 400)
+        self.assertEqual(self.admin_client("999").get(url).status_code, 404)
+        other = RoomType.objects.create(hotel=self.hotel, core_room_type_id=302, name="Other")
+        other_url = f"/api/v1/admin/room-types/{other.id}/discounts/{discount.id}/"
+        self.assertEqual(client.get(other_url).status_code, 404)
+        client.post(root + f"/discounts/{discount.id}/end/", {}, format="json")
+        self.assertEqual(client.patch(url, {"local_mmk_price": "60000"}, format="json").status_code, 400)
+        self.assertEqual(client.get(root + "/").data["data"]["discounts"][0]["status"], "ended")
+
+    @override_settings(BOOKING_ADMIN_API_KEY="key")
+    def test_admin_room_list_prefetches_discounts_in_one_query(self):
+        from django.test.utils import CaptureQueriesContext
+        self.discount()
+        other = RoomType.objects.create(hotel=self.hotel, core_room_type_id=302, name="Other")
+        RoomPriceDiscount.objects.create(room_type=other, timing_mode="manual", start_date=timezone.localdate(), local_mmk_price=10)
+        with CaptureQueriesContext(connection) as queries:
+            response = self.admin_client().get("/api/v1/admin/room-types/")
+            self.assertEqual(response.status_code, 200)
+        discount_queries = [query for query in queries if 'FROM "booking_roompricediscount"' in query["sql"]]
+        self.assertEqual(len(discount_queries), 1)
