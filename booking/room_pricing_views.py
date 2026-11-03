@@ -4,7 +4,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import MethodNotAllowed, NotFound
 
 from booking.models import RoomPriceDiscount, RoomType
-from booking.room_pricing import sync_market_price
+from booking.room_pricing import sync_market_price, visible_room_discounts
 from booking.room_pricing_serializers import PRICE_FIELDS, RoomPriceDiscountSerializer, RoomPriceSetupSerializer
 from booking.serializers import RatePlanSerializer
 from config.response_formatter import success
@@ -25,7 +25,7 @@ class RoomPricingMixin:
             "room_type_id": room_type.id, "core_room_type_id": room_type.core_room_type_id,
             "room_price_setup": room_type.room_price_setup,
             "discounts": RoomPriceDiscountSerializer(
-                room_type.price_discounts.all(), many=True, context={"room_type": room_type},
+                visible_room_discounts(room_type), many=True, context={"room_type": room_type},
             ).data,
             **{field: getattr(room_type, field) for field in PRICE_FIELDS},
             "rate_plans": RatePlanSerializer(room_type.rate_plans.filter(is_active=True).order_by("id"), many=True).data,
@@ -53,7 +53,7 @@ class RoomPricingMixin:
         context = {"room_type": room_type}
         if request.method == "GET":
             return success({"room_type_id": room_type.id, "discounts": RoomPriceDiscountSerializer(
-                room_type.price_discounts.all(), many=True, context=context,
+                visible_room_discounts(room_type), many=True, context=context,
             ).data})
         serializer = RoomPriceDiscountSerializer(data=request.data, context=context)
         serializer.is_valid(raise_exception=True)

@@ -455,8 +455,8 @@ lower than its configured normal price. The server stores both the submitted
 payable amount and the corresponding read-only `*_percentage` value. A normal
 price of 100000 and payable price of 80000 stores 20.00 percent.
 
-List results include `scheduled`, `active`, `expired`, or `ended` status. Ending
-is idempotent and preserves history. Overlapping campaigns resolve independently
+List results include only `scheduled` or `active` campaigns. Explicit detail
+reads may return `expired` or `ended` status. Ending is idempotent and preserves history. Overlapping campaigns resolve independently
 for each supplied currency: latest start date wins, then latest ID. Prices
 resolve by stay date and guest market. Apply the selected campaign to the
 DailyRate/RatePeriod/normal price without increasing an already lower price.
@@ -541,8 +541,9 @@ Room card example (existing fields retain their payable values):
 `discounts` array alongside the four normal price fields. Each entry includes
 `id`, all four payable amounts, calculated percentage fields, `timing_mode`,
 `start_date`, `end_date`, `status`, and `ended_at`. An unconfigured/no-campaign
-room returns `discounts: []`. The array includes active, scheduled and historical
-campaigns, ordered by latest start date and ID. Show active campaigns in the
+room returns `discounts: []`. The array includes only active and scheduled campaigns, ordered by latest start
+date and ID. Ended/expired campaigns are omitted from room list/detail,
+room-price and discount-list responses; their database records remain for audit. Show active campaigns in the
 current Discount Room Price section, scheduled campaigns in the upcoming
 section, and use each entry's ID for Edit/End.
 
@@ -683,3 +684,6 @@ catalogues use today. The matrix shows configured normal prices/campaigns for
 both markets even when `guest_market` selects only one set of rate plans. Use
 `nightly_prices` for per-night changes across a stay and the existing total fields
 for payable stay totals.
+
+Admin discount arrays omit ended and expired campaigns. End acknowledgement and
+explicit discount-detail reads still return the campaign status/history by ID.

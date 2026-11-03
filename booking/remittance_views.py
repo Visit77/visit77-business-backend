@@ -951,7 +951,10 @@ class SuperAdminRemittanceListView(APIView):
             .order_by("-paid_at", "-id")
             .values("status")[:1]
         )
-        hotels = Hotel.objects.filter(is_active=True)
+        hotels = Hotel.objects.filter(
+            is_active=True,
+            package__in=[Hotel.Package.OTA, Hotel.Package.OTA_PMS],
+        )
         test_city_hotel_ids = [
             hotel.id
             for hotel in hotels.only("id", "core_snapshot")

@@ -336,7 +336,8 @@ class RoomPricingTests(TestCase):
         self.assertEqual(client.get(other_url).status_code, 404)
         client.post(root + f"/discounts/{discount.id}/end/", {}, format="json")
         self.assertEqual(client.patch(url, {"local_mmk_price": "60000"}, format="json").status_code, 400)
-        self.assertEqual(client.get(root + "/").data["data"]["discounts"][0]["status"], "ended")
+        self.assertEqual(client.get(root + "/").data["data"]["discounts"], [])
+        self.assertTrue(RoomPriceDiscount.objects.filter(pk=discount.pk, ended_at__isnull=False).exists())
 
     @override_settings(BOOKING_ADMIN_API_KEY="key")
     def test_admin_room_list_prefetches_discounts_in_one_query(self):
@@ -428,3 +429,26 @@ class RoomPricingTests(TestCase):
             row=APIClient().get('/api/v1/public/room-types/',{'business_id':77}).json()['data']['room_types'][0]
             self.assertEqual(row['default_prices']['local']['price_date'],'2026-11-02')
             self.assertFalse(row['default_price']['has_discount'])
+
+
+    @override_settings(BOOKING_ADMIN_API_KEY="key")
+    def test_admin_discount_arrays_only_include_active_and_scheduled(self):
+        active=self.discount(timing_mode="manual")
+        scheduled=self.discount()
+        ended=self.discount(timing_mode="manual")
+        ended.ended_at=timezone.now()
+        ended.save()
+        expired=self.discount(start_date=timezone.localdate()-timedelta(days=2),end_date=timezone.localdate()-timedelta(days=1))
+        client=self.admin_client()
+        root=f"/api/v1/admin/room-types/{self.room_type.id}"
+        for url in (root+'/',root+'/room-price/',root+'/discounts/'):
+            response=client.get(url)
+            self.assertEqual(response.status_code,200,response.data)
+            discounts=response.data['data']['discounts']
+            self.assertEqual({item['id'] for item in discounts},{active.pk,scheduled.pk})
+            self.assertEqual({item['status'] for item in discounts},{'active','scheduled'})
+        response=client.get('/api/v1/admin/room-types/')
+        rows=response.data['data']
+        if isinstance(rows,dict):rows=rows['results']
+        self.assertEqual({item['id'] for item in rows[0]['discounts']},{active.pk,scheduled.pk})
+        self.assertEqual(self.room_type.price_discounts.count(),4)

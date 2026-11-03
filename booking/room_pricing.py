@@ -90,3 +90,13 @@ def market_default_prices(room_type, stay_date, discounts):
             **{f"usd_{field}": value for field, value in usd_promo.items()},
         }
     return result
+
+
+def visible_room_discounts(room_type):
+    """Return active/upcoming campaigns while reusing any prefetched rows."""
+    from django.utils import timezone
+
+    today = timezone.localdate()
+    return [discount for discount in room_type.price_discounts.all()
+            if discount.ended_at is None
+            and (discount.end_date is None or discount.end_date >= today)]
