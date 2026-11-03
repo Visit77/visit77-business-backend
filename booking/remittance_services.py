@@ -227,7 +227,14 @@ def cleanup_non_ota_revenue_ledgers(hotel=None):
             Decimal("0"),
         )
         rate = commission_rate_for(remittance.hotel)
-        commissionable = max(collections + releases - tax - service_charge, Decimal("0"))
+        preserve_policy = remittance.status in {OTARemittance.Status.CHECKED, OTARemittance.Status.PAID, OTARemittance.Status.RECEIVED} or any((
+            remittance.checked_at, remittance.paid_at, remittance.received_at,
+            remittance.checked_by_id, remittance.paid_by_id, remittance.received_by_id,
+        ))
+        exclude_service_charge = remittance.commission_excludes_service_charge if preserve_policy else False
+        if preserve_policy:
+            rate = remittance.commission_rate
+        commissionable = max(collections + releases - tax - (service_charge if exclude_service_charge else 0), Decimal("0"))
         commission = _money(commissionable * rate / Decimal("100"))
         base_net = _money(collections + releases - commission - refunds)
         remittance.gross_booking_amount = _money(collections)
@@ -235,6 +242,7 @@ def cleanup_non_ota_revenue_ledgers(hotel=None):
         remittance.tax_amount = _money(tax)
         remittance.service_charge_amount = _money(service_charge)
         remittance.refund_amount = _money(refunds)
+        remittance.commission_excludes_service_charge = exclude_service_charge
         remittance.commission_rate = rate
         remittance.commission_amount = commission
         remittance.net_remittance_amount = _money(
@@ -242,7 +250,7 @@ def cleanup_non_ota_revenue_ledgers(hotel=None):
         )
         remittance.save(update_fields=[
             "gross_booking_amount", "released_held_funds_amount", "tax_amount",
-            "service_charge_amount", "refund_amount", "commission_rate",
+            "service_charge_amount", "refund_amount", "commission_excludes_service_charge", "commission_rate",
             "commission_amount", "net_remittance_amount", "updated_at",
         ])
         updated_remittances += 1
@@ -276,7 +284,11 @@ def generate_weekly_remittance(
     if (
         remittance
         and remittance.items.exists()
-        and (remittance.checked_by_id or remittance.paid_by_id or remittance.received_by_id)
+        and (
+            remittance.status in {OTARemittance.Status.CHECKED, OTARemittance.Status.PAID, OTARemittance.Status.RECEIVED}
+            or any((remittance.checked_at, remittance.paid_at, remittance.received_at,
+                    remittance.checked_by_id, remittance.paid_by_id, remittance.received_by_id))
+        )
     ):
         return remittance
     # A retry of the Monday finalizer must not roll an already checked/paid
@@ -317,7 +329,7 @@ def generate_weekly_remittance(
     if all(_money(value) == 0 for value in (collections, releases, tax, service_charge, refunds)):
         return None
     rate = commission_rate_for(hotel)
-    commissionable = max(collections + releases - tax - service_charge, Decimal("0"))
+    commissionable = max(collections + releases - tax, Decimal("0"))
     commission = _money(commissionable * rate / Decimal("100"))
     net = _money(collections + releases - commission - refunds)
     status = (
@@ -333,6 +345,7 @@ def generate_weekly_remittance(
             "tax_amount": _money(tax),
             "service_charge_amount": _money(service_charge),
             "refund_amount": _money(refunds),
+            "commission_excludes_service_charge": False,
             "commission_rate": rate,
             "commission_amount": commission,
             "net_remittance_amount": net,
@@ -355,6 +368,7 @@ def generate_weekly_remittance(
         remittance.tax_amount = _money(tax)
         remittance.service_charge_amount = _money(service_charge)
         remittance.refund_amount = _money(refunds)
+        remittance.commission_excludes_service_charge = False
         remittance.commission_rate = rate
         remittance.commission_amount = commission
         remittance.net_remittance_amount = net
@@ -475,3 +489,69 @@ def generate_previous_week_remittances(today=None):
         if result:
             results.append(result)
     return results
+
+
+def unpaid_remittance_filter():
+    """Exclude payments even if their workflow status was subsequently changed."""
+    return (
+        ~Q(status__in=[OTARemittance.Status.PAID, OTARemittance.Status.RECEIVED])
+        & Q(paid_at__isnull=True, paid_by_id__isnull=True,
+            received_at__isnull=True, received_by_id__isnull=True)
+    )
+
+
+@transaction.atomic
+def recalculate_unpaid_remittance(remittance_id, *, dry_run=False):
+    """Reprice the stored statement under tax-only commission without rebuilding its ledger."""
+    record = OTARemittance.objects.select_for_update().get(pk=remittance_id)
+    result = {
+        "id": record.id, "reference": record.reference or str(record.id),
+        "currency": record.currency, "previous_commission": record.commission_amount,
+        "previous_net_payout": record.net_remittance_amount,
+        "previous_status": record.status,
+    }
+    if (
+        record.status in {OTARemittance.Status.PAID, OTARemittance.Status.RECEIVED}
+        or any((record.paid_at, record.paid_by_id, record.received_at, record.received_by_id))
+    ):
+        return {**result, "outcome": "skipped_paid"}
+    gross = record.gross_booking_amount + record.released_held_funds_amount
+    base = max(gross - record.tax_amount, Decimal("0"))
+    commission = _money(base * record.commission_rate / Decimal("100"))
+    payout = _money(gross - commission - record.refund_amount + record.adjustment_amount)
+    changed = (
+        record.commission_excludes_service_charge
+        or commission != record.commission_amount
+        or payout != record.net_remittance_amount
+    )
+    was_checked = bool(record.status == OTARemittance.Status.CHECKED or record.checked_at or record.checked_by_id)
+    status = OTARemittance.Status.PENDING if changed and was_checked else record.status
+    result.update(commission=commission, net_payout=payout, status=status,
+                  commission_base=base, commission_rate=record.commission_rate,
+                  outcome="changed" if changed else "unchanged")
+    if not changed or dry_run:
+        return result
+    previous_checker_id = record.checked_by_id
+    record.commission_amount = commission
+    record.net_remittance_amount = payout
+    record.commission_excludes_service_charge = False
+    fields = ["commission_amount", "net_remittance_amount", "commission_excludes_service_charge", "updated_at"]
+    if was_checked:
+        record.status = status
+        record.checked_at = None
+        record.checked_by = None
+        fields.extend(["status", "checked_at", "checked_by"])
+    record.save(update_fields=fields)
+    OTARemittanceAuditLog.objects.create(
+        remittance=record, action="commission_recalculated", actor_name="System",
+        metadata={
+            "command": "recalculate_unpaid_remittances",
+            "previous_commission": str(result["previous_commission"]), "commission": str(commission),
+            "previous_net_payout": str(result["previous_net_payout"]), "net_payout": str(payout),
+            "previous_status": result["previous_status"], "status": status,
+            "previous_checker_id": previous_checker_id,
+            "commission_base": str(base), "commission_rate": str(record.commission_rate),
+            "service_charge_included_in_commission": True,
+        },
+    )
+    return result

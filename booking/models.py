@@ -1326,6 +1326,7 @@ class OTARemittance(models.Model):
     tax_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     service_charge_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     refund_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    commission_excludes_service_charge = models.BooleanField(default=False)
     commission_rate = models.DecimalField(max_digits=7, decimal_places=4, default=5)
     commission_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     net_remittance_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
