@@ -331,7 +331,7 @@ def render_remittance_statement_pdf(remittance):
         ("Total Gross Booking Collection", remittance.gross_booking_amount),
         ("Release of Held Funds", remittance.released_held_funds_amount),
         ("Tax (Excluded from commission)", remittance.tax_amount),
-        ("Service Charge (Excluded from commission)", remittance.service_charge_amount),
+        ("Service Charge (Excluded from commission)" if remittance.commission_excludes_service_charge else "Service Charge (Included in commission)", remittance.service_charge_amount),
         ("Visit 77 Commission", remittance.commission_amount),
         ("Refund", remittance.refund_amount),
     ]
