@@ -1,3 +1,4 @@
+from booking.directory_pricing import AdminDirectoryMinimumPricesView
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
@@ -197,6 +198,7 @@ urlpatterns = [
         AdminReceiptDetailView.as_view(),
     ),
     path("public/search/availability/", PublicGlobalAvailabilityView.as_view()),
+    path("admin/directory/minimum-room-prices/", AdminDirectoryMinimumPricesView.as_view()),
     path("admin/availability/hotel-ids/", AdminAvailableHotelIdsView.as_view()),
     path("admin/ota/hotel-ids/", AdminOTAHotelIdsView.as_view()),
     path("public/hotels/<int:core_business_id>/ota-room-types/", PublicOTARoomTypeCatalogView.as_view()),

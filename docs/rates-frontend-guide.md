@@ -563,3 +563,77 @@ against the current normal room prices. Editing a manual campaign preserves
 its original start date. Ended or expired campaigns are read-only; create a new
 campaign. Edit/End does not reprice existing booking-night snapshots. Campaigns
 are prefetched once for the room list rather than fetched separately per room.
+
+
+## Core directory: today's minimum room rate from Booking Engine
+
+Core's hotel-directory `biz.minimum_room` now comes from Booking Engine rather
+than Core RoomType price columns. Core calls the internal bulk endpoint:
+
+```http
+POST /api/v1/admin/directory/minimum-room-prices/
+X-Booking-Admin-Key: <internal service key>
+Content-Type: application/json
+```
+
+```json
+{"business_ids": [77, 78], "guest_market": "local", "display_currency": "MMK"}
+```
+
+The server chooses today's date independently in each hotel's configured timezone.
+It resolves DailyRate → RatePeriod → normal RatePlan and applies today's matching
+campaign using the same calculation as availability. Only active, booking-enabled,
+price-configured rooms and active plans are eligible. The lowest positive payable
+price in the requested currency wins, including custom plans. No currency is
+converted or substituted for a missing requested-currency price.
+
+This is an advertised daily rate, independent of inventory, occupancy and stay
+restrictions; it is not a guarantee that a room is currently bookable. A full
+availability search remains necessary before booking.
+
+The response is `data.minimum_rooms`, keyed by Core business ID. Missing hotels
+are omitted. Optional `min_price`/`max_price` select the cheapest room *within*
+the price range, preserving directory range-filter behavior. If a business-scope
+header is supplied, results are limited to that business. A batch accepts at most
+5000 IDs.
+
+Core preserves the existing `biz.minimum_room` location:
+
+```json
+{
+  "minimum_room": {
+    "room_type_id": 1913,
+    "booking_room_type_id": 66,
+    "room_type_name": "Standard Double Room",
+    "rate_plan_id": 10,
+    "price_date": "2026-11-03",
+    "guest_market": "local",
+    "display_currency": "MMK",
+    "display_price": 80000,
+    "has_discount": true,
+    "original_price": 100000,
+    "discount_percentage": 20,
+    "discount_price": 80000
+  }
+}
+```
+
+`room_type_id` remains the Core room ID for compatibility; `booking_room_type_id`
+is the Booking Engine ID. The existing four normal-price fields remain in this
+object, sourced from Booking setup. **Use `display_price` for the displayed
+minimum payable price**, and the explicit discount fields for strike-through/badge
+UI. With no campaign reduction, `has_discount=false`, `discount_percentage=0`,
+and `discount_price=null`. With no eligible room, Core returns `minimum_room=null`.
+
+Core directory inputs retain `price_guest_market` (default local) and
+`price_currency` (MMK for local, USD for foreign by default). Price ranges and
+price sorting now use Booking payable prices; decimal amounts are supported.
+Booking results are reused within the request between sorting, pagination and
+serialization, with bulk calls in chunks of 5000 business IDs. No per-hotel HTTP
+requests or stale Core-price fallback are used. Service failure returns 503.
+
+Deploy Booking Engine's endpoint first, then Core. Core must set
+`BOOKING_ENGINE_BASE_URL` to the canonical HTTPS Booking API URL (no `/api/v1`
+suffix or HTTP redirects) and `BOOKING_ENGINE_ADMIN_KEY` to the shared internal
+key. Existing migration 0076 must already be applied; this change adds no new
+migration. Directory clients call Core as before and never receive the key.
