@@ -8,6 +8,7 @@ from django.db.models import Q
 from django.utils import timezone
 from rest_framework import serializers
 
+from booking.room_pricing import discounted_room_amounts, guest_price_fields, market_default_prices, room_price_today
 from booking.add_on_templates import normalize_configuration_schema
 from booking.models import (
     AddOn,
@@ -424,19 +425,7 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
         return self._snapshot_value(obj, "size_sqft")
 
     def get_default_prices(self, obj):
-        snapshot = obj.core_snapshot or {}
-        return {
-            "local": {
-                "base_price": snapshot.get("local_base_price"),
-                "base_currency": snapshot.get("local_base_currency") or obj.hotel.base_currency,
-                "usd_display_price": snapshot.get("local_usd_display_price"),
-            },
-            "foreign": {
-                "base_price": snapshot.get("foreign_base_price"),
-                "base_currency": snapshot.get("foreign_base_currency") or obj.hotel.base_currency,
-                "usd_display_price": snapshot.get("foreign_usd_display_price"),
-            },
-        }
+        return market_default_prices(obj, room_price_today(obj), list(obj.price_discounts.all()))
 
     def _plans(self, obj):
         plans = getattr(obj, "ota_catalog_rate_plans", None)
@@ -452,25 +441,34 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
 
     def _plan_payload(self, obj, plan):
         display_currency = self.context.get("display_currency") or obj.hotel.base_currency
-        display_price = (
-            plan.usd_display_price
-            if display_currency == "USD" and plan.usd_display_price is not None
-            else plan.base_price
+        price_date = room_price_today(obj)
+        market = self.context.get("guest_market") or (
+            plan.guest_market if plan.guest_market != RatePlan.GuestMarket.ALL else RatePlan.GuestMarket.LOCAL
         )
+        base_price, usd_price = discounted_room_amounts(
+            plan.base_price, plan.usd_display_price,
+            list(obj.price_discounts.all()) if obj.room_price_setup else [],
+            price_date, market, obj.hotel.base_currency,
+        )
+        display_price = usd_price if display_currency == "USD" and usd_price is not None else base_price
+        original_display = plan.usd_display_price if display_currency == "USD" and plan.usd_display_price is not None else plan.base_price
+        promo = guest_price_fields(original_display, display_price)
         extra_bed_display_price = (
             plan.extra_bed_usd_display_price
             if display_currency == "USD" and plan.extra_bed_usd_display_price is not None
             else plan.extra_bed_base_price
         )
         return {
+            **promo,
+            "price_date": str(price_date),
             "id": plan.id,
             "code": plan.code,
             "name": plan.name,
             "guest_market": plan.guest_market,
             "is_default": plan.is_default,
-            "base_price": plan.base_price,
+            "base_price": base_price,
             "base_currency": obj.hotel.base_currency,
-            "usd_display_price": plan.usd_display_price,
+            "usd_display_price": usd_price,
             "display_price": display_price,
             "display_currency": display_currency,
             "extra_bed_base_price": plan.extra_bed_base_price,
@@ -491,6 +489,9 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
         plan = next((item for item in plans if item.is_default), plans[0])
         payload = self._plan_payload(obj, plan)
         return {
+            **{field: payload[field] for field in (
+                "has_discount", "original_price", "discount_percentage", "discount_price", "price_date",
+            )},
             "rate_plan_id": payload["id"],
             "guest_market": payload["guest_market"],
             "base_price": payload["base_price"],

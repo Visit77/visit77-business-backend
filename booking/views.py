@@ -469,7 +469,7 @@ class PublicOTARoomTypeCatalogView(APIView):
                     distinct=True,
                 ),
             ).select_related("hotel").prefetch_related(
-                "meal_plan_links", "meal_plan_links__meal_plan",
+                "meal_plan_links", "meal_plan_links__meal_plan", "price_discounts",
                 Prefetch(
                     "rate_plans",
                     queryset=RatePlan.objects.filter(is_active=True).order_by("guest_market", "code", "id"),
@@ -540,7 +540,7 @@ class PublicHotelRoomTypeCatalogView(APIView):
             )
             .select_related("hotel")
             .prefetch_related(
-                "meal_plan_links", "meal_plan_links__meal_plan",
+                "meal_plan_links", "meal_plan_links__meal_plan", "price_discounts",
                 Prefetch(
                     "rate_plans",
                     queryset=RatePlan.objects.filter(is_active=True).order_by("guest_market", "code", "id"),

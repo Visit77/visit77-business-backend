@@ -349,3 +349,82 @@ class RoomPricingTests(TestCase):
             self.assertEqual(response.status_code, 200)
         discount_queries = [query for query in queries if 'FROM "booking_roompricediscount"' in query["sql"]]
         self.assertEqual(len(discount_queries), 1)
+
+    def test_public_catalog_returns_discounts_in_default_price_and_both_markets(self):
+        self.room_type.core_snapshot={'local_base_price':1,'foreign_base_price':2,'local_usd_display_price':0}
+        self.room_type.save(update_fields=['core_snapshot'])
+        self.discount(timing_mode='manual',local_usd_price='90',foreign_mmk_price='150000',foreign_usd_price='160')
+        RatePlan.objects.create(room_type=self.room_type,code='foreign',name='Foreign',guest_market='foreign',is_default=True,default_price=200000,usd_display_price=200)
+        for url in ('/api/v1/public/room-types/', '/api/v1/public/hotels/77/room-types/', '/api/v1/public/hotels/77/ota-room-types/'):
+            response=APIClient().get(url,{'business_id':77,'guest_market':'local','display_currency':'USD'})
+            self.assertEqual(response.status_code,200,response.data)
+            room=response.json()['data']['room_types'][0]
+            self.assertTrue(room['default_price']['has_discount'])
+            self.assertEqual(room['default_price']['original_price'],100)
+            self.assertEqual(room['default_price']['discount_price'],90)
+            self.assertEqual(room['default_price']['discount_percentage'],10)
+            local=room['default_prices']['local']; foreign=room['default_prices']['foreign']
+            self.assertEqual(local['base_price'],100000)
+            self.assertEqual(local['discount_price'],80000)
+            self.assertEqual(local['discount_percentage'],20)
+            self.assertEqual(local['usd_display_price'],100)
+            self.assertEqual(local['usd_discount_price'],90)
+            self.assertEqual(local['usd_discount_percentage'],10)
+            self.assertEqual(foreign['discount_price'],150000)
+            self.assertEqual(foreign['discount_percentage'],25)
+            self.assertEqual(foreign['usd_discount_price'],160)
+            self.assertEqual(foreign['usd_discount_percentage'],20)
+
+    def test_availability_default_prices_use_stay_date_for_both_markets(self):
+        self.discount(foreign_mmk_price='150000')
+        room=self.guest_availability()
+        self.assertEqual(room['default_prices']['local']['discount_price'],Decimal('80000'))
+        self.assertEqual(room['default_prices']['foreign']['discount_price'],Decimal('150000'))
+        self.assertEqual(room['default_prices']['local']['price_date'],str(self.start))
+        # A future campaign must not appear in today's catalogue.
+        response=APIClient().get('/api/v1/public/room-types/',{'business_id':77,'guest_market':'local'})
+        today=response.json()['data']['room_types'][0]
+        self.assertFalse(today['default_price']['has_discount'])
+        self.assertFalse(today['default_prices']['local']['has_discount'])
+        self.assertIsNone(today['default_prices']['foreign']['discount_price'])
+
+    def test_catalog_no_discount_ended_and_null_prices(self):
+        self.room_type.local_usd_price=None
+        self.room_type.foreign_mmk_price=None
+        self.room_type.foreign_usd_price=None
+        self.room_type.save()
+        discount=self.discount(timing_mode='manual')
+        discount.ended_at=timezone.now()
+        discount.save()
+        room=APIClient().get('/api/v1/public/room-types/',{'business_id':77}).json()['data']['room_types'][0]
+        self.assertFalse(room['default_price']['has_discount'])
+        self.assertIsNone(room['default_price']['discount_price'])
+        self.assertIsNone(room['default_prices']['local']['usd_discount_price'])
+        self.assertFalse(room['default_prices']['local']['usd_has_discount'])
+        self.assertIsNone(room['default_prices']['foreign']['original_price'])
+        self.assertFalse(room['default_prices']['foreign']['has_discount'])
+
+    def test_public_catalog_prefetches_discounts_once(self):
+        from django.test.utils import CaptureQueriesContext
+        self.discount(timing_mode='manual')
+        RoomType.objects.create(hotel=self.hotel,core_room_type_id=999,name='Other')
+        with CaptureQueriesContext(connection) as queries:
+            response=APIClient().get('/api/v1/public/room-types/',{'business_id':77})
+            self.assertEqual(response.status_code,200)
+        self.assertEqual(sum('FROM "booking_roompricediscount"' in query['sql'] for query in queries),1)
+
+    def test_catalog_campaign_date_uses_hotel_timezone(self):
+        from datetime import date, datetime, timezone as dt_timezone
+        from unittest.mock import patch
+        self.hotel.timezone='Asia/Yangon'
+        self.hotel.save(update_fields=['timezone'])
+        self.discount(start_date=date(2026,11,3),end_date=date(2026,11,3))
+        with patch('django.utils.timezone.now',return_value=datetime(2026,11,2,20,tzinfo=dt_timezone.utc)):
+            row=APIClient().get('/api/v1/public/room-types/',{'business_id':77}).json()['data']['room_types'][0]
+            self.assertEqual(row['default_prices']['local']['price_date'],'2026-11-03')
+            self.assertTrue(row['default_price']['has_discount'])
+            self.hotel.timezone='America/New_York'
+            self.hotel.save(update_fields=['timezone'])
+            row=APIClient().get('/api/v1/public/room-types/',{'business_id':77}).json()['data']['room_types'][0]
+            self.assertEqual(row['default_prices']['local']['price_date'],'2026-11-02')
+            self.assertFalse(row['default_price']['has_discount'])

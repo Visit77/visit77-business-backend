@@ -11,7 +11,7 @@ from rest_framework.exceptions import ValidationError
 import logging
 logger = logging.getLogger(__name__)
 
-from booking.room_pricing import discounted_room_amounts, guest_price_fields
+from booking.room_pricing import discounted_room_amounts, guest_price_fields, market_default_prices
 from booking.add_on_templates import validate_configuration_values
 from booking.booking_services.invoice_charges import (
     booking_charge_dimensions,
@@ -1292,18 +1292,7 @@ def availability_for_hotels(
                 "room_area_to": snapshot.get("room_area_to"),
                 "area_unit": snapshot.get("area_unit"),
                 "size_sqft": snapshot.get("size_sqft"),
-                "default_prices": {
-                    "local": {
-                        "base_price": room_type.local_mmk_price if room_type.hotel.base_currency == "MMK" else room_type.local_usd_price,
-                        "base_currency": snapshot.get("local_base_currency") or room_type.hotel.base_currency,
-                        "usd_display_price": room_type.local_usd_price,
-                    },
-                    "foreign": {
-                        "base_price": room_type.foreign_mmk_price if room_type.hotel.base_currency == "MMK" else room_type.foreign_usd_price,
-                        "base_currency": snapshot.get("foreign_base_currency") or room_type.hotel.base_currency,
-                        "usd_display_price": room_type.foreign_usd_price,
-                    },
-                },
+                "default_prices": market_default_prices(room_type, check_in, discounts),
                 "default_price": {
                     **{field: default_rate_plan[field] for field in (
                         "has_discount", "original_price", "discount_percentage", "discount_price",

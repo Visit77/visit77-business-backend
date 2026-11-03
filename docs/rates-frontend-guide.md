@@ -637,3 +637,49 @@ Deploy Booking Engine's endpoint first, then Core. Core must set
 suffix or HTTP redirects) and `BOOKING_ENGINE_ADMIN_KEY` to the shared internal
 key. Existing migration 0076 must already be applied; this change adds no new
 migration. Directory clients call Core as before and never receive the key.
+
+## Public room catalogue: discounts for local and foreign default prices
+
+Both `/api/v1/public/room-types/?business_id=...` and the hotel-scoped room/OTA
+catalogues now include today's campaign fields in `default_price` and each
+`rate_plans` entry. Today is determined in the hotel's timezone. Catalogues still
+return `availability_calculated=false`; a price is not a live availability check.
+
+`default_prices.local` and `default_prices.foreign` in both catalogues and
+availability now include:
+
+```json
+{
+  "base_price": 100000,
+  "base_currency": "MMK",
+  "usd_display_price": 25,
+  "price_date": "2026-11-03",
+  "has_discount": true,
+  "original_price": 100000,
+  "discount_percentage": 20,
+  "discount_price": 80000,
+  "usd_has_discount": true,
+  "usd_original_price": 25,
+  "usd_discount_percentage": 10,
+  "usd_discount_price": 22.5
+}
+```
+
+Each market has its own independent values. Unprefixed discount fields refer to
+`base_currency`; `usd_*` fields refer to USD. No applicable reduction means
+`has_discount=false`, percentage zero, and discount price null; the same rule
+applies independently to `usd_*`. An absent USD price stays null, never a Core
+snapshot's zero placeholder.
+
+The existing `base_price` and `usd_display_price` in this plural `default_prices`
+matrix remain **normal configured Booking prices**, with campaign prices added
+alongside them. Core snapshot prices are no longer used here. The selected
+singular `default_price` keeps its existing payable-price semantics and uses the
+requested display currency. Catalogues apply today's campaign to normal rate
+plans; availability's singular price additionally resolves daily/period rules.
+
+Availability's plural matrix applies campaigns on the requested check-in date;
+catalogues use today. The matrix shows configured normal prices/campaigns for
+both markets even when `guest_market` selects only one set of rate plans. Use
+`nightly_prices` for per-night changes across a stay and the existing total fields
+for payable stay totals.

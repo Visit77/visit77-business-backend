@@ -58,3 +58,35 @@ def sync_market_price(room_type, market):
     return plan
 
 
+
+
+def room_price_today(room_type):
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    from django.utils import timezone
+
+    try:
+        zone = ZoneInfo(room_type.hotel.timezone or "UTC")
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = ZoneInfo("UTC")
+    return timezone.localdate(timezone=zone)
+
+
+def market_default_prices(room_type, stay_date, discounts):
+    """Normal Booking setup and campaign reductions for both markets/currencies."""
+    result = {}
+    base_currency = room_type.hotel.base_currency
+    campaigns = discounts if room_type.room_price_setup else []
+    for market in ("local", "foreign"):
+        normal_base = getattr(room_type, f"{market}_{'usd' if base_currency == 'USD' else 'mmk'}_price")
+        normal_usd = getattr(room_type, f"{market}_usd_price")
+        base, usd = discounted_room_amounts(normal_base, normal_usd, campaigns, stay_date, market, base_currency)
+        usd_promo = guest_price_fields(normal_usd, usd)
+        result[market] = {
+            "base_price": normal_base,
+            "base_currency": base_currency,
+            "usd_display_price": normal_usd,
+            "price_date": str(stay_date),
+            **guest_price_fields(normal_base, base),
+            **{f"usd_{field}": value for field, value in usd_promo.items()},
+        }
+    return result
