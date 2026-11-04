@@ -1,8 +1,31 @@
 from decimal import Decimal
+from copy import deepcopy
 
 from django.test import SimpleTestCase
 
-from config.response_formatter import normalize_monetary_response, success
+from config.response_formatter import fail, normalize_monetary_response, success
+
+
+class ResponseSnapshotTests(SimpleTestCase):
+    def test_nested_snapshots_are_hidden_without_mutating_source(self):
+        payload = {
+            'id': 1, 'core_snapshot': {'large': [1, 2]},
+            'rooms': [{'price': '100.00', 'room_type_snapshot': {'name': 'Old'},
+                       'meal_plan_snapshots': [{'id': 4}], 'policy': {'refund': True}}],
+        }
+        original = deepcopy(payload)
+        response = success(payload, extra_dict={'access_snapshot': {'secret': 1}, 'page': 1})
+        self.assertEqual(response.data['data'], {
+            'id': 1, 'rooms': [{'price': 100.0, 'policy': {'refund': True}}],
+        })
+        self.assertNotIn('access_snapshot', response.data)
+        self.assertEqual(response.data['page'], 1)
+        self.assertEqual(payload, original)
+
+    def test_error_data_hides_snapshots_too(self):
+        response = fail({'detail': 'Invalid'}, args=[{'id': 1, 'snapshot': {'old': True}}])
+        self.assertEqual(response.data['data'], [{'id': 1}])
+        self.assertEqual(response.status_code, 400)
 
 
 class MonetaryResponseNormalizationTests(SimpleTestCase):

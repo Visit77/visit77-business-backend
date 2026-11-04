@@ -21,6 +21,20 @@ _NON_MONEY_EXACT_KEYS = {
 }
 
 
+def without_response_snapshots(value):
+    """Hide stored audit payloads from API output without mutating source data."""
+    if isinstance(value, Mapping):
+        return {
+            key: without_response_snapshots(item)
+            for key, item in value.items()
+            if str(key).lower() not in ("snapshot", "snapshots")
+            and not str(key).lower().endswith(("_snapshot", "_snapshots"))
+        }
+    if isinstance(value, (list, tuple)):
+        return [without_response_snapshots(item) for item in value]
+    return value
+
+
 def _is_monetary_key(key):
     key = str(key or "").lower()
     if (
@@ -64,13 +78,14 @@ def normalize_monetary_response(value, monetary=False):
 
 
 def success(args, message='Success', extra_dict=None, status_code=status.HTTP_200_OK, status=status.HTTP_200_OK):
+    args = without_response_snapshots(args)
     response = _response_formatter(
         normalize_monetary_response(args),
         status_code=status_code,
         message=message,
     )
     if extra_dict:
-        response.update(normalize_monetary_response(extra_dict))
+        response.update(normalize_monetary_response(without_response_snapshots(extra_dict)))
 
     try:
         total_counts = args[-1]['total_counts']
@@ -126,7 +141,7 @@ def _response_formatter(args, status_code=200, message='Success', error=None):
         'count': len(args) if hasattr(args, '__len__') and args else 0,
         'message': message,
         'status_code': status_code,
-        'data': args,
+        'data': without_response_snapshots(args),
         'error': error_list,
     }
 
