@@ -16,7 +16,7 @@ def discounted_room_amounts(base_price, usd_price, discounts, stay_date, guest_m
 
 
 def guest_price_fields(original_price, payable_price):
-    """Describe a campaign reduction in the guest's selected display currency."""
+    """Describe a campaign reduction for one explicit currency's amounts."""
     from decimal import Decimal, ROUND_HALF_UP
 
     has_discount = original_price is not None and original_price > 0 and payable_price < original_price
@@ -31,6 +31,57 @@ def guest_price_fields(original_price, payable_price):
         "discount_percentage": percentage,
         "discount_price": payable_price if has_discount else None,
     }
+
+
+def extra_bed_currency_rates(room_type, market):
+    """Room-type owned rates; absent foreign currency rates inherit local rates."""
+    def amount(currency):
+        value = getattr(room_type, f'extra_bed_{market}_{currency}_price')
+        if value is None and market == 'foreign':
+            value = getattr(room_type, f'extra_bed_local_{currency}_price')
+        return value
+
+    return {'MMK': amount('mmk'), 'USD': amount('usd')}
+
+
+def extra_bed_amounts(room_type, market):
+    from decimal import Decimal
+    rates = extra_bed_currency_rates(room_type, market)
+    usd = rates['USD']
+    base = rates[room_type.hotel.base_currency]
+    return base if base is not None else Decimal('0'), usd
+
+
+def extra_bed_price_payload(room_type, market, display_currency=None):
+    base, usd = extra_bed_amounts(room_type, market)
+    rates = extra_bed_currency_rates(room_type, market)
+    currency = display_currency or room_type.hotel.base_currency
+    if rates[currency] is not None:
+        display = rates[currency]
+    else:
+        other = 'MMK' if currency == 'USD' else 'USD'
+        if rates[other] is not None:
+            currency, display = other, rates[other]
+        else:
+            currency, display = room_type.hotel.base_currency, base
+    return {
+        'base_price': base, 'base_currency': room_type.hotel.base_currency,
+        'usd_display_price': usd, 'display_price': display, 'display_currency': currency,
+        'pricing_unit': 'per_bed_per_night',
+    }
+
+
+def validate_extra_bed_settlement(room_type, market, count):
+    """Never silently turn an alternate-currency charge into a free base charge."""
+    if not count:
+        return
+    from rest_framework.exceptions import ValidationError
+    rates = extra_bed_currency_rates(room_type, market)
+    if rates[room_type.hotel.base_currency] is None and any(value for value in rates.values()):
+        raise ValidationError({'extra_beds': (
+            f'Set the extra bed price in hotel base currency {room_type.hotel.base_currency} '
+            'before booking. Alternate currency prices are display amounts.'
+        )})
 
 
 def sync_market_price(room_type, market):

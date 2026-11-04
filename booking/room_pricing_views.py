@@ -5,7 +5,7 @@ from rest_framework.exceptions import MethodNotAllowed, NotFound
 
 from booking.models import RoomPriceDiscount, RoomType
 from booking.room_pricing import sync_market_price, visible_room_discounts
-from booking.room_pricing_serializers import PRICE_FIELDS, RoomPriceDiscountSerializer, RoomPriceSetupSerializer
+from booking.room_pricing_serializers import EXTRA_BED_PRICE_FIELDS, ExtraBedPriceSetupSerializer, PRICE_FIELDS, RoomPriceDiscountSerializer, RoomPriceSetupSerializer
 from booking.serializers import RatePlanSerializer
 from config.response_formatter import success
 
@@ -28,6 +28,7 @@ class RoomPricingMixin:
                 visible_room_discounts(room_type), many=True, context={"room_type": room_type},
             ).data,
             **{field: getattr(room_type, field) for field in PRICE_FIELDS},
+            **{field: getattr(room_type, field) for field in EXTRA_BED_PRICE_FIELDS},
             "rate_plans": RatePlanSerializer(room_type.rate_plans.filter(is_active=True).order_by("id"), many=True).data,
         }
 
@@ -44,6 +45,22 @@ class RoomPricingMixin:
             room_type.save(update_fields=[*PRICE_FIELDS, "room_price_setup"])
             for market in ("local", "foreign"):
                 sync_market_price(room_type, market)
+        return success(self._room_price_payload(room_type))
+
+    @action(detail=True, methods=['get', 'put', 'patch'], url_path='extra-bed-price')
+    @transaction.atomic
+    def extra_bed_price(self, request, pk=None):
+        room_type = RoomType.objects.select_for_update().select_related('hotel').get(pk=self.get_object().pk)
+        if request.method != 'GET':
+            serializer = ExtraBedPriceSetupSerializer(data=request.data, context={'room_type': room_type})
+            serializer.is_valid(raise_exception=True)
+            values = serializer.validated_data
+            if request.method == 'PUT':
+                values = {field: values.get(field) for field in EXTRA_BED_PRICE_FIELDS}
+            for field, value in values.items():
+                setattr(room_type, field, value)
+            if values:
+                room_type.save(update_fields=list(values))
         return success(self._room_price_payload(room_type))
 
     @action(detail=True, methods=["get", "post"], url_path="discounts")

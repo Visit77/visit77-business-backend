@@ -38,6 +38,83 @@ class RoomPricingTests(TestCase):
         self.assertTrue(serializer.is_valid(), serializer.errors)
         return serializer.save()
 
+    @override_settings(BOOKING_ADMIN_API_KEY='key')
+    def test_extra_bed_price_setup_and_scoping(self):
+        url = f'/api/v1/admin/room-types/{self.room_type.id}/extra-bed-price/'
+        response = self.admin_client().put(url, {
+            'extra_bed_local_mmk_price': '20000', 'extra_bed_local_usd_price': '10',
+            'extra_bed_foreign_mmk_price': '40000', 'extra_bed_foreign_usd_price': '20',
+        }, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.room_type.refresh_from_db()
+        self.assertEqual(self.room_type.extra_bed_foreign_usd_price, 20)
+        self.assertEqual(self.admin_client('999').patch(url, {'extra_bed_local_mmk_price': 1}, format='json').status_code, 404)
+        self.assertEqual(self.admin_client().patch(url, {'extra_bed_local_mmk_price': -1}, format='json').status_code, 400)
+        self.room_type.room_price_setup = False
+        self.room_type.save()
+        self.assertEqual(self.admin_client().patch(url, {'extra_bed_local_mmk_price': 1}, format='json').status_code, 400)
+
+    def test_extra_bed_market_fallback_zero_and_display_currency(self):
+        from booking.room_pricing import extra_bed_amounts, extra_bed_price_payload
+        self.room_type.extra_bed_local_mmk_price = Decimal('20000')
+        self.room_type.extra_bed_foreign_usd_price = Decimal('20')
+        self.assertEqual(extra_bed_amounts(self.room_type, 'foreign'), (Decimal('20000'), Decimal('20')))
+        self.assertEqual(extra_bed_price_payload(self.room_type, 'local', 'USD')['display_currency'], 'MMK')
+        self.room_type.extra_bed_foreign_mmk_price = Decimal('0')
+        self.assertEqual(extra_bed_amounts(self.room_type, 'foreign')[0], 0)
+        self.room_type.extra_bed_local_mmk_price = None
+        self.assertEqual(extra_bed_amounts(self.room_type, 'local'), (Decimal('0'), None))
+
+    def test_extra_bed_estimate_booking_and_invoice_use_room_type_price(self):
+        self.room_type.extra_bed_local_mmk_price = Decimal('20000')
+        self.room_type.core_snapshot = {'extra_bed_available': True, 'extra_bed_quantity': 2}
+        self.room_type.save()
+        self.plan.extra_bed_base_price = 999
+        self.plan.save()
+        self.payload['rooms'][0]['extra_beds'] = 2
+        ensure_daily_inventory_for_room_type(self.room_type, self.start, days=2)
+        estimate = estimate_booking(self.payload)
+        row = next(item for item in estimate['summary_items'] if item['type'] == 'extra_bed')
+        self.assertEqual(row['amount'], Decimal('80000'))
+        booking, _ = create_booking(self.payload)
+        room = booking.rooms.first()
+        self.assertEqual(room.rate_plan_snapshot['extra_bed_base_price'], '20000.00')
+        self.assertEqual(sum(n.extra_bed_total for n in room.nights.all()), Decimal('80000'))
+        from booking.services import ensure_initial_invoice
+        invoice = ensure_initial_invoice(booking)
+        self.assertEqual(sum(line.total for line in invoice.lines.all() if line.metadata.get('line_type') == 'extra_bed'), Decimal('80000'))
+
+    def test_extra_bed_migration_backfills_existing_default_rates(self):
+        migration = import_module('booking.migrations.0078_room_type_extra_bed_prices')
+        self.plan.extra_bed_base_price = 20000
+        self.plan.extra_bed_usd_display_price = 10
+        self.plan.save()
+        migration.backfill_extra_bed_prices(apps, SimpleNamespace(connection=connection))
+        self.room_type.refresh_from_db()
+        self.assertEqual(self.room_type.extra_bed_local_mmk_price, 20000)
+        self.assertEqual(self.room_type.extra_bed_local_usd_price, 10)
+
+    def test_extra_bed_public_catalog_and_availability_label_fallback_currency(self):
+        self.room_type.extra_bed_local_mmk_price = 20000
+        self.room_type.save()
+        room = self.guest_availability(currency='USD')
+        self.assertEqual(room['default_price']['display_currency'], 'USD')
+        self.assertEqual(room['extra_bed_price']['display_currency'], 'MMK')
+        self.assertEqual(room['extra_bed_price']['display_price'], 20000)
+        response = APIClient().get('/api/v1/public/room-types/', {
+            'business_id': 77, 'guest_market': 'local', 'display_currency': 'USD',
+        })
+        plan = response.data['data']['room_types'][0]['rate_plans'][0]
+        self.assertEqual(plan['extra_bed_display_currency'], 'MMK')
+        self.assertEqual(plan['extra_bed_display_price'], 20000)
+
+    def test_alternate_currency_only_extra_bed_cannot_silently_become_free(self):
+        from booking.room_pricing import validate_extra_bed_settlement
+        self.room_type.extra_bed_local_usd_price = Decimal('10')
+        with self.assertRaises(ValidationError):
+            validate_extra_bed_settlement(self.room_type, 'local', 1)
+        validate_extra_bed_settlement(self.room_type, 'local', 0)
+
     def test_all_four_prices_store_calculated_percentage(self):
         discount = self.discount(local_usd_price="80", foreign_mmk_price="160000", foreign_usd_price="160")
         discount.refresh_from_db()
@@ -240,18 +317,25 @@ class RoomPricingTests(TestCase):
         self.assertFalse(room["default_price"]["has_discount"])
         self.assertEqual(room["default_price"]["original_price"], Decimal("60000"))
 
-    def test_guest_promo_uses_selected_currency_and_market(self):
+    def test_guest_promo_keeps_base_and_usd_separate_when_displaying_usd(self):
         self.discount(local_usd_price="90", foreign_usd_price="160", foreign_mmk_price="150000")
         room = self.guest_availability(currency="USD")
-        self.assertEqual(room["default_price"]["original_price"], Decimal("100"))
-        self.assertEqual(room["default_price"]["discount_price"], Decimal("90"))
-        self.assertEqual(room["default_price"]["discount_percentage"], Decimal("10"))
+        for payload in (room['default_price'], room['default_rate_plan'], room['rate_plans'][0], room['rate_plans'][0]['nightly_prices'][0]):
+            self.assertEqual(payload['original_price'], Decimal('100000'))
+            self.assertEqual(payload['discount_price'], Decimal('80000'))
+            self.assertEqual(payload['discount_percentage'], Decimal('20'))
+            self.assertEqual(payload['usd_original_price'], Decimal('100'))
+            self.assertEqual(payload['usd_discount_price'], Decimal('90'))
+            self.assertEqual(payload['usd_discount_percentage'], Decimal('10'))
+        self.assertEqual(room['default_price']['display_price'], Decimal('90'))
         RatePlan.objects.create(room_type=self.room_type, code="foreign", name="Foreign", guest_market="foreign",
                                is_default=True, default_price=200000, usd_display_price=200)
         room = self.guest_availability(market="foreign", currency="USD")
-        self.assertEqual(room["default_price"]["original_price"], Decimal("200"))
-        self.assertEqual(room["default_price"]["discount_price"], Decimal("160"))
-        self.assertEqual(room["default_price"]["discount_percentage"], Decimal("20"))
+        self.assertEqual(room["default_price"]["original_price"], Decimal("200000"))
+        self.assertEqual(room["default_price"]["discount_price"], Decimal("150000"))
+        self.assertEqual(room["default_price"]["discount_percentage"], Decimal("25"))
+        self.assertEqual(room['default_price']['usd_discount_price'], Decimal('160'))
+        self.assertEqual(room['default_price']['usd_discount_percentage'], Decimal('20'))
 
     def test_guest_promo_excludes_ended_future_and_cheaper_rates(self):
         discount = self.discount()
@@ -383,10 +467,13 @@ class RoomPricingTests(TestCase):
             self.assertEqual(response.status_code,200,response.data)
             room=response.json()['data']['room_types'][0]
             self.assertTrue(room['default_price']['has_discount'])
-            self.assertEqual(room['default_price']['original_price'],100)
-            self.assertEqual(room['default_price']['discount_price'],90)
-            self.assertEqual(room['default_price']['discount_percentage'],10)
+            self.assertEqual(room['default_price']['original_price'],100000)
+            self.assertEqual(room['default_price']['discount_price'],80000)
+            self.assertEqual(room['default_price']['discount_percentage'],20)
             for payload in (room['default_price'], room['rate_plans'][0]):
+                self.assertEqual(payload['original_price'], 100000)
+                self.assertEqual(payload['discount_price'], 80000)
+                self.assertEqual(payload['discount_percentage'], 20)
                 self.assertTrue(payload['usd_has_discount'])
                 self.assertEqual(payload['usd_original_price'], 100)
                 self.assertEqual(payload['usd_discount_price'], 90)

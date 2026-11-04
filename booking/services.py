@@ -11,7 +11,7 @@ from rest_framework.exceptions import ValidationError
 import logging
 logger = logging.getLogger(__name__)
 
-from booking.room_pricing import discounted_room_amounts, guest_price_fields, market_default_prices
+from booking.room_pricing import validate_extra_bed_settlement, extra_bed_price_payload, extra_bed_amounts, discounted_room_amounts, guest_price_fields, market_default_prices
 from booking.add_on_templates import validate_configuration_values
 from booking.booking_services.invoice_charges import (
     booking_charge_dimensions,
@@ -1189,10 +1189,7 @@ def availability_for_hotels(
                     (rule.base_price, rule.usd_display_price) if rule is not None
                     else (plan.base_price, plan.usd_display_price)
                 )
-                guest_prices = guest_price_fields(
-                    _display_amount(original_base, original_usd, selected_display_currency),
-                    _display_amount(base_price, usd_price, selected_display_currency),
-                )
+                guest_prices = guest_price_fields(original_base, base_price)
                 nightly.append({
                     **guest_prices,
                     **{f"usd_{field}": value for field, value in guest_price_fields(
@@ -1205,6 +1202,8 @@ def availability_for_hotels(
                     "display_price": _display_amount(base_price, usd_price, selected_display_currency),
                     "price": base_price,
                 })
+            extra_base, extra_usd = extra_bed_amounts(room_type, guest_market)
+            extra_payload = extra_bed_price_payload(room_type, guest_market, display_currency)
             room_plans.append({
                 "id": plan.id,
                 "code": plan.code,
@@ -1232,10 +1231,11 @@ def availability_for_hotels(
                 "base_total": sum((item["base_price"] for item in nightly), Decimal("0")),
                 "display_total": sum((item["display_price"] for item in nightly), Decimal("0")),
                 "total": sum((item["base_price"] for item in nightly), Decimal("0")),
-                "extra_bed_base_price": plan.extra_bed_base_price,
-                "extra_bed_usd_display_price": plan.extra_bed_usd_display_price,
-                "extra_bed_display_price": _display_amount(plan.extra_bed_base_price, plan.extra_bed_usd_display_price, display_currency or room_type.hotel.base_currency),
-                "extra_bed_price": plan.extra_bed_base_price,
+                "extra_bed_base_price": extra_base,
+                "extra_bed_usd_display_price": extra_usd,
+                "extra_bed_display_price": extra_payload["display_price"],
+                "extra_bed_display_currency": extra_payload["display_currency"],
+                "extra_bed_price": extra_base,
                 "breakfast_included": plan.breakfast_included,
                 "refundable": plan.refundable,
                 "cancellation_policy": plan.cancellation_policy,
@@ -1317,12 +1317,13 @@ def availability_for_hotels(
                     "base_currency": default_rate_plan["base_currency"],
                     "usd_display_price": default_rate_plan["extra_bed_usd_display_price"],
                     "display_price": default_rate_plan["extra_bed_display_price"],
-                    "display_currency": default_rate_plan["display_currency"],
+                    "display_currency": default_rate_plan["extra_bed_display_currency"],
                     "pricing_unit": "per_bed_per_night",
                 },
                 "extra_bed_base_price": default_rate_plan["extra_bed_base_price"],
                 "extra_bed_usd_display_price": default_rate_plan["extra_bed_usd_display_price"],
                 "extra_bed_display_price": default_rate_plan["extra_bed_display_price"],
+                "extra_bed_display_currency": default_rate_plan["extra_bed_display_currency"],
                 "room_type_extra_bed_quantity": extra_bed_config["extra_bed_quantity"],
                 "default_rate_plan": default_rate_plan,
                 "max_adults": room_type.max_adults,
@@ -1474,6 +1475,7 @@ def estimate_booking(data):
         quantity = requested["quantity"]
         extra_beds = requested.get("extra_beds", 0)
         validate_requested_extra_beds(room_type, extra_beds, quantity)
+        validate_extra_bed_settlement(room_type, guest_market, extra_beds)
         total_guest_capacity += room_type.max_occupancy * quantity
         preference_snapshot, option_total = resolve_room_preferences(
             room_type,
@@ -1506,7 +1508,7 @@ def estimate_booking(data):
         for day in dates:
             rule = daily_rate_rows.get(day) or periods.get(day)
             unit_price, usd_display_price = _rate_amounts(rule, rate_plan, day, guest_market, discounts)
-            extra_bed_total = rate_plan.extra_bed_base_price * extra_beds
+            extra_bed_total = extra_bed_amounts(room_type, guest_market)[0] * extra_beds
             meal_plan_night_total = sum((
                 _meal_plan_nightly_total(link, plan, guest_market, quantity)
                 for link, plan in resolved_meal_plans
@@ -1547,6 +1549,7 @@ def estimate_booking(data):
             "formatted_amount": format_money(room_stay_total, hotel.base_currency),
         })
         if extra_beds:
+            extra_display = extra_bed_price_payload(room_type, guest_market, data.get('display_currency'))
             summary_items.append({
                 "type": "extra_bed",
                 "label": f"{extra_beds} x Extra Bed(s)",
@@ -1555,6 +1558,9 @@ def estimate_booking(data):
                 "rate_plan_id": rate_plan.id,
                 "quantity": extra_beds,
                 "amount": extra_bed_stay_total,
+                "currency": hotel.base_currency,
+                "display_amount": extra_display['display_price'] * extra_beds * len(dates),
+                "display_currency": extra_display['display_currency'],
                 "formatted_amount": format_money(extra_bed_stay_total, hotel.base_currency),
             })
         if option_total:
@@ -1760,6 +1766,7 @@ def create_booking(data, idempotency_key=None):
         validate_requested_extra_beds(
             room_type, requested.get("extra_beds", 0), quantity,
         )
+        validate_extra_bed_settlement(room_type, guest_market, requested.get('extra_beds', 0))
         total_guest_capacity += room_type.max_occupancy * quantity
         preference_snapshot, option_total = resolve_room_preferences(
             room_type,
@@ -1815,8 +1822,8 @@ def create_booking(data, idempotency_key=None):
                 "base_currency": hotel.base_currency,
                 "base_price": str(rate_plan.base_price),
                 "usd_display_price": str(rate_plan.usd_display_price) if rate_plan.usd_display_price is not None else None,
-                "extra_bed_base_price": str(rate_plan.extra_bed_base_price),
-                "extra_bed_usd_display_price": str(rate_plan.extra_bed_usd_display_price) if rate_plan.extra_bed_usd_display_price is not None else None,
+                "extra_bed_base_price": str(extra_bed_amounts(room_type, booking.guest_market)[0]),
+                "extra_bed_usd_display_price": str(extra_bed_amounts(room_type, booking.guest_market)[1]) if extra_bed_amounts(room_type, booking.guest_market)[1] is not None else None,
                 "currency": hotel.base_currency,
                 "refundable": rate_plan.refundable,
                 "cancellation_policy": rate_plan.cancellation_policy,
@@ -1847,7 +1854,7 @@ def create_booking(data, idempotency_key=None):
         for day in dates:
             rule = daily_rate_rows.get(day) or periods.get(day)
             unit_price, _usd_display_price = _rate_amounts(rule, rate_plan, day, guest_market, discounts)
-            extra_bed_total = rate_plan.extra_bed_base_price * requested.get("extra_beds", 0)
+            extra_bed_total = extra_bed_amounts(room_type, booking.guest_market)[0] * requested.get("extra_beds", 0)
             meal_plan_night_total = sum((
                 _meal_plan_nightly_total(link, plan, guest_market, quantity)
                 for link, plan in resolved_meal_plans

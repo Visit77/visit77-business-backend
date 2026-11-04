@@ -7,6 +7,19 @@ from booking.models import RoomPriceDiscount
 
 PRICE_FIELDS = ("local_mmk_price", "local_usd_price", "foreign_mmk_price", "foreign_usd_price")
 PERCENTAGE_FIELDS = tuple(field.replace("_price", "_percentage") for field in PRICE_FIELDS)
+EXTRA_BED_PRICE_FIELDS = tuple(f"extra_bed_{field}" for field in PRICE_FIELDS)
+
+
+class ExtraBedPriceSetupSerializer(serializers.Serializer):
+    extra_bed_local_mmk_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
+    extra_bed_local_usd_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
+    extra_bed_foreign_mmk_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
+    extra_bed_foreign_usd_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
+
+    def validate(self, attrs):
+        if not self.context['room_type'].room_price_setup:
+            raise serializers.ValidationError('Set the normal room price before adding an extra bed rate.')
+        return attrs
 
 
 class RoomPriceSetupSerializer(serializers.Serializer):

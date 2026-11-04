@@ -8,7 +8,7 @@ from django.db.models import Q
 from django.utils import timezone
 from rest_framework import serializers
 
-from booking.room_pricing import discounted_room_amounts, guest_price_fields, market_default_prices, room_price_today
+from booking.room_pricing import extra_bed_price_payload, extra_bed_amounts, discounted_room_amounts, guest_price_fields, market_default_prices, room_price_today
 from booking.add_on_templates import normalize_configuration_schema
 from booking.models import (
     AddOn,
@@ -451,13 +451,9 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
             price_date, market, obj.hotel.base_currency,
         )
         display_price = usd_price if display_currency == "USD" and usd_price is not None else base_price
-        original_display = plan.usd_display_price if display_currency == "USD" and plan.usd_display_price is not None else plan.base_price
-        promo = guest_price_fields(original_display, display_price)
-        extra_bed_display_price = (
-            plan.extra_bed_usd_display_price
-            if display_currency == "USD" and plan.extra_bed_usd_display_price is not None
-            else plan.extra_bed_base_price
-        )
+        promo = guest_price_fields(plan.base_price, base_price)
+        extra_payload = extra_bed_price_payload(obj, market, display_currency)
+        extra_base, extra_usd = extra_bed_amounts(obj, market)
         return {
             **promo,
             **{f"usd_{field}": value for field, value in guest_price_fields(
@@ -474,9 +470,11 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
             "usd_display_price": usd_price,
             "display_price": display_price,
             "display_currency": display_currency,
-            "extra_bed_base_price": plan.extra_bed_base_price,
-            "extra_bed_usd_display_price": plan.extra_bed_usd_display_price,
-            "extra_bed_display_price": extra_bed_display_price,
+            "extra_bed_base_price": extra_base,
+            "extra_bed_usd_display_price": extra_usd,
+            "extra_bed_display_price": extra_payload["display_price"],
+            "extra_bed_display_currency": extra_payload["display_currency"],
+            "extra_bed_price": extra_payload,
             "breakfast_included": plan.breakfast_included,
             "refundable": plan.refundable,
             "cancellation_policy": plan.cancellation_policy,
@@ -677,7 +675,7 @@ class RoomTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = RoomType
         fields = "__all__"
-        read_only_fields = ["hotel", "core_room_type_id", "name", "description", "cover_image_url", "max_adults", "max_children", "max_occupancy", "core_active", "core_snapshot", "synced_at", "room_price_setup", "local_mmk_price", "local_usd_price", "foreign_mmk_price", "foreign_usd_price"]
+        read_only_fields = ["extra_bed_local_mmk_price", "extra_bed_local_usd_price", "extra_bed_foreign_mmk_price", "extra_bed_foreign_usd_price", "hotel", "core_room_type_id", "name", "description", "cover_image_url", "max_adults", "max_children", "max_occupancy", "core_active", "core_snapshot", "synced_at", "room_price_setup", "local_mmk_price", "local_usd_price", "foreign_mmk_price", "foreign_usd_price"]
 
 
 class MealPlanSerializer(serializers.ModelSerializer):
@@ -1177,6 +1175,15 @@ class PhysicalRoomActionHistorySerializer(serializers.ModelSerializer):
 
 
 class RatePlanSerializer(serializers.ModelSerializer):
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        market = self.context.get('guest_market') or (
+            instance.guest_market if instance.guest_market != RatePlan.GuestMarket.ALL else RatePlan.GuestMarket.LOCAL
+        )
+        base, usd = extra_bed_amounts(instance.room_type, market)
+        data.update(extra_bed_base_price=base, extra_bed_usd_display_price=usd, extra_bed_price=base)
+        return data
+
     class Meta:
         model = RatePlan
         fields = "__all__"

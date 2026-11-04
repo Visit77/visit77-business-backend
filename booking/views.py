@@ -3846,6 +3846,10 @@ class RoomBoardView(APIView):
     def serialize_room_board_rate_plan(self, rate_plan):
         if not rate_plan:
             return None
+        from booking.room_pricing import extra_bed_amounts
+        extra_base, extra_usd = extra_bed_amounts(
+            rate_plan.room_type, 'foreign' if rate_plan.guest_market == 'foreign' else 'local',
+        )
         return {
             "id": rate_plan.id,
             "code": rate_plan.code,
@@ -3855,8 +3859,8 @@ class RoomBoardView(APIView):
             "base_price": rate_plan.base_price,
             "usd_display_price": rate_plan.usd_display_price,
             "default_price": rate_plan.default_price,
-            "extra_bed_base_price": rate_plan.extra_bed_base_price,
-            "extra_bed_usd_display_price": rate_plan.extra_bed_usd_display_price,
+            "extra_bed_base_price": extra_base,
+            "extra_bed_usd_display_price": extra_usd,
             "breakfast_included": rate_plan.breakfast_included,
             "refundable": rate_plan.refundable,
             "is_default": rate_plan.is_default,

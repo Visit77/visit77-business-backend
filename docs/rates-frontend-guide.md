@@ -502,16 +502,21 @@ campaigns, and the existing `total`/`display_total` for the stay total. A campai
 starting on a later night may therefore have `has_discount=false` on the card
 and `has_discount=true` on that later night's entry.
 
+Unprefixed `has_discount`, `original_price`, `discount_percentage`, and
+`discount_price` always describe `base_currency`, regardless of `display_currency`.
+The `usd_` versions always describe USD. This applies to `default_price`,
+`default_rate_plan`, `rate_plans`, and `nightly_prices` in public responses.
+Only `display_price`/`effective_display_price` follow the requested display currency.
 `original_price` is the effective rate before applying the room campaign,
 including any DailyRate or RatePeriod. `discount_price` is the payable rate only
 when the campaign reduces that amount. Percentages are calculated from these
-two displayed amounts and rounded to two decimal places; the saved campaign
+two same-currency amounts and rounded to two decimal places; the saved campaign
 percentage remains its creation-time percentage against the configured normal
 room price. A cheaper DailyRate without a campaign does not produce a discount
 badge, and a campaign never raises a cheaper effective rate.
 
-Frontend: show a crossed-out `original_price`, the `discount_percentage` badge,
-and `discount_price` when `has_discount=true`. Otherwise show `original_price`.
+Frontend: for base currency use `original_price`, `discount_percentage`,
+`discount_price`, and `has_discount`. For USD use their `usd_` versions.
 
 Room card example (existing fields retain their payable values):
 
@@ -676,7 +681,8 @@ The existing `base_price` and `usd_display_price` in this plural `default_prices
 matrix remain **normal configured Booking prices**, with campaign prices added
 alongside them. Core snapshot prices are no longer used here. The selected
 singular `default_price` keeps its existing payable-price semantics and uses the
-requested display currency. Catalogues apply today's campaign to normal rate
+requested display currency for display amounts only; discount metadata remains
+separated into base and USD fields. Catalogues apply today's campaign to normal rate
 plans; availability's singular price additionally resolves daily/period rules.
 
 Availability's plural matrix applies campaigns on the requested check-in date;
@@ -687,3 +693,37 @@ for payable stay totals.
 
 Admin discount arrays omit ended and expired campaigns. End acknowledgement and
 explicit discount-detail reads still return the campaign status/history by ID.
+
+### Room-type extra bed prices
+
+Apply migration `0078_room_type_extra_bed_prices`. It copies existing active default
+rate-plan extra bed prices into RoomType; stored bookings and invoices stay unchanged.
+New calculations use RoomType prices, including custom rate plans and PMS bookings.
+Core sync and room discounts do not change these prices.
+
+`GET /api/v1/admin/room-types/{booking_room_type_id}/extra-bed-price/` reads setup.
+`PUT` replaces all four fields (`null` for omitted fields); `PATCH` retains omitted fields.
+Requires normal room price setup and existing admin business scope headers.
+
+```json
+{
+  "extra_bed_local_mmk_price": "20000.00",
+  "extra_bed_local_usd_price": "10.00",
+  "extra_bed_foreign_mmk_price": "40000.00",
+  "extra_bed_foreign_usd_price": "20.00"
+}
+```
+
+All values are optional, nonnegative, per bed per night. `null` clears a field;
+missing foreign currency inherits the corresponding Local currency. Explicit zero
+means free (does not inherit). All absent means free. Normal room price responses
+and admin room type responses also expose the four setup values.
+
+Public catalog rate plans and availability expose `extra_bed_display_currency`
+alongside `extra_bed_display_price`. If USD room display exists but only MMK extra
+bed exists, show Room USD + Extra Bed MMK separately; never label MMK as USD or add
+the two display amounts. Availability `extra_bed_price` also contains its own
+`display_currency`. Estimate extra bed summary rows include `display_amount` and
+`display_currency`. Invoice accounting remains in hotel base currency; a positive
+alternate-only extra bed rate needs a base-currency price before booking and
+returns validation error instead of silently charging zero. No FX rate is inferred.

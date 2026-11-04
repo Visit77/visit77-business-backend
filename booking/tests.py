@@ -1657,8 +1657,8 @@ class BookingServiceTests(TestCase):
         self.assertEqual(restored.status, Booking.Status.CONFIRMED)
 
     def test_extra_bed_is_priced_for_each_night(self):
-        self.rate_plan.extra_bed_price = Decimal("30000")
-        self.rate_plan.save(update_fields=["extra_bed_price"])
+        self.room_type.extra_bed_local_mmk_price = Decimal("30000")
+        self.room_type.save(update_fields=["extra_bed_local_mmk_price"])
         booking, _ = create_booking(self.payload())
         self.assertEqual(booking.grand_total, Decimal("380000"))
 
@@ -1901,8 +1901,8 @@ class BookingServiceTests(TestCase):
         self.assertEqual(breakfast_line.description, "Breakfast x 2 x 2 Nights")
 
     def test_initial_invoice_splits_room_extra_bed_meal_plan_and_breakfast_lines(self):
-        self.rate_plan.extra_bed_base_price = Decimal("30000")
-        self.rate_plan.save(update_fields=["extra_bed_base_price"])
+        self.room_type.extra_bed_local_mmk_price = Decimal("30000")
+        self.room_type.save(update_fields=["extra_bed_local_mmk_price"])
         meal_plan = MealPlan.objects.create(
             hotel=self.hotel,
             core_meal_plan_id=451,
@@ -4043,8 +4043,8 @@ class BookingApiTests(BookingServiceTests):
 
     def test_check_in_form_updates_reservation_dates_capacity_and_guests(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-U")
-        self.rate_plan.extra_bed_base_price = Decimal("10000")
-        self.rate_plan.save(update_fields=["extra_bed_base_price"])
+        self.room_type.extra_bed_local_mmk_price = Decimal("10000")
+        self.room_type.save(update_fields=["extra_bed_local_mmk_price"])
         add_on = AddOn.objects.create(
             hotel=self.hotel,
             code="check-in-service",
@@ -4111,7 +4111,8 @@ class BookingApiTests(BookingServiceTests):
         self.assertTrue(booking.guests.filter(name="Second Guest", identity_number="PP-2").exists())
         invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
         self.assertEqual(invoice.total, Decimal("300000"))
-        self.assertEqual(invoice.lines.count(), 2)
+        self.assertEqual(invoice.lines.count(), 3)
+        self.assertEqual(invoice.lines.get(metadata__line_type='extra_bed').total, Decimal('30000'))
 
     def test_check_in_form_keeps_booked_nightly_price_after_core_rate_change(self):
         booking = create_admin_reservation({
@@ -5612,10 +5613,11 @@ class BookingApiTests(BookingServiceTests):
         self.room_type.save(update_fields=["core_snapshot"])
         self.rate_plan.is_default = True
         self.rate_plan.usd_display_price = Decimal("20")
-        self.rate_plan.extra_bed_base_price = Decimal("30000")
-        self.rate_plan.extra_bed_usd_display_price = Decimal("8")
+        self.room_type.extra_bed_local_mmk_price = Decimal("30000")
+        self.room_type.extra_bed_local_usd_price = Decimal("8")
+        self.room_type.save(update_fields=["extra_bed_local_mmk_price", "extra_bed_local_usd_price"])
         self.rate_plan.save(update_fields=[
-            "is_default", "usd_display_price", "extra_bed_base_price", "extra_bed_usd_display_price",
+            "is_default", "usd_display_price",
         ])
         response = self.client.get(
             f"/api/v1/public/hotels/{self.hotel.core_business_id}/availability/",
@@ -6426,8 +6428,8 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(response.status_code, 403, response.data)
 
     def test_public_booking_estimate_does_not_require_contact_info(self):
-        self.rate_plan.extra_bed_base_price = Decimal("30000")
-        self.rate_plan.save(update_fields=["extra_bed_base_price"])
+        self.room_type.extra_bed_local_mmk_price = Decimal("30000")
+        self.room_type.save(update_fields=["extra_bed_local_mmk_price"])
         payload = {
             "core_business_id": self.hotel.core_business_id,
             "check_in": str(self.check_in),
@@ -6918,8 +6920,8 @@ class BookingApiTests(BookingServiceTests):
 
     def test_walk_in_v2_prices_extra_beds_add_ons_and_full_payment(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="307-S")
-        self.rate_plan.extra_bed_base_price = Decimal("10000")
-        self.rate_plan.save(update_fields=["extra_bed_base_price"])
+        self.room_type.extra_bed_local_mmk_price = Decimal("10000")
+        self.room_type.save(update_fields=["extra_bed_local_mmk_price"])
         add_on = AddOn.objects.create(
             hotel=self.hotel,
             code="late-service",
