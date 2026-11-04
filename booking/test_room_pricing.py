@@ -206,6 +206,28 @@ class RoomPricingTests(TestCase):
         self.assertEqual(second["original_price"], Decimal("100000"))
         self.assertEqual(room["rate_plans"][0]["total"], Decimal("180000"))
 
+    def test_availability_usd_promo_is_independent_of_selected_currency(self):
+        self.discount(local_usd_price='90')
+        room = self.guest_availability(currency='MMK')
+        plan = room['rate_plans'][0]
+        for payload in (room['default_price'], plan, plan['nightly_prices'][0]):
+            self.assertTrue(payload['usd_has_discount'])
+            self.assertEqual(payload['usd_original_price'], 100)
+            self.assertEqual(payload['usd_discount_price'], 90)
+            self.assertEqual(payload['usd_discount_percentage'], 10)
+        second = plan['nightly_prices'][1]
+        self.assertFalse(second['usd_has_discount'])
+        self.assertIsNone(second['usd_discount_price'])
+
+    def test_availability_unconfigured_usd_has_no_discount(self):
+        self.plan.usd_display_price = None
+        self.plan.save()
+        plan = self.guest_availability()['rate_plans'][0]
+        self.assertFalse(plan['usd_has_discount'])
+        self.assertIsNone(plan['usd_original_price'])
+        self.assertEqual(plan['usd_discount_percentage'], 0)
+        self.assertIsNone(plan['usd_discount_price'])
+
     def test_guest_without_campaign_has_no_promo_fields_or_badge(self):
         room = self.guest_availability()
         self.assertFalse(room["default_price"]["has_discount"])
@@ -364,6 +386,11 @@ class RoomPricingTests(TestCase):
             self.assertEqual(room['default_price']['original_price'],100)
             self.assertEqual(room['default_price']['discount_price'],90)
             self.assertEqual(room['default_price']['discount_percentage'],10)
+            for payload in (room['default_price'], room['rate_plans'][0]):
+                self.assertTrue(payload['usd_has_discount'])
+                self.assertEqual(payload['usd_original_price'], 100)
+                self.assertEqual(payload['usd_discount_price'], 90)
+                self.assertEqual(payload['usd_discount_percentage'], 10)
             local=room['default_prices']['local']; foreign=room['default_prices']['foreign']
             self.assertEqual(local['base_price'],100000)
             self.assertEqual(local['discount_price'],80000)

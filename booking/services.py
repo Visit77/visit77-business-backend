@@ -1195,6 +1195,9 @@ def availability_for_hotels(
                 )
                 nightly.append({
                     **guest_prices,
+                    **{f"usd_{field}": value for field, value in guest_price_fields(
+                        original_usd, usd_price,
+                    ).items()},
                     "date": str(day),
                     "base_price": base_price,
                     "usd_display_price": usd_price,
@@ -1213,6 +1216,7 @@ def availability_for_hotels(
                 "currency": room_type.hotel.base_currency,
                 **{field: nightly[0][field] for field in (
                     "has_discount", "original_price", "discount_percentage", "discount_price",
+                    "usd_has_discount", "usd_original_price", "usd_discount_percentage", "usd_discount_price",
                 )},
                 "effective_base_price": nightly[0]["base_price"],
                 "effective_usd_display_price": nightly[0]["usd_display_price"],
@@ -1296,6 +1300,7 @@ def availability_for_hotels(
                 "default_price": {
                     **{field: default_rate_plan[field] for field in (
                         "has_discount", "original_price", "discount_percentage", "discount_price",
+                        "usd_has_discount", "usd_original_price", "usd_discount_percentage", "usd_discount_price",
                     )},
                     "rate_plan_id": default_rate_plan["id"],
                     "guest_market": default_rate_plan["guest_market"],

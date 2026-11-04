@@ -460,6 +460,9 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
         )
         return {
             **promo,
+            **{f"usd_{field}": value for field, value in guest_price_fields(
+                plan.usd_display_price, usd_price,
+            ).items()},
             "price_date": str(price_date),
             "id": plan.id,
             "code": plan.code,
@@ -491,6 +494,7 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
         return {
             **{field: payload[field] for field in (
                 "has_discount", "original_price", "discount_percentage", "discount_price", "price_date",
+                "usd_has_discount", "usd_original_price", "usd_discount_percentage", "usd_discount_price",
             )},
             "rate_plan_id": payload["id"],
             "guest_market": payload["guest_market"],
