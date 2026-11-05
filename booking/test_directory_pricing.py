@@ -36,6 +36,29 @@ class DirectoryMinimumPriceTests(TestCase):
         self.assertTrue(row['has_discount'])
         self.assertEqual(self.room.default_inventory, 0)  # advertised rate, not an inventory claim
 
+    def test_discounted_room_wins_over_cheaper_undiscounted_room(self, now):
+        self.campaign(local_mmk_price=95000)
+        row = minimum_room_prices_today([77])[77]
+        self.assertEqual(row['room_type_id'], 1913)
+        self.assertEqual(row['display_price'], 95000)
+        self.assertEqual(row['discount_percentage'], 5)
+
+    def test_highest_discount_wins_then_cheapest_payable_price(self, now):
+        self.campaign(local_mmk_price=80000)  # 20%, payable 80k
+        other_discount = self.campaign(room_type=self.other, local_mmk_price=81000)  # 10%, payable 81k
+        self.assertEqual(minimum_room_prices_today([77])[77]['room_type_id'], 1913)
+        other_discount.local_mmk_price = 72000  # Same 20%, cheaper 72k
+        other_discount.save()
+        self.assertEqual(minimum_room_prices_today([77])[77]['room_type_id'], 1914)
+        other_discount.local_mmk_price = 76500  # 15%, cheaper but less discount
+        other_discount.save()
+        self.assertEqual(minimum_room_prices_today([77])[77]['room_type_id'], 1913)
+
+    def test_no_campaign_returns_cheapest_room(self, now):
+        row = minimum_room_prices_today([77])[77]
+        self.assertEqual(row['room_type_id'], 1914)
+        self.assertFalse(row['has_discount'])
+
     def test_ended_future_expired_campaigns_are_not_advertised(self, now):
         discount = self.campaign(ended_at=now.return_value)
         for dates in ((date(2026,11,3),date(2026,11,3),now.return_value),

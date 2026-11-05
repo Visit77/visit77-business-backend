@@ -66,9 +66,15 @@ def minimum_room_prices_today(business_ids, guest_market="local", display_curren
             if (min_price is not None and price < min_price) or (max_price is not None and price > max_price):
                 continue
             business_id = room.hotel.core_business_id
+            promo = guest_price_fields(original, price)
             existing = result.get(business_id)
-            if existing and existing["display_price"] <= price:
-                continue
+            if existing:
+                # Campaigns win over cheaper undiscounted rooms; compare actual
+                # percentages against today's effective rate, then payable price.
+                rank = (-promo['discount_percentage'], price)
+                existing_rank = (-existing['discount_percentage'], existing['display_price'])
+                if existing_rank <= rank:
+                    continue
             result[business_id] = {
                 "room_type_id": room.core_room_type_id,
                 "booking_room_type_id": room.id,
@@ -78,7 +84,7 @@ def minimum_room_prices_today(business_ids, guest_market="local", display_curren
                 "guest_market": guest_market,
                 "display_currency": display_currency,
                 "display_price": price,
-                **guest_price_fields(original, price),
+                **promo,
                 "local_base_price": room.local_mmk_price if room.hotel.base_currency == "MMK" else room.local_usd_price,
                 "local_base_currency": room.hotel.base_currency,
                 "local_usd_display_price": room.local_usd_price,

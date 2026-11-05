@@ -589,9 +589,20 @@ Content-Type: application/json
 The server chooses today's date independently in each hotel's configured timezone.
 It resolves DailyRate → RatePeriod → normal RatePlan and applies today's matching
 campaign using the same calculation as availability. Only active, booking-enabled,
-price-configured rooms and active plans are eligible. The lowest positive payable
-price in the requested currency wins, including custom plans. No currency is
+price-configured rooms and active plans are eligible. When today's eligible
+room rates include campaigns, select the greatest actual discount percentage;
+ties select the lowest positive payable price. If no rate is discounted, select
+the lowest positive payable price. This selection uses the requested guest
+market/currency and any supplied price range, including custom plans. No currency is
 converted or substituted for a missing requested-currency price.
+
+Core directory requests can add `"has_discount": true` alongside the hotel
+`category` to include only hotels with a selected discounted rate today.
+`false` or omission leaves discounted and undiscounted hotels eligible.
+Filtering happens before pagination, so counts and pages reflect the matching
+hotels. Core reuses the same bulk price result for filtering and rendering
+`biz.minimum_room`. Existing market/currency parameters (`price_guest_market`,
+`price_currency`) control which currency's discount is considered.
 
 This is an advertised daily rate, independent of inventory, occupancy and stay
 restrictions; it is not a guarantee that a room is currently bookable. A full
