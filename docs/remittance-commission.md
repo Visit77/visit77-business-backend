@@ -68,3 +68,38 @@ with old/new amounts and approval state. Repeated runs do not create duplicate
 audit entries for unchanged statements. Dry-run writes neither changes nor audit
 logs and prints the same proposed amounts/statuses. Skipped, unchanged and
 updated counts are reported at the end.
+
+### Three payouts per week
+
+`Hotel.remittance_payout_option` now defaults to `three_times_weekly` for new
+hotels. Migration `0079_three_times_weekly_remittance` adds this choice and
+changes the default; it preserves existing hotel choices and statements.
+
+| Collection / release period (hotel local date) | Payout day |
+| --- | --- |
+| Friday–Sunday | Monday |
+| Monday–Tuesday | Wednesday |
+| Wednesday–Thursday | Friday |
+
+The same ledger effective-date and commission rules apply. Current periods
+accrue; completed periods become pending for the existing check/pay workflow.
+This schedules statements, not automatic bank transfers. Beat finalizes at
+00:10 on Monday, Wednesday and Friday (Celery configured timezone); the existing
+15-minute ledger refresh also finalizes closed hotel-local periods. Restart
+Celery workers and Beat after deployment.
+
+The Superadmin payout option endpoint accepts:
+
+```http
+POST /api/v1/superadmin/hotels/{booking_hotel_id}/remittance-payout-option/
+```
+
+```json
+{"payout_option": "three_times_weekly"}
+```
+
+Its GET choices, remittance list `?payout_option=three_times_weekly`, and
+`payout_counts.three_times_weekly` support this option. Existing protections
+against changing a finalized current-week schedule still apply. No historical
+paid statements are repartitioned by migration. Weekly/twice-weekly remain valid
+explicit options. Historical backfill follows the hotel's selected period split.

@@ -429,9 +429,23 @@ def current_week_period(today=None, hotel=None):
     return start, start + timedelta(days=6)
 
 
+def payout_periods_for_week(hotel, monday):
+    if hotel.remittance_payout_option == Hotel.RemittancePayoutOption.THREE_TIMES_WEEKLY:
+        return [(monday, monday + timedelta(days=1)),
+                (monday + timedelta(days=2), monday + timedelta(days=3)),
+                (monday + timedelta(days=4), monday + timedelta(days=6))]
+    if hotel.remittance_payout_option == Hotel.RemittancePayoutOption.TWICE_WEEKLY:
+        return [(monday, monday + timedelta(days=2)),
+                (monday + timedelta(days=3), monday + timedelta(days=6))]
+    return [(monday, monday + timedelta(days=6))]
+
+
 def active_payout_period(hotel, today=None):
     monday, sunday = current_week_period(today, hotel=hotel)
     local_today = today or timezone.now().astimezone(hotel_timezone(hotel)).date()
+    if hotel.remittance_payout_option == Hotel.RemittancePayoutOption.THREE_TIMES_WEEKLY:
+        return next(period for period in payout_periods_for_week(hotel, monday)
+                    if period[0] <= local_today <= period[1])
     if hotel.remittance_payout_option == Hotel.RemittancePayoutOption.TWICE_WEEKLY:
         wednesday = monday + timedelta(days=2)
         if local_today <= wednesday:
@@ -455,6 +469,10 @@ def refresh_current_week_remittance(hotel, today=None, sync_ledger=True):
     )
     for period_from, period_to in stale_periods:
         generate_weekly_remittance(hotel, period_from, period_to)
+    if hotel.remittance_payout_option == Hotel.RemittancePayoutOption.THREE_TIMES_WEEKLY:
+        for period_from, period_to in payout_periods_for_week(hotel, week_from):
+            if period_to < local_today:
+                generate_weekly_remittance(hotel, period_from, period_to)
     if (
         hotel.remittance_payout_option == Hotel.RemittancePayoutOption.TWICE_WEEKLY
         and local_today.weekday() >= 3
@@ -479,7 +497,10 @@ def generate_previous_week_remittances(today=None):
     results = []
     for hotel in Hotel.objects.filter(is_active=True):
         current_monday, _current_sunday = current_week_period(today, hotel=hotel)
-        if hotel.remittance_payout_option == Hotel.RemittancePayoutOption.TWICE_WEEKLY:
+        if hotel.remittance_payout_option == Hotel.RemittancePayoutOption.THREE_TIMES_WEEKLY:
+            active_from, _ = active_payout_period(hotel, today)
+            start, end = active_payout_period(hotel, active_from - timedelta(days=1))
+        elif hotel.remittance_payout_option == Hotel.RemittancePayoutOption.TWICE_WEEKLY:
             start = current_monday - timedelta(days=4)
             end = current_monday - timedelta(days=1)
         else:

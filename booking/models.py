@@ -53,6 +53,7 @@ class Hotel(models.Model):
     class RemittancePayoutOption(models.TextChoices):
         WEEKLY = "weekly", "One time a week"
         TWICE_WEEKLY = "twice_weekly", "Two times a week"
+        THREE_TIMES_WEEKLY = "three_times_weekly", "Three times a week"
 
     core_business_id = models.PositiveBigIntegerField(unique=True)
     document_code = models.CharField(max_length=4, unique=True, editable=False)
@@ -66,7 +67,7 @@ class Hotel(models.Model):
     remittance_payout_option = models.CharField(
         max_length=24,
         choices=RemittancePayoutOption.choices,
-        default=RemittancePayoutOption.WEEKLY,
+        default=RemittancePayoutOption.THREE_TIMES_WEEKLY,
         db_index=True,
     )
     inventory_mode = models.CharField(

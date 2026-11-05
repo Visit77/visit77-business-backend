@@ -9327,7 +9327,7 @@ class BookingApiTests(BookingServiceTests):
             },
         }
         self.hotel.save(update_fields=["core_snapshot"])
-        hotel_without_remittance = Hotel.objects.create(
+        Hotel.objects.create(
             core_business_id=7801,
             name="Alpha Hotel Without Remittance",
             package=Hotel.Package.OTA,
@@ -9344,6 +9344,7 @@ class BookingApiTests(BookingServiceTests):
             period_to=today - timedelta(days=8),
             status=OTARemittance.Status.PENDING,
             reference="V77-PAY-26-000001",
+            gross_booking_amount=Decimal("1500000"),
             net_remittance_amount=Decimal("1500000"),
         )
         paid = OTARemittance.objects.create(
@@ -9352,6 +9353,7 @@ class BookingApiTests(BookingServiceTests):
             period_to=today - timedelta(days=1),
             status=OTARemittance.Status.PAID,
             reference="V77-PAY-26-000002",
+            gross_booking_amount=Decimal("1260000"),
             net_remittance_amount=Decimal("1260000"),
             paid_at=timezone.now(),
         )
@@ -9380,7 +9382,7 @@ class BookingApiTests(BookingServiceTests):
         for group in data["results"]:
             self.assertEqual(
                 {row["hotel_id"] for row in group["hotels"]},
-                {self.hotel.id, hotel_without_remittance.id},
+                {self.hotel.id},
             )
         rows = [row for group in data["results"] for row in group["hotels"]]
         remittance_ids = {

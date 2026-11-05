@@ -7,6 +7,8 @@ from django.utils import timezone
 from booking.models import Booking, Hotel, OTARemittance, OTARemittanceAuditLog, Payment
 from booking.remittance_services import (
     generate_weekly_remittance,
+    active_payout_period,
+    payout_periods_for_week,
     hotel_timezone,
     refresh_current_week_remittance,
     sync_all_payment_ledgers,
@@ -57,16 +59,14 @@ class Command(BaseCommand):
             first_local_date = first_paid.astimezone(hotel_timezone(hotel)).date()
             cursor = first_local_date - timedelta(days=first_local_date.weekday())
             while cursor < current_monday:
-                periods = (
-                    [
-                        (cursor, cursor + timedelta(days=2)),
-                        (cursor + timedelta(days=3), cursor + timedelta(days=6)),
-                    ]
-                    if hotel.remittance_payout_option == Hotel.RemittancePayoutOption.TWICE_WEEKLY
-                    else [(cursor, cursor + timedelta(days=6))]
-                )
+                periods = payout_periods_for_week(hotel, cursor)
                 for period_from, period_to in periods:
-                    is_latest_completed_period = period_to == current_monday - timedelta(days=1)
+                    latest_end = (
+                        active_payout_period(hotel, hotel_today)[0] - timedelta(days=1)
+                        if hotel.remittance_payout_option == Hotel.RemittancePayoutOption.THREE_TIMES_WEEKLY
+                        else current_monday - timedelta(days=1)
+                    )
+                    is_latest_completed_period = period_to == latest_end
                     result = generate_weekly_remittance(
                         hotel,
                         period_from,
