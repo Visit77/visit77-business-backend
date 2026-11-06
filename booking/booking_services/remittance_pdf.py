@@ -13,42 +13,19 @@ from reportlab.lib.units import mm
 from reportlab.platypus import (
     CondPageBreak,
     Image,
-    Paragraph,
     SimpleDocTemplate,
     Spacer,
     Table,
     TableStyle,
 )
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 
-DOCUMENT_FONT = "NotoSansMyanmar"
-DOCUMENT_FONT_BOLD = "NotoSansMyanmar-Bold"
+from booking.booking_services.receipt import MYANMAR_TEXT_RE, Paragraph, _register_document_fonts
+
 BLUE = colors.HexColor("#3039F5")
 SECTION_BLUE = colors.HexColor("#2563EB")
 DATE_BLUE = colors.HexColor("#AAB9CC")
 GRID = colors.HexColor("#7E91AD")
 LIGHT_GREY = colors.HexColor("#EEF3F9")
-MYANMAR_TEXT_RE = re.compile(r"[\u1000-\u109f\uaa60-\uaa7f\ua9e0-\ua9ff]+")
-
-
-def _register_document_fonts():
-    if DOCUMENT_FONT in pdfmetrics.getRegisteredFontNames():
-        return
-    font_dir = Path(__file__).resolve().parents[1] / "static" / "booking" / "fonts"
-    pdfmetrics.registerFont(TTFont(
-        DOCUMENT_FONT, str(font_dir / "NotoSansMyanmar-Regular.ttf"), shapable=True,
-    ))
-    pdfmetrics.registerFont(TTFont(
-        DOCUMENT_FONT_BOLD, str(font_dir / "NotoSansMyanmar-Bold.ttf"), shapable=True,
-    ))
-    pdfmetrics.registerFontFamily(
-        DOCUMENT_FONT,
-        normal=DOCUMENT_FONT,
-        bold=DOCUMENT_FONT_BOLD,
-        italic=DOCUMENT_FONT,
-        boldItalic=DOCUMENT_FONT_BOLD,
-    )
 
 
 def _money(value, currency):
@@ -98,15 +75,18 @@ def _merchant_details(hotel):
 
 
 def _paragraph(text, style):
-    content = escape(str(text or "-")).replace("\n", "<br/>")
-    if MYANMAR_TEXT_RE.search(content):
-        content = MYANMAR_TEXT_RE.sub(
-            lambda match: f'<font name="{DOCUMENT_FONT}">{match.group(0)}</font>',
-            content,
+    text = str(text or "-")
+    content = escape(text)
+    if MYANMAR_TEXT_RE.search(text):
+        # The Myanmar font lacks Latin glyphs. Keep Latin runs in the original
+        # font while the shared paragraph renderer shapes the Myanmar runs.
+        runs = re.split(f"({MYANMAR_TEXT_RE.pattern}+)", text)
+        content = "".join(
+            escape(run) if MYANMAR_TEXT_RE.search(run)
+            else f'<font name="{style.fontName}">{escape(run)}</font>'
+            for run in runs if run
         )
-        style = style.clone(f"{style.name}-Shaped")
-        style.shaping = True
-    return Paragraph(content, style)
+    return Paragraph(content.replace("\n", "<br/>"), style)
 
 
 def _section_header(title, width, style):
