@@ -734,7 +734,7 @@ Public catalog rate plans and availability expose `extra_bed_display_currency`
 alongside `extra_bed_display_price`. If USD room display exists but only MMK extra
 bed exists, show Room USD + Extra Bed MMK separately; never label MMK as USD or add
 the two display amounts. Availability `extra_bed_price` also contains its own
-`display_currency`. Estimate extra bed summary rows include `display_amount` and
-`display_currency`. Invoice accounting remains in hotel base currency; a positive
-alternate-only extra bed rate needs a base-currency price before booking and
-returns validation error instead of silently charging zero. No FX rate is inferred.
+`display_currency`. Estimate extra bed totals and paid extra bed charges use MMK. USD extra bed
+rates are optional display values. A positive USD-only rate requires an MMK
+rate before booking. Paid extra beds require an MMK booking because each invoice
+uses one currency.

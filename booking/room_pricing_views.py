@@ -29,6 +29,9 @@ class RoomPricingMixin:
             ).data,
             **{field: getattr(room_type, field) for field in PRICE_FIELDS},
             **{field: getattr(room_type, field) for field in EXTRA_BED_PRICE_FIELDS},
+            "extra_bed_local_base_price": room_type.extra_bed_local_mmk_price,
+            "extra_bed_foreign_base_price": room_type.extra_bed_foreign_mmk_price,
+            "extra_bed_base_currency": "MMK",
             "rate_plans": RatePlanSerializer(room_type.rate_plans.filter(is_active=True).order_by("id"), many=True).data,
         }
 
@@ -61,7 +64,7 @@ class RoomPricingMixin:
                 setattr(room_type, field, value)
             if values:
                 room_type.save(update_fields=list(values))
-        return success(self._room_price_payload(room_type))
+        return success({**self._room_price_payload(room_type), "base_currency": "MMK"})
 
     @action(detail=True, methods=["get", "post"], url_path="discounts")
     @transaction.atomic

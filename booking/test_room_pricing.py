@@ -42,10 +42,15 @@ class RoomPricingTests(TestCase):
     def test_extra_bed_price_setup_and_scoping(self):
         url = f'/api/v1/admin/room-types/{self.room_type.id}/extra-bed-price/'
         response = self.admin_client().put(url, {
-            'extra_bed_local_mmk_price': '20000', 'extra_bed_local_usd_price': '10',
-            'extra_bed_foreign_mmk_price': '40000', 'extra_bed_foreign_usd_price': '20',
+            'extra_bed_local_base_price': '20000', 'extra_bed_local_usd_price': '10',
+            'extra_bed_foreign_base_price': '40000', 'extra_bed_foreign_usd_price': '20',
         }, format='json')
         self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['data']['base_currency'], 'MMK')
+        self.assertEqual(response.data['data']['extra_bed_local_base_price'], 20000)
+        response = self.admin_client().patch(url, {'extra_bed_foreign_base_price': None}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIsNone(response.data['data']['extra_bed_foreign_base_price'])
         self.room_type.refresh_from_db()
         self.assertEqual(self.room_type.extra_bed_foreign_usd_price, 20)
         self.assertEqual(self.admin_client('999').patch(url, {'extra_bed_local_mmk_price': 1}, format='json').status_code, 404)
@@ -67,6 +72,8 @@ class RoomPricingTests(TestCase):
 
     def test_extra_bed_estimate_booking_and_invoice_use_room_type_price(self):
         self.room_type.extra_bed_local_mmk_price = Decimal('20000')
+        self.room_type.extra_bed_local_usd_price = Decimal('10')
+        self.payload['display_currency'] = 'USD'
         self.room_type.core_snapshot = {'extra_bed_available': True, 'extra_bed_quantity': 2}
         self.room_type.save()
         self.plan.extra_bed_base_price = 999
@@ -76,6 +83,8 @@ class RoomPricingTests(TestCase):
         estimate = estimate_booking(self.payload)
         row = next(item for item in estimate['summary_items'] if item['type'] == 'extra_bed')
         self.assertEqual(row['amount'], Decimal('80000'))
+        self.assertEqual(row['display_amount'], Decimal('80000'))
+        self.assertEqual(row['display_currency'], 'MMK')
         booking, _ = create_booking(self.payload)
         room = booking.rooms.first()
         self.assertEqual(room.rate_plan_snapshot['extra_bed_base_price'], '20000.00')
@@ -114,6 +123,18 @@ class RoomPricingTests(TestCase):
         with self.assertRaises(ValidationError):
             validate_extra_bed_settlement(self.room_type, 'local', 1)
         validate_extra_bed_settlement(self.room_type, 'local', 0)
+
+    def test_usd_base_hotel_cannot_charge_an_mmk_extra_bed_as_usd(self):
+        from booking.room_pricing import extra_bed_price_payload, validate_extra_bed_settlement
+        self.hotel.base_currency = 'USD'
+        self.room_type.extra_bed_local_mmk_price = Decimal('20000')
+        self.room_type.extra_bed_local_usd_price = Decimal('10')
+        price = extra_bed_price_payload(self.room_type, 'local', 'USD')
+        self.assertEqual(price['base_currency'], 'MMK')
+        self.assertEqual(price['base_price'], Decimal('20000'))
+        self.assertEqual(price['usd_display_price'], Decimal('10'))
+        with self.assertRaises(ValidationError):
+            validate_extra_bed_settlement(self.room_type, 'local', 1)
 
     def test_all_four_prices_store_calculated_percentage(self):
         discount = self.discount(local_usd_price="80", foreign_mmk_price="160000", foreign_usd_price="160")

@@ -1232,6 +1232,7 @@ def availability_for_hotels(
                 "display_total": sum((item["display_price"] for item in nightly), Decimal("0")),
                 "total": sum((item["base_price"] for item in nightly), Decimal("0")),
                 "extra_bed_base_price": extra_base,
+                "extra_bed_base_currency": "MMK",
                 "extra_bed_usd_display_price": extra_usd,
                 "extra_bed_display_price": extra_payload["display_price"],
                 "extra_bed_display_currency": extra_payload["display_currency"],
@@ -1314,7 +1315,7 @@ def availability_for_hotels(
                     "rate_plan_id": default_rate_plan["id"],
                     "guest_market": default_rate_plan["guest_market"],
                     "base_price": default_rate_plan["extra_bed_base_price"],
-                    "base_currency": default_rate_plan["base_currency"],
+                    "base_currency": default_rate_plan["extra_bed_base_currency"],
                     "usd_display_price": default_rate_plan["extra_bed_usd_display_price"],
                     "display_price": default_rate_plan["extra_bed_display_price"],
                     "display_currency": default_rate_plan["extra_bed_display_currency"],
@@ -1549,7 +1550,6 @@ def estimate_booking(data):
             "formatted_amount": format_money(room_stay_total, hotel.base_currency),
         })
         if extra_beds:
-            extra_display = extra_bed_price_payload(room_type, guest_market, data.get('display_currency'))
             summary_items.append({
                 "type": "extra_bed",
                 "label": f"{extra_beds} x Extra Bed(s)",
@@ -1558,10 +1558,10 @@ def estimate_booking(data):
                 "rate_plan_id": rate_plan.id,
                 "quantity": extra_beds,
                 "amount": extra_bed_stay_total,
-                "currency": hotel.base_currency,
-                "display_amount": extra_display['display_price'] * extra_beds * len(dates),
-                "display_currency": extra_display['display_currency'],
-                "formatted_amount": format_money(extra_bed_stay_total, hotel.base_currency),
+                "currency": "MMK",
+                "display_amount": extra_bed_stay_total,
+                "display_currency": "MMK",
+                "formatted_amount": format_money(extra_bed_stay_total, "MMK"),
             })
         if option_total:
             summary_items.append({

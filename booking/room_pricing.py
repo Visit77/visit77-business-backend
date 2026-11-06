@@ -47,41 +47,31 @@ def extra_bed_currency_rates(room_type, market):
 def extra_bed_amounts(room_type, market):
     from decimal import Decimal
     rates = extra_bed_currency_rates(room_type, market)
-    usd = rates['USD']
-    base = rates[room_type.hotel.base_currency]
-    return base if base is not None else Decimal('0'), usd
+    return rates['MMK'] or Decimal('0'), rates['USD']
 
 
 def extra_bed_price_payload(room_type, market, display_currency=None):
     base, usd = extra_bed_amounts(room_type, market)
-    rates = extra_bed_currency_rates(room_type, market)
-    currency = display_currency or room_type.hotel.base_currency
-    if rates[currency] is not None:
-        display = rates[currency]
-    else:
-        other = 'MMK' if currency == 'USD' else 'USD'
-        if rates[other] is not None:
-            currency, display = other, rates[other]
-        else:
-            currency, display = room_type.hotel.base_currency, base
+    show_usd = display_currency == 'USD' and usd is not None
     return {
-        'base_price': base, 'base_currency': room_type.hotel.base_currency,
-        'usd_display_price': usd, 'display_price': display, 'display_currency': currency,
+        'base_price': base, 'base_currency': 'MMK',
+        'usd_display_price': usd,
+        'display_price': usd if show_usd else base,
+        'display_currency': 'USD' if show_usd else 'MMK',
         'pricing_unit': 'per_bed_per_night',
     }
 
 
 def validate_extra_bed_settlement(room_type, market, count):
-    """Never silently turn an alternate-currency charge into a free base charge."""
     if not count:
         return
     from rest_framework.exceptions import ValidationError
+
     rates = extra_bed_currency_rates(room_type, market)
-    if rates[room_type.hotel.base_currency] is None and any(value for value in rates.values()):
-        raise ValidationError({'extra_beds': (
-            f'Set the extra bed price in hotel base currency {room_type.hotel.base_currency} '
-            'before booking. Alternate currency prices are display amounts.'
-        )})
+    if rates['MMK'] is None and rates['USD']:
+        raise ValidationError({'extra_beds': 'Set the extra bed price in MMK before booking.'})
+    if rates['MMK'] and room_type.hotel.base_currency != 'MMK':
+        raise ValidationError({'extra_beds': 'Paid extra beds require an MMK booking.'})
 
 
 def sync_market_price(room_type, market):

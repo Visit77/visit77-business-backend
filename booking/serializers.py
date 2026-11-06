@@ -471,6 +471,7 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
             "display_price": display_price,
             "display_currency": display_currency,
             "extra_bed_base_price": extra_base,
+            "extra_bed_base_currency": "MMK",
             "extra_bed_usd_display_price": extra_usd,
             "extra_bed_display_price": extra_payload["display_price"],
             "extra_bed_display_currency": extra_payload["display_currency"],
