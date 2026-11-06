@@ -1705,6 +1705,13 @@ class SuperAdminRemittancePayView(APIView):
                 ),
             },
         )
+        from booking.tasks import send_remittance_paid_email_task
+
+        paid_at = record.paid_at.isoformat()
+        transaction.on_commit(
+            lambda: send_remittance_paid_email_task.delay(remittance_id, paid_at),
+            robust=True,
+        )
         return success({"remittance": remittance_data(record, detail=True, request=request)})
 
 

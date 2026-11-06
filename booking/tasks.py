@@ -375,3 +375,71 @@ def send_booking_confirmation_sms_task(booking_id, recipient_type="all"):
             )
 
     return sent
+
+
+@shared_task(autoretry_for=(OSError,), retry_backoff=True, retry_jitter=True, max_retries=3)
+def send_remittance_paid_email_task(remittance_id, paid_at):
+    """Notify the configured merchant contact once for this payout."""
+    from django.core.exceptions import ValidationError
+    from django.core.mail import EmailMessage
+    from django.core.validators import validate_email
+    from django.db import transaction
+
+    from booking.booking_services.remittance_pdf import render_remittance_statement_pdf
+    from booking.models import OTARemittance, OTARemittanceAuditLog
+    from booking.remittance_services import hotel_timezone
+
+    with transaction.atomic():
+        record = OTARemittance.objects.select_for_update().select_related("hotel").filter(
+            pk=remittance_id, status__in=[OTARemittance.Status.PAID, OTARemittance.Status.RECEIVED],
+        ).first()
+        if not record or not record.paid_at or record.paid_at.isoformat() != paid_at:
+            return False
+        if record.audit_logs.filter(action="paid_email_sent", metadata__paid_at=paid_at).exists():
+            return False
+
+        recipient = str((record.hotel.core_snapshot or {}).get("booking_notification_email") or "").strip()
+        try:
+            validate_email(recipient)
+        except ValidationError:
+            logger.info("Remittance %s email skipped because no valid merchant notification email is configured.", remittance_id)
+            return False
+
+        def money(amount):
+            return f"{record.currency} {amount:,.2f}"
+
+        reference = record.reference or str(record.pk)
+        local_paid_at = record.paid_at.astimezone(hotel_timezone(record.hotel))
+        payment_reference = (
+            f"Payment reference: {record.payment_reference}\n" if record.payment_reference else ""
+        )
+        message = EmailMessage(
+            subject=f"Visit77 remittance paid | {reference}",
+            body=(
+                f"Dear {record.hotel.name} team,\n\n"
+                "Your Visit77 remittance has been marked as paid. "
+                "The remittance statement is attached for your records.\n\n"
+                f"Statement reference: {reference}\n"
+                f"Period covered: {record.period_from:%d %b %Y} to {record.period_to:%d %b %Y}\n"
+                f"Payment recorded: {local_paid_at:%d %b %Y, %H:%M %Z}\n"
+                f"{payment_reference}\n"
+                f"Booking collections: {money(record.gross_booking_amount)}\n"
+                f"Released held funds: {money(record.released_held_funds_amount)}\n"
+                f"Visit77 commission: {money(record.commission_amount)}\n"
+                f"Refunds: {money(record.refund_amount)}\n"
+                f"Adjustment: {money(record.adjustment_amount)}\n"
+                f"Net payout: {money(record.net_remittance_amount)}\n\n"
+                "Please confirm receipt in your hotel dashboard after the funds arrive. "
+                "If you have any questions, please include the statement reference when contacting Visit77 support.\n\n"
+                "Thank you,\nVisit77 Finance Team"
+            ),
+            to=[recipient],
+        )
+        message.attach(f"remittance-{record.pk}.pdf", render_remittance_statement_pdf(record), "application/pdf")
+        if message.send() != 1:
+            raise OSError(f"Email backend did not send remittance {remittance_id}.")
+        OTARemittanceAuditLog.objects.create(
+            remittance=record, action="paid_email_sent", actor_name="System",
+            metadata={"paid_at": paid_at},
+        )
+        return True
