@@ -68,3 +68,30 @@ class IsCoreSuperAdmin(BasePermission):
             and request.user.is_authenticated
             and getattr(request.user, "is_superuser", False)
         )
+
+
+class IsCoreRemittanceFinance(IsCoreSuperAdmin):
+    message = "A Visit77 Core superadmin or finance account is required."
+
+    def has_permission(self, request, view):
+        if super().has_permission(request, view):
+            return True
+        if not request.user or not request.user.is_authenticated:
+            return False
+        if getattr(view, "finance_read_only", False) and request.method not in {"GET", "HEAD", "OPTIONS"}:
+            return False
+
+        # Core checks the current role and token version, including revocations.
+        from booking.integrations.core import CoreClient, CoreIntegrationError
+        from rest_framework.authentication import get_authorization_header
+
+        header = get_authorization_header(request).split()
+        if len(header) != 2 or header[0].lower() != b"bearer":
+            return False
+        try:
+            payload = CoreClient(token=header[1].decode("ascii"), service_key="").get(
+                "accounts/finance-access/"
+            )
+        except (CoreIntegrationError, UnicodeDecodeError):
+            return False
+        return isinstance(payload, dict) and payload.get("finance_access") is True

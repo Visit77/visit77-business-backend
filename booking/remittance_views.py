@@ -24,7 +24,7 @@ from booking.models import (
     OTARevenueLedger,
 )
 from booking.authentication import CoreJWTAuthentication
-from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
+from booking.permissions import HasBookingAdminKey, IsCoreRemittanceFinance, IsCoreSuperAdmin
 from booking.remittance_export import remittance_payment_workbook
 from booking.remittance_services import (
     active_payout_period,
@@ -537,7 +537,8 @@ class HotelRemittanceActorDeleteView(APIView):
 
 class SuperAdminRemittanceActorListCreateView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    finance_read_only = True
+    permission_classes = [IsCoreRemittanceFinance]
 
     def get(self, request):
         actors = OTARemittanceActor.objects.filter(scope=OTARemittanceActor.Scope.ADMIN)
@@ -929,7 +930,7 @@ class HotelRemittanceReceiveView(APIView):
 
 class SuperAdminRemittanceListView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
 
     def get(self, request):
         try:
@@ -1169,7 +1170,7 @@ class SuperAdminRemittanceListView(APIView):
 
 class SuperAdminRemittancePaymentListView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
 
     @staticmethod
     def parse_payment_date(value, field):
@@ -1365,7 +1366,7 @@ class SuperAdminRemittancePaymentDateView(SuperAdminRemittancePaymentListView):
 
 class SuperAdminRemittanceHistoryView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
 
     def get(self, request):
         offset, limit = _pagination(request)
@@ -1460,7 +1461,7 @@ class SuperAdminRemittancePDFView(APIView):
 
 class SuperAdminRemittanceCheckView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
 
     @transaction.atomic
     def post(self, request, remittance_id):
@@ -1503,7 +1504,7 @@ class SuperAdminRemittanceCheckView(APIView):
 
 class SuperAdminRemittanceAdjustmentView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
 
     def _locked_record(self, remittance_id):
         record = (
@@ -1606,7 +1607,7 @@ class SuperAdminRemittanceAdjustmentView(APIView):
 
 class SuperAdminRemittanceReceiptView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
 
     @transaction.atomic
     def patch(self, request, remittance_id):
@@ -1649,7 +1650,7 @@ class SuperAdminRemittanceReceiptView(APIView):
 
 class SuperAdminRemittancePayView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
 
     @transaction.atomic
     def post(self, request, remittance_id):
