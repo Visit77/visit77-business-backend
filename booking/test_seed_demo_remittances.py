@@ -1,8 +1,11 @@
 from datetime import date
-from io import StringIO
+from io import BytesIO, StringIO
+from types import SimpleNamespace
+from zipfile import ZipFile
 
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import TestCase, override_settings
+from rest_framework.test import APIClient
 
 from booking.models import Booking, BookingRoom, Hotel, OTARemittance, Payment, RatePlan, RoomType
 
@@ -44,3 +47,27 @@ class SeedDemoRemittancesTests(TestCase):
         call_command("seed_demo_remittances", apply=True, **options)
         self.assertEqual(Booking.objects.count(), 10)
         self.assertEqual(statements.count(), 5)
+
+        record = statements.first()
+        client = APIClient()
+        url = f"/api/v1/admin/remittances/{record.id}/export/"
+        with override_settings(BOOKING_ADMIN_API_KEY="test-key"):
+            client.credentials(HTTP_X_BOOKING_ADMIN_KEY="test-key", HTTP_X_BOOKING_BUSINESS_ID="7475")
+            hotel_export = client.get(url)
+            self.assertEqual(hotel_export.status_code, 200)
+            hotel_bytes = b"".join(hotel_export.streaming_content)
+            other_hotel = Hotel.objects.create(core_business_id=7476, name="Other")
+            client.credentials(HTTP_X_BOOKING_ADMIN_KEY="test-key",
+                               HTTP_X_BOOKING_BUSINESS_ID=str(other_hotel.core_business_id))
+            self.assertEqual(client.get(url).status_code, 400)
+
+        client.credentials()
+        client.force_authenticate(user=SimpleNamespace(is_authenticated=True, is_superuser=True))
+        admin_export = client.get(f"/api/v1/superadmin/remittances/{record.id}/export/")
+        self.assertEqual(admin_export.status_code, 200)
+        for content in (hotel_bytes, b"".join(admin_export.streaming_content)):
+            with ZipFile(BytesIO(content)) as workbook:
+                sheet = workbook.read("xl/worksheets/sheet1.xml").decode()
+                self.assertIn("Remittance Details - " + record.reference, sheet)
+                self.assertIn("Booking Collection", sheet)
+                self.assertIn('r="G3"><v>100000.00</v>', sheet)

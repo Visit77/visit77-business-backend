@@ -25,7 +25,7 @@ from booking.models import (
 )
 from booking.authentication import CoreJWTAuthentication
 from booking.permissions import HasBookingAdminKey, IsCoreRemittanceFinance, IsCoreSuperAdmin
-from booking.remittance_export import remittance_payment_workbook
+from booking.remittance_export import remittance_detail_workbook, remittance_payment_workbook
 from booking.remittance_services import (
     active_payout_period,
     current_week_period,
@@ -878,11 +878,16 @@ class HotelRemittanceDetailView(APIView):
     permission_classes = [HasBookingAdminKey]
     business_scoped = True
 
+    export = False
+
     def get(self, request, remittance_id):
         hotel = _hotel_from_request(request)
         record = OTARemittance.objects.select_related("hotel").filter(id=remittance_id, hotel=hotel).first()
         if not record:
             raise ValidationError({"remittance_id": "Remittance was not found."})
+        if self.export:
+            items = list(record.items.select_related("booking", "ledger_entry").order_by("-ledger_entry__effective_at", "-id"))
+            return remittance_detail_workbook(record, _group_remittance_items(record, items))
         return success({"remittance": remittance_data(record, detail=True, request=request)})
 
 
@@ -1433,12 +1438,17 @@ class SuperAdminRemittanceDetailView(APIView):
     authentication_classes = [CoreJWTAuthentication]
     permission_classes = [IsCoreSuperAdmin]
 
+    export = False
+
     def get(self, request, remittance_id):
         record = OTARemittance.objects.select_related(
             "hotel", "checked_by", "paid_by", "received_by",
         ).filter(id=remittance_id).first()
         if not record:
             raise ValidationError({"remittance_id": "Remittance was not found."})
+        if self.export:
+            items = list(record.items.select_related("booking", "ledger_entry").order_by("-ledger_entry__effective_at", "-id"))
+            return remittance_detail_workbook(record, _group_remittance_items(record, items))
         return success({"remittance": remittance_data(record, detail=True, request=request)})
 
 
