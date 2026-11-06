@@ -398,3 +398,343 @@ For each room type and guest market:
 4. Provide calendar-cell editing using DailyRate.
 5. Mark DailyRate cells as overrides so users understand why they differ from the season.
 6. Preview nightly breakdown through the public availability endpoint before publishing operational changes.
+
+## Separate room price setup and campaigns
+
+Core Room Type creation accepts room metadata without the four normal price
+fields. Configure prices in Booking Engine after creation:
+
+```text
+GET/PATCH/PUT /api/v1/admin/room-types/{id}/room-price/
+GET/POST      /api/v1/admin/room-types/{id}/discounts/
+GET/PATCH/PUT /api/v1/admin/room-types/{id}/discounts/{discount_id}/
+POST          /api/v1/admin/room-types/{id}/discounts/{discount_id}/end/
+```
+
+Use the existing admin authentication and `X-Booking-Business-Id` business scope.
+The `{id}` is the Booking Engine RoomType ID. A price setup request accepts
+`local_mmk_price`, `local_usd_price`, `foreign_mmk_price`, and
+`foreign_usd_price`. At least one positive price must remain configured; null
+clears a currency. Omitted fields remain unchanged. Setup returns
+`room_price_setup: true` and synchronizes the standard market plans while
+preserving custom plans. Core catalog synchronization preserves these prices.
+The hotel base currency remains the invoice currency. A standard plan becomes
+sellable once its base-currency amount is configured; a USD display-only value
+does not publish a zero-price MMK booking.
+
+Room types with `room_price_setup: false` are excluded from availability and
+rejected by estimate/booking creation. Migration 0076 imports legacy active
+market-plan prices, so already-priced rooms retain their setup state.
+
+Create a campaign by supplying the **payable room price**, not the amount saved:
+
+```json
+{
+  "timing_mode": "manual",
+  "local_mmk_price": "80000.00"
+}
+```
+
+`manual` starts immediately on the current date and continues until the end
+endpoint is called. `scheduled` requires `start_date` and `end_date` (inclusive):
+
+```json
+{
+  "timing_mode": "scheduled",
+  "start_date": "2026-12-01",
+  "end_date": "2026-12-31",
+  "local_mmk_price": "80000.00",
+  "local_usd_price": "20.00",
+  "foreign_mmk_price": "120000.00",
+  "foreign_usd_price": "30.00"
+}
+```
+
+At least one discount currency is required. Each amount must be positive and
+lower than its configured normal price. The server stores both the submitted
+payable amount and the corresponding read-only `*_percentage` value. A normal
+price of 100000 and payable price of 80000 stores 20.00 percent.
+
+List results include only `scheduled` or `active` campaigns. Explicit detail
+reads may return `expired` or `ended` status. Ending is idempotent and preserves history. Overlapping campaigns resolve independently
+for each supplied currency: latest start date wins, then latest ID. Prices
+resolve by stay date and guest market. Apply the selected campaign to the
+DailyRate/RatePeriod/normal price without increasing an already lower price.
+
+Availability, estimate, booking-night snapshots, invoices, receipts and
+confirmation email use the net room price. A room campaign does not populate an
+invoice-level discount or add a separate discount deduction in the confirmation
+email. Actual invoice-level discounts retain their existing behavior. Existing
+bookings are not repriced when a campaign is ended or the normal price changes.
+
+### Guest-facing original and discount prices
+
+Hotel availability and global availability include these explicit fields on
+each room type's existing `default_price` object, each `rate_plans` item, and
+each `nightly_prices` item. Discount fields are not duplicated at the room type
+root:
+
+```json
+{
+  "has_discount": true,
+  "original_price": 100000,
+  "discount_percentage": 20,
+  "discount_price": 80000
+}
+```
+
+With no applicable campaign reduction, the shape is:
+
+```json
+{
+  "has_discount": false,
+  "original_price": 100000,
+  "discount_percentage": 0,
+  "discount_price": null
+}
+```
+
+Amounts use the requested `display_currency` (default: hotel base currency).
+Use `default_price.display_currency` for the room card's currency.
+`default_price` and rate-plan summary fields describe the first charged night,
+not the average or the entire stay. Use `nightly_prices` to display date-specific
+campaigns, and the existing `total`/`display_total` for the stay total. A campaign
+starting on a later night may therefore have `has_discount=false` on the card
+and `has_discount=true` on that later night's entry.
+
+Unprefixed `has_discount`, `original_price`, `discount_percentage`, and
+`discount_price` always describe `base_currency`, regardless of `display_currency`.
+The `usd_` versions always describe USD. This applies to `default_price`,
+`default_rate_plan`, `rate_plans`, and `nightly_prices` in public responses.
+Only `display_price`/`effective_display_price` follow the requested display currency.
+`original_price` is the effective rate before applying the room campaign,
+including any DailyRate or RatePeriod. `discount_price` is the payable rate only
+when the campaign reduces that amount. Percentages are calculated from these
+two same-currency amounts and rounded to two decimal places; the saved campaign
+percentage remains its creation-time percentage against the configured normal
+room price. A cheaper DailyRate without a campaign does not produce a discount
+badge, and a campaign never raises a cheaper effective rate.
+
+Frontend: for base currency use `original_price`, `discount_percentage`,
+`discount_price`, and `has_discount`. For USD use their `usd_` versions.
+
+Room card example (existing fields retain their payable values):
+
+```json
+{
+  "default_price": {
+    "rate_plan_id": 10,
+    "guest_market": "local",
+    "base_price": 80000,
+    "base_currency": "MMK",
+    "usd_display_price": 20,
+    "display_price": 80000,
+    "display_currency": "MMK",
+    "has_discount": true,
+    "original_price": 100000,
+    "discount_percentage": 20,
+    "discount_price": 80000
+  }
+}
+```
+
+
+### Admin Room Price screen: embedded campaigns and Edit
+
+`GET /api/v1/admin/room-types/`, `GET /api/v1/admin/room-types/{id}/`, and
+`GET/PATCH/PUT /api/v1/admin/room-types/{id}/room-price/` include a read-only
+`discounts` array alongside the four normal price fields. Each entry includes
+`id`, all four payable amounts, calculated percentage fields, `timing_mode`,
+`start_date`, `end_date`, `status`, and `ended_at`. An unconfigured/no-campaign
+room returns `discounts: []`. The array includes only active and scheduled campaigns, ordered by latest start
+date and ID. Ended/expired campaigns are omitted from room list/detail,
+room-price and discount-list responses; their database records remain for audit. Show active campaigns in the
+current Discount Room Price section, scheduled campaigns in the upcoming
+section, and use each entry's ID for Edit/End.
+
+Edit an active or scheduled campaign:
+
+```http
+PATCH /api/v1/admin/room-types/{id}/discounts/{discount_id}/
+Content-Type: application/json
+```
+
+```json
+{"local_mmk_price": "75000.00", "local_usd_price": null}
+```
+
+Omitted amounts/dates remain unchanged. Null clears an amount and its stored
+percentage; at least one amount must remain. Percentages are recalculated
+against the current normal room prices. Editing a manual campaign preserves
+its original start date. Ended or expired campaigns are read-only; create a new
+campaign. Edit/End does not reprice existing booking-night snapshots. Campaigns
+are prefetched once for the room list rather than fetched separately per room.
+
+
+## Core directory: today's minimum room rate from Booking Engine
+
+Core's hotel-directory `biz.minimum_room` now comes from Booking Engine rather
+than Core RoomType price columns. Core calls the internal bulk endpoint:
+
+```http
+POST /api/v1/admin/directory/minimum-room-prices/
+X-Booking-Admin-Key: <internal service key>
+Content-Type: application/json
+```
+
+```json
+{"business_ids": [77, 78], "guest_market": "local", "display_currency": "MMK"}
+```
+
+The server chooses today's date independently in each hotel's configured timezone.
+It resolves DailyRate → RatePeriod → normal RatePlan and applies today's matching
+campaign using the same calculation as availability. Only active, booking-enabled,
+price-configured rooms and active plans are eligible. When today's eligible
+room rates include campaigns, select the greatest actual discount percentage;
+ties select the lowest positive payable price. If no rate is discounted, select
+the lowest positive payable price. This selection uses the requested guest
+market/currency and any supplied price range, including custom plans. No currency is
+converted or substituted for a missing requested-currency price.
+
+Core directory requests can add `"has_discount": true` alongside the hotel
+`category` to include only hotels with a selected discounted rate today.
+`false` or omission leaves discounted and undiscounted hotels eligible.
+Filtering happens before pagination, so counts and pages reflect the matching
+hotels. Core reuses the same bulk price result for filtering and rendering
+`biz.minimum_room`. Existing market/currency parameters (`price_guest_market`,
+`price_currency`) control which currency's discount is considered.
+
+This is an advertised daily rate, independent of inventory, occupancy and stay
+restrictions; it is not a guarantee that a room is currently bookable. A full
+availability search remains necessary before booking.
+
+The response is `data.minimum_rooms`, keyed by Core business ID. Missing hotels
+are omitted. Optional `min_price`/`max_price` select the cheapest room *within*
+the price range, preserving directory range-filter behavior. If a business-scope
+header is supplied, results are limited to that business. A batch accepts at most
+5000 IDs.
+
+Core preserves the existing `biz.minimum_room` location:
+
+```json
+{
+  "minimum_room": {
+    "room_type_id": 1913,
+    "booking_room_type_id": 66,
+    "room_type_name": "Standard Double Room",
+    "rate_plan_id": 10,
+    "price_date": "2026-11-03",
+    "guest_market": "local",
+    "display_currency": "MMK",
+    "display_price": 80000,
+    "has_discount": true,
+    "original_price": 100000,
+    "discount_percentage": 20,
+    "discount_price": 80000
+  }
+}
+```
+
+`room_type_id` remains the Core room ID for compatibility; `booking_room_type_id`
+is the Booking Engine ID. The existing four normal-price fields remain in this
+object, sourced from Booking setup. **Use `display_price` for the displayed
+minimum payable price**, and the explicit discount fields for strike-through/badge
+UI. With no campaign reduction, `has_discount=false`, `discount_percentage=0`,
+and `discount_price=null`. With no eligible room, Core returns `minimum_room=null`.
+
+Core directory inputs retain `price_guest_market` (default local) and
+`price_currency` (MMK for local, USD for foreign by default). Price ranges and
+price sorting now use Booking payable prices; decimal amounts are supported.
+Booking results are reused within the request between sorting, pagination and
+serialization, with bulk calls in chunks of 5000 business IDs. No per-hotel HTTP
+requests or stale Core-price fallback are used. Service failure returns 503.
+
+Deploy Booking Engine's endpoint first, then Core. Core must set
+`BOOKING_ENGINE_BASE_URL` to the canonical HTTPS Booking API URL (no `/api/v1`
+suffix or HTTP redirects) and `BOOKING_ENGINE_ADMIN_KEY` to the shared internal
+key. Existing migration 0076 must already be applied; this change adds no new
+migration. Directory clients call Core as before and never receive the key.
+
+## Public room catalogue: discounts for local and foreign default prices
+
+Both `/api/v1/public/room-types/?business_id=...` and the hotel-scoped room/OTA
+catalogues now include today's campaign fields in `default_price` and each
+`rate_plans` entry. Today is determined in the hotel's timezone. Catalogues still
+return `availability_calculated=false`; a price is not a live availability check.
+
+`default_prices.local` and `default_prices.foreign` in both catalogues and
+availability now include:
+
+```json
+{
+  "base_price": 100000,
+  "base_currency": "MMK",
+  "usd_display_price": 25,
+  "price_date": "2026-11-03",
+  "has_discount": true,
+  "original_price": 100000,
+  "discount_percentage": 20,
+  "discount_price": 80000,
+  "usd_has_discount": true,
+  "usd_original_price": 25,
+  "usd_discount_percentage": 10,
+  "usd_discount_price": 22.5
+}
+```
+
+Each market has its own independent values. Unprefixed discount fields refer to
+`base_currency`; `usd_*` fields refer to USD. No applicable reduction means
+`has_discount=false`, percentage zero, and discount price null; the same rule
+applies independently to `usd_*`. An absent USD price stays null, never a Core
+snapshot's zero placeholder.
+
+The existing `base_price` and `usd_display_price` in this plural `default_prices`
+matrix remain **normal configured Booking prices**, with campaign prices added
+alongside them. Core snapshot prices are no longer used here. The selected
+singular `default_price` keeps its existing payable-price semantics and uses the
+requested display currency for display amounts only; discount metadata remains
+separated into base and USD fields. Catalogues apply today's campaign to normal rate
+plans; availability's singular price additionally resolves daily/period rules.
+
+Availability's plural matrix applies campaigns on the requested check-in date;
+catalogues use today. The matrix shows configured normal prices/campaigns for
+both markets even when `guest_market` selects only one set of rate plans. Use
+`nightly_prices` for per-night changes across a stay and the existing total fields
+for payable stay totals.
+
+Admin discount arrays omit ended and expired campaigns. End acknowledgement and
+explicit discount-detail reads still return the campaign status/history by ID.
+
+### Room-type extra bed prices
+
+Apply migration `0078_room_type_extra_bed_prices`. It copies existing active default
+rate-plan extra bed prices into RoomType; stored bookings and invoices stay unchanged.
+New calculations use RoomType prices, including custom rate plans and PMS bookings.
+Core sync and room discounts do not change these prices.
+
+`GET /api/v1/admin/room-types/{booking_room_type_id}/extra-bed-price/` reads setup.
+`PUT` replaces all four fields (`null` for omitted fields); `PATCH` retains omitted fields.
+Requires normal room price setup and existing admin business scope headers.
+
+```json
+{
+  "extra_bed_local_mmk_price": "20000.00",
+  "extra_bed_local_usd_price": "10.00",
+  "extra_bed_foreign_mmk_price": "40000.00",
+  "extra_bed_foreign_usd_price": "20.00"
+}
+```
+
+All values are optional, nonnegative, per bed per night. `null` clears a field;
+missing foreign currency inherits the corresponding Local currency. Explicit zero
+means free (does not inherit). All absent means free. Normal room price responses
+and admin room type responses also expose the four setup values.
+
+Public catalog rate plans and availability expose `extra_bed_display_currency`
+alongside `extra_bed_display_price`. If USD room display exists but only MMK extra
+bed exists, show Room USD + Extra Bed MMK separately; never label MMK as USD or add
+the two display amounts. Availability `extra_bed_price` also contains its own
+`display_currency`. Estimate extra bed totals and paid extra bed charges use MMK. USD extra bed
+rates are optional display values. A positive USD-only rate requires an MMK
+rate before booking. Paid extra beds require an MMK booking because each invoice
+uses one currency.

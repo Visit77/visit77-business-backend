@@ -1,3 +1,4 @@
+from booking.directory_pricing import AdminDirectoryMinimumPricesView
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
@@ -83,6 +84,8 @@ from booking.remittance_views import (
     SuperAdminRemittanceDetailView,
     SuperAdminRemittanceHistoryView,
     SuperAdminRemittanceListView,
+    SuperAdminRemittancePaymentListView,
+    SuperAdminRemittancePaymentDateView,
     SuperAdminRemittancePDFView,
     SuperAdminRemittancePayView,
     SuperAdminRemittanceReopenReceiptView,
@@ -121,7 +124,20 @@ urlpatterns = [
     ),
     path("superadmin/remittances/", SuperAdminRemittanceListView.as_view()),
     path("superadmin/remittances/history/", SuperAdminRemittanceHistoryView.as_view()),
+    path(
+        "superadmin/remittances/payment-list/",
+        SuperAdminRemittancePaymentListView.as_view(),
+    ),
+    path(
+        "superadmin/remittances/payment-list/<str:payout_date>/",
+        SuperAdminRemittancePaymentDateView.as_view(),
+    ),
+    path(
+        "superadmin/remittances/payment-list/<str:payout_date>/export/",
+        SuperAdminRemittancePaymentDateView.as_view(export=True),
+    ),
     path("superadmin/remittances/<int:remittance_id>/", SuperAdminRemittanceDetailView.as_view()),
+    path("superadmin/remittances/<int:remittance_id>/export/", SuperAdminRemittanceDetailView.as_view(export=True)),
     path("superadmin/remittances/<int:remittance_id>/pdf/", SuperAdminRemittancePDFView.as_view()),
     path("superadmin/remittances/<int:remittance_id>/check/", SuperAdminRemittanceCheckView.as_view()),
     path(
@@ -180,6 +196,7 @@ urlpatterns = [
     path("admin/remittance-checkers/<uuid:actor_id>/", HotelRemittanceActorDeleteView.as_view()),
     path("admin/remittances/", HotelRemittanceListView.as_view()),
     path("admin/remittances/<int:remittance_id>/", HotelRemittanceDetailView.as_view()),
+    path("admin/remittances/<int:remittance_id>/export/", HotelRemittanceDetailView.as_view(export=True)),
     path("admin/remittances/<int:remittance_id>/pdf/", HotelRemittancePDFView.as_view()),
     path("admin/remittances/<int:remittance_id>/receive/", HotelRemittanceReceiveView.as_view()),
     path("admin/ota-rooms/<int:physical_room_id>/history/", OTARoomHistoryView.as_view()),
@@ -192,6 +209,7 @@ urlpatterns = [
         AdminReceiptDetailView.as_view(),
     ),
     path("public/search/availability/", PublicGlobalAvailabilityView.as_view()),
+    path("admin/directory/minimum-room-prices/", AdminDirectoryMinimumPricesView.as_view()),
     path("admin/availability/hotel-ids/", AdminAvailableHotelIdsView.as_view()),
     path("admin/ota/hotel-ids/", AdminOTAHotelIdsView.as_view()),
     path("public/hotels/<int:core_business_id>/ota-room-types/", PublicOTARoomTypeCatalogView.as_view()),

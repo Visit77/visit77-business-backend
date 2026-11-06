@@ -78,7 +78,7 @@ class RemittanceCommissionPolicyTests(TestCase):
         paid=OTARemittance.objects.create(hotel=self.hotel,period_from=date(2026,10,12),period_to=date(2026,10,18),
             gross_booking_amount=256,tax_amount=6,service_charge_amount=50,commission_rate=5,
             commission_amount=10,net_remittance_amount=246,status='paid')
-        migration=import_module('booking.migrations.0076_commission_includes_service_charge')
+        migration=import_module('booking.migrations.0077_commission_includes_service_charge')
         migration.apply_new_commission_policy(apps,SimpleNamespace(connection=connection))
         draft.refresh_from_db();paid.refresh_from_db()
         self.assertEqual(draft.commission_amount,Decimal('12.50'))

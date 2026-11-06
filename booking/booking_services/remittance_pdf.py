@@ -11,44 +11,21 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import (
+    CondPageBreak,
     Image,
-    PageBreak,
-    Paragraph,
     SimpleDocTemplate,
     Spacer,
     Table,
     TableStyle,
 )
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 
-DOCUMENT_FONT = "NotoSansMyanmar"
-DOCUMENT_FONT_BOLD = "NotoSansMyanmar-Bold"
+from booking.booking_services.receipt import MYANMAR_TEXT_RE, Paragraph, _register_document_fonts
+
 BLUE = colors.HexColor("#3039F5")
 SECTION_BLUE = colors.HexColor("#2563EB")
 DATE_BLUE = colors.HexColor("#AAB9CC")
 GRID = colors.HexColor("#7E91AD")
 LIGHT_GREY = colors.HexColor("#EEF3F9")
-MYANMAR_TEXT_RE = re.compile(r"[\u1000-\u109f\uaa60-\uaa7f\ua9e0-\ua9ff]+")
-
-
-def _register_document_fonts():
-    if DOCUMENT_FONT in pdfmetrics.getRegisteredFontNames():
-        return
-    font_dir = Path(__file__).resolve().parents[1] / "static" / "booking" / "fonts"
-    pdfmetrics.registerFont(TTFont(
-        DOCUMENT_FONT, str(font_dir / "NotoSansMyanmar-Regular.ttf"), shapable=True,
-    ))
-    pdfmetrics.registerFont(TTFont(
-        DOCUMENT_FONT_BOLD, str(font_dir / "NotoSansMyanmar-Bold.ttf"), shapable=True,
-    ))
-    pdfmetrics.registerFontFamily(
-        DOCUMENT_FONT,
-        normal=DOCUMENT_FONT,
-        bold=DOCUMENT_FONT_BOLD,
-        italic=DOCUMENT_FONT,
-        boldItalic=DOCUMENT_FONT_BOLD,
-    )
 
 
 def _money(value, currency):
@@ -98,15 +75,18 @@ def _merchant_details(hotel):
 
 
 def _paragraph(text, style):
-    content = escape(str(text or "-")).replace("\n", "<br/>")
-    if MYANMAR_TEXT_RE.search(content):
-        content = MYANMAR_TEXT_RE.sub(
-            lambda match: f'<font name="{DOCUMENT_FONT}">{match.group(0)}</font>',
-            content,
+    text = str(text or "-")
+    content = escape(text)
+    if MYANMAR_TEXT_RE.search(text):
+        # The Myanmar font lacks Latin glyphs. Keep Latin runs in the original
+        # font while the shared paragraph renderer shapes the Myanmar runs.
+        runs = re.split(f"({MYANMAR_TEXT_RE.pattern}+)", text)
+        content = "".join(
+            escape(run) if MYANMAR_TEXT_RE.search(run)
+            else f'<font name="{style.fontName}">{escape(run)}</font>'
+            for run in runs if run
         )
-        style = style.clone(f"{style.name}-Shaped")
-        style.shaping = True
-    return Paragraph(content, style)
+    return Paragraph(content.replace("\n", "<br/>"), style)
 
 
 def _section_header(title, width, style):
@@ -159,7 +139,6 @@ def _item_sections(remittance, normal, bold, small):
             f"RemittanceItemSection-{item_type}", parent=bold,
             textColor=SECTION_BLUE, fontSize=9.5, leading=13,
         )
-        sections.extend([Spacer(1, 6 * mm), _paragraph(label.upper(), section_label), Spacer(1, 2 * mm)])
         data = [[
             _paragraph("Time", bold),
             _paragraph("Booking ID", bold),
@@ -181,6 +160,7 @@ def _item_sections(remittance, normal, bold, small):
                 row_styles.extend([
                     ("SPAN", (0, table_row), (-1, table_row)),
                     ("BACKGROUND", (0, table_row), (-1, table_row), DATE_BLUE),
+                    ("NOSPLIT", (0, table_row), (-1, table_row + 1)),
                 ])
                 table_row += 1
             refund = refunds.get(item.ledger_entry.payment_id, Decimal("0"))
@@ -195,7 +175,8 @@ def _item_sections(remittance, normal, bold, small):
                 _paragraph(f"{refund:,.0f}" if refund else "-", small),
             ])
             table_row += 1
-        table = Table(data, colWidths=[22 * mm, 44 * mm, 38 * mm, 31 * mm, 31 * mm], repeatRows=1)
+        widths = [22 * mm, 44 * mm, 38 * mm, 31 * mm, 31 * mm]
+        table = Table(data, colWidths=widths, repeatRows=1)
         table.setStyle(TableStyle([
             ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
             ("FONTSIZE", (0, 0), (-1, -1), 8),
@@ -207,7 +188,18 @@ def _item_sections(remittance, normal, bold, small):
             ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
             *row_styles,
         ]))
-        sections.append(table)
+        heading = _paragraph(label.upper(), section_label)
+        _, heading_height = heading.wrap(166 * mm, 0)
+        first_rows = Table(data[:3], colWidths=widths, style=TableStyle([
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("SPAN", (0, 1), (-1, 1)),
+        ]))
+        _, minimum_table_height = first_rows.wrap(166 * mm, 0)
+        sections.extend([
+            CondPageBreak(8 * mm + heading_height + minimum_table_height),
+            Spacer(1, 6 * mm), heading, Spacer(1, 2 * mm), table,
+        ])
     return sections
 
 
@@ -220,7 +212,7 @@ def render_remittance_statement_pdf(remittance):
         leftMargin=18 * mm,
         rightMargin=18 * mm,
         topMargin=12 * mm,
-        bottomMargin=10 * mm,
+        bottomMargin=17 * mm,
         title=f"Remittance {remittance.reference}",
     )
     styles = getSampleStyleSheet()
@@ -364,7 +356,7 @@ def render_remittance_statement_pdf(remittance):
 
     item_sections = _item_sections(remittance, normal, bold, small)
     if item_sections:
-        story.extend([PageBreak(), *item_sections])
+        story.extend(item_sections)
 
     def decorate_page(canvas, document):
         canvas.saveState()

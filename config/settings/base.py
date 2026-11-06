@@ -193,7 +193,7 @@ CELERY_BEAT_SCHEDULE = {
     },
     "generate-weekly-ota-remittances": {
         "task": "booking.tasks.generate_weekly_ota_remittances_task",
-        "schedule": crontab(day_of_week="monday", hour=0, minute=10),
+        "schedule": crontab(day_of_week="monday,wednesday,friday", hour=0, minute=10),
     },
 }
 

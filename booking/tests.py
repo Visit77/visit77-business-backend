@@ -13,7 +13,7 @@ from rest_framework.test import APIClient
 from rest_framework.exceptions import ValidationError
 from rest_framework_simplejwt.backends import TokenBackend
 
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, InvoiceLine, MealPlan, OTABookingFollowUp, OTABookingNotification, OTAInventoryClosure, OTARevenueLedger, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, Hotel, Invoice, InvoiceLine, MealPlan, OTABookingFollowUp, OTABookingNotification, OTAInventoryClosure, OTARemittance, OTARevenueLedger, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.integrations.core import CoreIntegrationError, sync_business_from_core
 from booking.booking_services.invoice_charges import calculate_invoice_charges
 from booking.serializers import BookingRoomSerializer, InvoiceSerializer, PublicHotelSerializer
@@ -33,6 +33,8 @@ class BookingServiceTests(TestCase):
             hotel=self.hotel,
             core_room_type_id=301,
             name="Double Room",
+            room_price_setup=True,
+            local_mmk_price=Decimal("80000"),
             max_adults=2,
             max_children=1,
             max_occupancy=3,
@@ -1655,8 +1657,8 @@ class BookingServiceTests(TestCase):
         self.assertEqual(restored.status, Booking.Status.CONFIRMED)
 
     def test_extra_bed_is_priced_for_each_night(self):
-        self.rate_plan.extra_bed_price = Decimal("30000")
-        self.rate_plan.save(update_fields=["extra_bed_price"])
+        self.room_type.extra_bed_local_mmk_price = Decimal("30000")
+        self.room_type.save(update_fields=["extra_bed_local_mmk_price"])
         booking, _ = create_booking(self.payload())
         self.assertEqual(booking.grand_total, Decimal("380000"))
 
@@ -1899,8 +1901,8 @@ class BookingServiceTests(TestCase):
         self.assertEqual(breakfast_line.description, "Breakfast x 2 x 2 Nights")
 
     def test_initial_invoice_splits_room_extra_bed_meal_plan_and_breakfast_lines(self):
-        self.rate_plan.extra_bed_base_price = Decimal("30000")
-        self.rate_plan.save(update_fields=["extra_bed_base_price"])
+        self.room_type.extra_bed_local_mmk_price = Decimal("30000")
+        self.room_type.save(update_fields=["extra_bed_local_mmk_price"])
         meal_plan = MealPlan.objects.create(
             hotel=self.hotel,
             core_meal_plan_id=451,
@@ -2127,6 +2129,8 @@ class BookingServiceTests(TestCase):
             hotel=self.hotel,
             core_room_type_id=302,
             name="Six Guest Room",
+            room_price_setup=True,
+            local_mmk_price=Decimal("90000"),
             max_adults=6,
             max_children=0,
             max_occupancy=6,
@@ -2136,6 +2140,8 @@ class BookingServiceTests(TestCase):
             hotel=self.hotel,
             core_room_type_id=303,
             name="Two Guest Room",
+            room_price_setup=True,
+            local_mmk_price=Decimal("70000"),
             max_adults=2,
             max_children=0,
             max_occupancy=2,
@@ -2232,6 +2238,8 @@ class BookingServiceTests(TestCase):
             hotel=self.hotel,
             core_room_type_id=304,
             name="Second Three Guest Room",
+            room_price_setup=True,
+            local_mmk_price=Decimal("80000"),
             max_adults=3,
             max_children=0,
             max_occupancy=3,
@@ -4035,8 +4043,8 @@ class BookingApiTests(BookingServiceTests):
 
     def test_check_in_form_updates_reservation_dates_capacity_and_guests(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="303-U")
-        self.rate_plan.extra_bed_base_price = Decimal("10000")
-        self.rate_plan.save(update_fields=["extra_bed_base_price"])
+        self.room_type.extra_bed_local_mmk_price = Decimal("10000")
+        self.room_type.save(update_fields=["extra_bed_local_mmk_price"])
         add_on = AddOn.objects.create(
             hotel=self.hotel,
             code="check-in-service",
@@ -4103,7 +4111,8 @@ class BookingApiTests(BookingServiceTests):
         self.assertTrue(booking.guests.filter(name="Second Guest", identity_number="PP-2").exists())
         invoice = booking.invoices.get(invoice_type=Invoice.Type.ROOM_BOOKING)
         self.assertEqual(invoice.total, Decimal("300000"))
-        self.assertEqual(invoice.lines.count(), 2)
+        self.assertEqual(invoice.lines.count(), 3)
+        self.assertEqual(invoice.lines.get(metadata__line_type='extra_bed').total, Decimal('30000'))
 
     def test_check_in_form_keeps_booked_nightly_price_after_core_rate_change(self):
         booking = create_admin_reservation({
@@ -5604,10 +5613,11 @@ class BookingApiTests(BookingServiceTests):
         self.room_type.save(update_fields=["core_snapshot"])
         self.rate_plan.is_default = True
         self.rate_plan.usd_display_price = Decimal("20")
-        self.rate_plan.extra_bed_base_price = Decimal("30000")
-        self.rate_plan.extra_bed_usd_display_price = Decimal("8")
+        self.room_type.extra_bed_local_mmk_price = Decimal("30000")
+        self.room_type.extra_bed_local_usd_price = Decimal("8")
+        self.room_type.save(update_fields=["extra_bed_local_mmk_price", "extra_bed_local_usd_price"])
         self.rate_plan.save(update_fields=[
-            "is_default", "usd_display_price", "extra_bed_base_price", "extra_bed_usd_display_price",
+            "is_default", "usd_display_price",
         ])
         response = self.client.get(
             f"/api/v1/public/hotels/{self.hotel.core_business_id}/availability/",
@@ -6418,8 +6428,8 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(response.status_code, 403, response.data)
 
     def test_public_booking_estimate_does_not_require_contact_info(self):
-        self.rate_plan.extra_bed_base_price = Decimal("30000")
-        self.rate_plan.save(update_fields=["extra_bed_base_price"])
+        self.room_type.extra_bed_local_mmk_price = Decimal("30000")
+        self.room_type.save(update_fields=["extra_bed_local_mmk_price"])
         payload = {
             "core_business_id": self.hotel.core_business_id,
             "check_in": str(self.check_in),
@@ -6910,8 +6920,8 @@ class BookingApiTests(BookingServiceTests):
 
     def test_walk_in_v2_prices_extra_beds_add_ons_and_full_payment(self):
         room = PhysicalRoom.objects.create(hotel=self.hotel, room_type=self.room_type, room_number="307-S")
-        self.rate_plan.extra_bed_base_price = Decimal("10000")
-        self.rate_plan.save(update_fields=["extra_bed_base_price"])
+        self.room_type.extra_bed_local_mmk_price = Decimal("10000")
+        self.room_type.save(update_fields=["extra_bed_local_mmk_price"])
         add_on = AddOn.objects.create(
             hotel=self.hotel,
             code="late-service",
@@ -9305,6 +9315,120 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(
             payout_filtered.data["data"]["payout_counts"],
             unfiltered.data["data"]["payout_counts"],
+        )
+
+    def test_superadmin_remittance_payment_list_groups_dates_and_hides_accruing(self):
+        self.hotel.core_snapshot = {
+            "merchant_verification": {
+                "payment_account_number": "999-101",
+                "beneficiary_name": "Boston Company Ltd.",
+                "bank_name": "KBZ",
+                "branch": "Myaynigone",
+            },
+        }
+        self.hotel.save(update_fields=["core_snapshot"])
+        Hotel.objects.create(
+            core_business_id=7801,
+            name="Alpha Hotel Without Remittance",
+            package=Hotel.Package.OTA,
+        )
+        Hotel.objects.create(
+            core_business_id=7802,
+            name="PMS Hotel Excluded From Payment List",
+            package=Hotel.Package.PMS,
+        )
+        today = timezone.localdate()
+        pending = OTARemittance.objects.create(
+            hotel=self.hotel,
+            period_from=today - timedelta(days=14),
+            period_to=today - timedelta(days=8),
+            status=OTARemittance.Status.PENDING,
+            reference="V77-PAY-26-000001",
+            gross_booking_amount=Decimal("1500000"),
+            net_remittance_amount=Decimal("1500000"),
+        )
+        paid = OTARemittance.objects.create(
+            hotel=self.hotel,
+            period_from=today - timedelta(days=7),
+            period_to=today - timedelta(days=1),
+            status=OTARemittance.Status.PAID,
+            reference="V77-PAY-26-000002",
+            gross_booking_amount=Decimal("1260000"),
+            net_remittance_amount=Decimal("1260000"),
+            paid_at=timezone.now(),
+        )
+        OTARemittance.objects.create(
+            hotel=self.hotel,
+            period_from=today,
+            period_to=today + timedelta(days=6),
+            status=OTARemittance.Status.ACCRUING,
+            reference="",
+            net_remittance_amount=Decimal("999999"),
+        )
+
+        response = self.client.get(
+            "/api/v1/superadmin/remittances/payment-list/?offset=1&limit=20",
+            HTTP_AUTHORIZATION=f"Bearer {self.core_access_token()}",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        data = response.data["data"]
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(data["payment_counts"], {
+            "all": 2,
+            "unpaid": 1,
+            "no_received": 1,
+        })
+        for group in data["results"]:
+            self.assertEqual(
+                {row["hotel_id"] for row in group["hotels"]},
+                {self.hotel.id},
+            )
+        rows = [row for group in data["results"] for row in group["hotels"]]
+        remittance_ids = {
+            row["remittance"]["id"]
+            for row in rows
+            if row["remittance"] is not None
+        }
+        self.assertEqual(remittance_ids, {pending.id, paid.id})
+        hotel_rows = [row for row in rows if row["hotel_id"] == self.hotel.id]
+        self.assertEqual(hotel_rows[0]["account_number"], "999-101")
+        self.assertEqual(hotel_rows[0]["beneficiary_name"], "Boston Company Ltd.")
+        self.assertEqual(hotel_rows[0]["bank_or_mobile_wallet_name"], "KBZ")
+        self.assertNotIn(Decimal("999999"), {
+            amount
+            for group in data["results"]
+            for amount in group["total_amounts"].values()
+        })
+
+        no_received = self.client.get(
+            "/api/v1/superadmin/remittances/payment-list/"
+            "?payment_filter=no_received&offset=1&limit=20",
+            HTTP_AUTHORIZATION=f"Bearer {self.core_access_token()}",
+        )
+        self.assertEqual(no_received.status_code, 200, no_received.data)
+        filtered_rows = [
+            row
+            for group in no_received.data["data"]["results"]
+            for row in group["hotels"]
+            if row["remittance"] is not None
+        ]
+        self.assertEqual(
+            [row["remittance"]["id"] for row in filtered_rows],
+            [paid.id],
+        )
+
+        history = self.client.get(
+            "/api/v1/superadmin/remittances/history/?offset=1&limit=20",
+            HTTP_AUTHORIZATION=f"Bearer {self.core_access_token()}",
+        )
+        self.assertEqual(history.status_code, 200, history.data)
+        history_data = history.data["data"]
+        self.assertNotIn("payment_counts", history_data)
+        self.assertNotIn("payment_filter", history_data)
+        self.assertEqual(
+            {row["id"] for row in history_data["results"]},
+            {pending.id, paid.id},
         )
 
     def test_superadmin_can_update_ota_follow_up_without_history_table(self):

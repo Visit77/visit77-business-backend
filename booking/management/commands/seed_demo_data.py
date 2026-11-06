@@ -404,6 +404,11 @@ class Command(BaseCommand):
                 "is_active": True,
             },
         )
+        if market in {"local", "foreign"}:
+            setattr(room_type, f"{market}_mmk_price", plan.base_price)
+            setattr(room_type, f"{market}_usd_price", plan.usd_display_price)
+            room_type.room_price_setup = True
+            room_type.save(update_fields=[f"{market}_mmk_price", f"{market}_usd_price", "room_price_setup"])
         return plan
 
     def _seed_inventory(self, room_type, start_date, end_date, total_rooms):

@@ -20,14 +20,14 @@ from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Image, PageBreak, Paragraph as ReportLabParagraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Image, Paragraph as ReportLabParagraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from booking.models import Invoice, Payment
 
 
 DOCUMENT_FONT = "NotoSansMyanmar"
 DOCUMENT_FONT_BOLD = "NotoSansMyanmar-Bold"
-PDF_RENDER_VERSION = 4
+PDF_RENDER_VERSION = 5
 MYANMAR_TEXT_RE = re.compile(r"[\u1000-\u109f\uaa60-\uaa7f\ua9e0-\ua9ff]")
 
 
@@ -414,7 +414,7 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer, pagesize=A4, rightMargin=18 * mm, leftMargin=18 * mm,
-        topMargin=12 * mm, bottomMargin=10 * mm,
+        topMargin=12 * mm, bottomMargin=17 * mm,
     )
     styles = getSampleStyleSheet()
     small = ParagraphStyle("ReceiptSmall", parent=styles["BodyText"], fontSize=9, leading=14)
@@ -587,7 +587,6 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
         ("Email Address", booking.get("hotel_email", "")),
     ]
     section("GUEST &amp; HOTEL DETAILS", detail_rows)
-    story.append(PageBreak())
 
     amount_rows = []
     centered_label_rows = set()
@@ -795,7 +794,7 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
                 preserveAspectRatio=True, mask="auto",
             )
         canvas.setFillColor(colors.black)
-        canvas.drawRightString(A4[0] - 18 * mm, footer_y, f"Page {document.page} of 2")
+        canvas.drawRightString(A4[0] - 18 * mm, footer_y, f"Page {document.page}")
         canvas.restoreState()
 
     doc.build(story, onFirstPage=footer, onLaterPages=footer)

@@ -24,7 +24,8 @@ from booking.models import (
     OTARevenueLedger,
 )
 from booking.authentication import CoreJWTAuthentication
-from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
+from booking.permissions import HasBookingAdminKey, IsCoreRemittanceFinance, IsCoreSuperAdmin
+from booking.remittance_export import remittance_detail_workbook, remittance_payment_workbook
 from booking.remittance_services import (
     active_payout_period,
     current_week_period,
@@ -352,6 +353,7 @@ def remittance_data(remittance, detail=False, request=None):
     adjustment_operator = "-" if remittance.adjustment_amount < 0 else "+"
     adjustment_input_amount = abs(remittance.adjustment_amount)
     display_status = remittance.status
+    payout_option = remittance.hotel.remittance_payout_option_for(remittance.period_from)
     receipt_url = _absolute_url(request, _payment_receipt_url(remittance))
     hotel_pdf_url = _absolute_url(
         request, f"/api/v1/admin/remittances/{remittance.id}/pdf/"
@@ -372,8 +374,8 @@ def remittance_data(remittance, detail=False, request=None):
         "hotel_id": remittance.hotel_id,
         "core_business_id": remittance.hotel.core_business_id,
         "hotel_name": remittance.hotel.name,
-        "payout_option": remittance.hotel.remittance_payout_option,
-        "payout_option_label": remittance.hotel.get_remittance_payout_option_display(),
+        "payout_option": payout_option,
+        "payout_option_label": Hotel.RemittancePayoutOption(payout_option).label,
         "period_from": remittance.period_from,
         "period_to": remittance.period_to,
         "currency": remittance.currency,
@@ -429,6 +431,38 @@ def remittance_data(remittance, detail=False, request=None):
         ]
         data["merchant_verification"] = _merchant_verification_data(remittance.hotel)
     return data
+
+
+def _admin_remittance_payment_hotel_data(hotel, remittance, request):
+    """One hotel row for a payment-list payout date."""
+    merchant = _merchant_verification_data(hotel)
+    return {
+        "hotel_id": hotel.id,
+        "core_business_id": hotel.core_business_id,
+        "hotel_name": hotel.name,
+        "currency": remittance.currency if remittance else hotel.base_currency,
+        "net_amount": remittance.net_remittance_amount if remittance else None,
+        "beneficiary_name": merchant["beneficiary_name"],
+        "account_number": merchant["payment_account_number"],
+        "bank_or_mobile_wallet_name": merchant["bank_or_mobile_wallet_name"],
+        "branch": merchant["branch"],
+        "merchant_verification": merchant,
+        "status": remittance.status if remittance else None,
+        "is_paid": bool(remittance and remittance.status in {
+            OTARemittance.Status.PAID,
+            OTARemittance.Status.RECEIVED,
+        }),
+        "is_received": bool(
+            remittance and remittance.status == OTARemittance.Status.RECEIVED
+        ),
+        "payment_receipt_url": (
+            _absolute_url(request, _payment_receipt_url(remittance))
+            if remittance else None
+        ),
+        "remittance": (
+            remittance_data(remittance, request=request) if remittance else None
+        ),
+    }
 
 
 def _hotel_from_request(request):
@@ -504,7 +538,8 @@ class HotelRemittanceActorDeleteView(APIView):
 
 class SuperAdminRemittanceActorListCreateView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    finance_read_only = True
+    permission_classes = [IsCoreRemittanceFinance]
 
     def get(self, request):
         actors = OTARemittanceActor.objects.filter(scope=OTARemittanceActor.Scope.ADMIN)
@@ -599,8 +634,17 @@ class HotelAvailableRevenueView(APIView):
         period_from, period_to = active_payout_period(hotel, local_today)
         record = refresh_current_week_remittance(hotel)
         blocked_by_first_period = False
+        if hotel.remittance_payout_option_for(local_today) == Hotel.RemittancePayoutOption.THREE_TIMES_WEEKLY:
+            week_from, _week_to = current_week_period(local_today, hotel=hotel)
+            earlier = OTARemittance.objects.filter(
+                hotel=hotel, period_from__gte=week_from, period_to__lt=period_from,
+            ).exclude(status__in=[OTARemittance.Status.PAID, OTARemittance.Status.RECEIVED]).order_by('period_from').first()
+            if earlier:
+                record = earlier
+                period_from, period_to = earlier.period_from, earlier.period_to
+                blocked_by_first_period = True
         if (
-            hotel.remittance_payout_option == Hotel.RemittancePayoutOption.TWICE_WEEKLY
+            hotel.remittance_payout_option_for(local_today) == Hotel.RemittancePayoutOption.TWICE_WEEKLY
             and local_today.weekday() >= 3
         ):
             week_from, _week_to = current_week_period(local_today, hotel=hotel)
@@ -690,7 +734,7 @@ class SuperAdminHotelPayoutOptionView(APIView):
         valid_options = {value for value, _label in Hotel.RemittancePayoutOption.choices}
         if payout_option not in valid_options:
             raise ValidationError({
-                "payout_option": "Use weekly or twice_weekly."
+                "payout_option": "Use weekly, twice_weekly, or three_times_weekly."
             })
         if payout_option == hotel.remittance_payout_option:
             return success({
@@ -719,7 +763,11 @@ class SuperAdminHotelPayoutOptionView(APIView):
             period_to__lte=week_to,
         ).delete()
         hotel.remittance_payout_option = payout_option
-        hotel.save(update_fields=["remittance_payout_option"])
+        hotel.previous_remittance_payout_option = ""
+        hotel.remittance_payout_effective_date = None
+        hotel.save(update_fields=[
+            "remittance_payout_option", "previous_remittance_payout_option", "remittance_payout_effective_date",
+        ])
         refresh_current_week_remittance(hotel)
         return success({
             "changed": True,
@@ -835,11 +883,16 @@ class HotelRemittanceDetailView(APIView):
     permission_classes = [HasBookingAdminKey]
     business_scoped = True
 
+    export = False
+
     def get(self, request, remittance_id):
         hotel = _hotel_from_request(request)
         record = OTARemittance.objects.select_related("hotel").filter(id=remittance_id, hotel=hotel).first()
         if not record:
             raise ValidationError({"remittance_id": "Remittance was not found."})
+        if self.export:
+            items = list(record.items.select_related("booking", "ledger_entry").order_by("-ledger_entry__effective_at", "-id"))
+            return remittance_detail_workbook(record, _group_remittance_items(record, items))
         return success({"remittance": remittance_data(record, detail=True, request=request)})
 
 
@@ -887,7 +940,7 @@ class HotelRemittanceReceiveView(APIView):
 
 class SuperAdminRemittanceListView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
 
     def get(self, request):
         try:
@@ -919,7 +972,10 @@ class SuperAdminRemittanceListView(APIView):
             .order_by("-paid_at", "-id")
             .values("status")[:1]
         )
-        hotels = Hotel.objects.filter(is_active=True)
+        hotels = Hotel.objects.filter(
+            is_active=True,
+            package__in=[Hotel.Package.OTA, Hotel.Package.OTA_PMS],
+        )
         test_city_hotel_ids = [
             hotel.id
             for hotel in hotels.only("id", "core_snapshot")
@@ -943,6 +999,9 @@ class SuperAdminRemittanceListView(APIView):
         # the paginated results displayed below.
         count_hotels = hotels
         payout_counts = {
+            "three_times_weekly": count_hotels.filter(
+                remittance_payout_option=Hotel.RemittancePayoutOption.THREE_TIMES_WEEKLY,
+            ).count(),
             "all": count_hotels.count(),
             "weekly": count_hotels.filter(
                 remittance_payout_option=Hotel.RemittancePayoutOption.WEEKLY,
@@ -972,10 +1031,11 @@ class SuperAdminRemittanceListView(APIView):
         if payout_option in {
             Hotel.RemittancePayoutOption.WEEKLY,
             Hotel.RemittancePayoutOption.TWICE_WEEKLY,
+            Hotel.RemittancePayoutOption.THREE_TIMES_WEEKLY,
         }:
             hotels = hotels.filter(remittance_payout_option=payout_option)
         elif payout_option != "all":
-            raise ValidationError({"payout_option": "Use all, weekly, or twice_weekly."})
+            raise ValidationError({"payout_option": "Use all, weekly, twice_weekly, or three_times_weekly."})
 
         action_filter = request.query_params.get("action_filter", "all")
         if action_filter == "need_to_pay":
@@ -1118,19 +1178,208 @@ class SuperAdminRemittanceListView(APIView):
         })
 
 
-class SuperAdminRemittanceHistoryView(APIView):
+class SuperAdminRemittancePaymentListView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
+
+    @staticmethod
+    def parse_payment_date(value, field):
+        try:
+            parsed = parse_date(value)
+            if parsed is None or parsed == parsed.min:
+                raise ValueError
+        except ValueError:
+            raise ValidationError({field: "Use a valid date in YYYY-MM-DD format."})
+        return parsed
+
+    def payment_records(self, request, payout_date=None):
+        is_test = _boolean_query_param(request, "is_test", default=False)
+        hotels = Hotel.objects.filter(
+            is_active=True,
+            package__in=[Hotel.Package.OTA, Hotel.Package.OTA_PMS],
+        )
+        test_city_hotel_ids = [
+            hotel.id
+            for hotel in hotels.only("id", "core_snapshot")
+            if _is_test_city_hotel(hotel)
+        ]
+        if is_test:
+            hotels = hotels.filter(id__in=test_city_hotel_ids)
+        else:
+            hotels = hotels.exclude(id__in=test_city_hotel_ids)
+
+        business_id = request.query_params.get("business_id")
+        if business_id:
+            hotels = hotels.filter(core_business_id=business_id)
+        hotels = hotels.order_by(Lower("name"), "name", "id")
+        hotel_ids = list(hotels.values_list("id", flat=True))
+
+        scoped_records = (
+            OTARemittance.objects.select_related(
+                "hotel", "checked_by", "paid_by", "received_by",
+            )
+            .filter(
+                hotel_id__in=hotel_ids,
+                net_remittance_amount__gt=0,
+                status__in=[
+                    OTARemittance.Status.PENDING, OTARemittance.Status.CHECKED,
+                    OTARemittance.Status.PAID, OTARemittance.Status.RECEIVED,
+                ],
+            )
+            .filter(Q(gross_booking_amount__gt=0) | Q(released_held_funds_amount__gt=0))
+            .prefetch_related("items")
+        )
+
+        if payout_date is not None:
+            scoped_records = scoped_records.filter(period_to=payout_date - timedelta(days=1))
+
+        search = request.query_params.get("search") or request.query_params.get(
+            "remittance_id"
+        )
+        scoped_records = _filter_remittance_search(scoped_records, search)
+
+        for parameter, lookup in (("date_from", "period_to__gte"), ("date_to", "period_to__lte")):
+            raw_value = request.query_params.get(parameter)
+            if raw_value:
+                value = self.parse_payment_date(raw_value, parameter)
+                # Payment-list dates are the day after the covered period ends.
+                scoped_records = scoped_records.filter(**{
+                    lookup: value - timedelta(days=1),
+                })
+
+        status = request.query_params.get("status")
+        valid_statuses = {
+            choice for choice, _label in OTARemittance.Status.choices
+            if choice != OTARemittance.Status.ACCRUING
+        }
+        if status:
+            if status not in valid_statuses:
+                raise ValidationError({"status": f"Use one of: {', '.join(sorted(valid_statuses))}."})
+            scoped_records = scoped_records.filter(status=status)
+
+        for parameter, lookup in (("period_from", "period_from__gte"), ("period_to", "period_to__lte")):
+            raw_value = request.query_params.get(parameter)
+            if raw_value:
+                value = self.parse_payment_date(raw_value, parameter)
+                scoped_records = scoped_records.filter(**{lookup: value})
+
+        # These counters follow the search/date/business scope, but remain stable
+        # when the user switches between the history tabs.
+        unpaid_statuses = [OTARemittance.Status.PENDING, OTARemittance.Status.CHECKED]
+        unpaid_count = scoped_records.filter(status__in=unpaid_statuses).count()
+        no_received_lookup = Q(status=OTARemittance.Status.PAID)
+        no_received_count = scoped_records.filter(no_received_lookup).count()
+        all_count = scoped_records.count()
+        records = scoped_records
+
+        payment_filter = str(
+            request.query_params.get("payment_filter")
+            or request.query_params.get("history_filter", "all")
+        ).strip().lower()
+        if payment_filter == "unpaid":
+            records = records.filter(status__in=unpaid_statuses)
+        elif payment_filter == "no_received":
+            records = records.filter(no_received_lookup)
+        elif payment_filter != "all":
+            raise ValidationError({
+                "payment_filter": "Use all, unpaid, or no_received.",
+            })
+
+        return records, {
+            "search": str(search or "").strip(),
+            "payment_filter": payment_filter,
+            "payment_counts": {
+                "all": all_count,
+                "unpaid": unpaid_count,
+                "no_received": no_received_count,
+            },
+            "is_test": is_test,
+        }
+
+    @staticmethod
+    def payment_group(request, payout_date, records, preview_limit=None):
+        total_amounts = {}
+        for record in records:
+            total_amounts[record.currency] = (
+                total_amounts.get(record.currency, Decimal("0")) + record.net_remittance_amount
+            )
+        return {
+            "date": payout_date,
+            "hotel_count": len({record.hotel_id for record in records}),
+            "remittance_count": len(records),
+            "total_amounts": total_amounts,
+            "has_more_hotels": preview_limit is not None and len(records) > preview_limit,
+            "hotels": [
+                _admin_remittance_payment_hotel_data(record.hotel, record, request)
+                for record in records[:preview_limit]
+            ],
+        }
 
     def get(self, request):
-        try:
-            limit = min(max(int(request.query_params.get("limit", 20)), 1), 100)
-            offset = int(request.query_params.get("offset", 1))
-        except (TypeError, ValueError) as exc:
-            raise ValidationError({"pagination": "limit and offset must be integers."}) from exc
-        if offset < 1:
-            raise ValidationError({"offset": "Must be a page number starting from 1."})
+        offset, limit = _pagination(request)
+        records, metadata = self.payment_records(request)
+        order_by = str(
+            request.query_params.get("order_by", "date_desc")
+        ).strip().lower()
+        if order_by == "date_desc":
+            date_ordering = "-period_to"
+        elif order_by == "date_asc":
+            date_ordering = "period_to"
+        else:
+            raise ValidationError({"order_by": "Use date_desc or date_asc."})
 
+        payout_period_ends = records.order_by(date_ordering).values_list(
+            "period_to", flat=True,
+        ).distinct()
+        total_count = payout_period_ends.count()
+        start = (offset - 1) * limit
+        page_period_ends = list(payout_period_ends[start:start + limit])
+        records_by_period = {period_end: [] for period_end in page_period_ends}
+        for record in records.filter(period_to__in=page_period_ends).order_by(
+            date_ordering, Lower("hotel__name"), "hotel__name", "hotel_id", "-id",
+        ):
+            records_by_period[record.period_to].append(record)
+
+        results = [
+            self.payment_group(request, period_end + timedelta(days=1), group, preview_limit=5)
+            for period_end, group in records_by_period.items()
+        ]
+
+        total_pages = (total_count + limit - 1) // limit if total_count else 0
+        return success({
+            "count": total_count,
+            "date_count": total_count,
+            "hotel_count": records.order_by().values("hotel_id").distinct().count(),
+            "offset": offset,
+            "limit": limit,
+            "total_pages": total_pages,
+            "has_previous": offset > 1,
+            "has_next": offset < total_pages,
+            **metadata,
+            "order_by": order_by,
+            "results": results,
+        })
+
+
+class SuperAdminRemittancePaymentDateView(SuperAdminRemittancePaymentListView):
+    export = False
+
+    def get(self, request, payout_date):
+        date = self.parse_payment_date(payout_date, "date")
+        records, metadata = self.payment_records(request, payout_date=date)
+        records = list(records.order_by(Lower("hotel__name"), "hotel__name", "hotel_id", "-id"))
+        group = self.payment_group(request, date, records)
+        if self.export:
+            return remittance_payment_workbook(date, group["hotels"])
+        return success({**group, **metadata})
+
+
+class SuperAdminRemittanceHistoryView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
+    permission_classes = [IsCoreRemittanceFinance]
+
+    def get(self, request):
+        offset, limit = _pagination(request)
         records = (
             OTARemittance.objects.select_related(
                 "hotel", "checked_by", "paid_by", "received_by",
@@ -1155,10 +1404,15 @@ class SuperAdminRemittanceHistoryView(APIView):
         }
         if status:
             if status not in valid_statuses:
-                raise ValidationError({"status": f"Use one of: {', '.join(sorted(valid_statuses))}."})
+                raise ValidationError({
+                    "status": f"Use one of: {', '.join(sorted(valid_statuses))}.",
+                })
             records = records.filter(status=status)
 
-        for parameter, lookup in (("period_from", "period_from__gte"), ("period_to", "period_to__lte")):
+        for parameter, lookup in (
+            ("period_from", "period_from__gte"),
+            ("period_to", "period_to__lte"),
+        ):
             raw_value = request.query_params.get(parameter)
             if raw_value:
                 value = parse_date(raw_value)
@@ -1178,7 +1432,10 @@ class SuperAdminRemittanceHistoryView(APIView):
             "has_previous": offset > 1,
             "has_next": offset < total_pages,
             "search": str(search or "").strip(),
-            "results": [remittance_data(item, request=request) for item in page_records],
+            "results": [
+                remittance_data(item, request=request)
+                for item in page_records
+            ],
         })
 
 
@@ -1186,12 +1443,17 @@ class SuperAdminRemittanceDetailView(APIView):
     authentication_classes = [CoreJWTAuthentication]
     permission_classes = [IsCoreSuperAdmin]
 
+    export = False
+
     def get(self, request, remittance_id):
         record = OTARemittance.objects.select_related(
             "hotel", "checked_by", "paid_by", "received_by",
         ).filter(id=remittance_id).first()
         if not record:
             raise ValidationError({"remittance_id": "Remittance was not found."})
+        if self.export:
+            items = list(record.items.select_related("booking", "ledger_entry").order_by("-ledger_entry__effective_at", "-id"))
+            return remittance_detail_workbook(record, _group_remittance_items(record, items))
         return success({"remittance": remittance_data(record, detail=True, request=request)})
 
 
@@ -1214,7 +1476,7 @@ class SuperAdminRemittancePDFView(APIView):
 
 class SuperAdminRemittanceCheckView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
 
     @transaction.atomic
     def post(self, request, remittance_id):
@@ -1257,7 +1519,7 @@ class SuperAdminRemittanceCheckView(APIView):
 
 class SuperAdminRemittanceAdjustmentView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
 
     def _locked_record(self, remittance_id):
         record = (
@@ -1360,7 +1622,7 @@ class SuperAdminRemittanceAdjustmentView(APIView):
 
 class SuperAdminRemittanceReceiptView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
 
     @transaction.atomic
     def patch(self, request, remittance_id):
@@ -1403,7 +1665,7 @@ class SuperAdminRemittanceReceiptView(APIView):
 
 class SuperAdminRemittancePayView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
 
     @transaction.atomic
     def post(self, request, remittance_id):
@@ -1447,6 +1709,13 @@ class SuperAdminRemittancePayView(APIView):
                     record.payment_receipt.name if record.payment_receipt else ""
                 ),
             },
+        )
+        from booking.tasks import send_remittance_paid_email_task
+
+        paid_at = record.paid_at.isoformat()
+        transaction.on_commit(
+            lambda: send_remittance_paid_email_task.delay(remittance_id, paid_at),
+            robust=True,
         )
         return success({"remittance": remittance_data(record, detail=True, request=request)})
 

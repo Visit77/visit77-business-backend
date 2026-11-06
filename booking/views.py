@@ -22,6 +22,7 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 
+from booking.room_pricing_views import RoomPricingMixin
 from booking.authentication import CoreJWTAuthentication
 from booking.booking_services.invoice_charges import (
     InvoiceChargesSerializer,
@@ -31,7 +32,7 @@ from booking.booking_services.invoice_charges import (
 )
 from booking.integrations.core import CoreClient, sync_business_from_core
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, GuestProfile, Hotel, Invoice, MealPlan, OTABookingFollowUp, OTABookingNotification, OTARemittance, OTAInvoiceCharge, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, PMSInvoiceCharge, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
-from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
+from booking.permissions import HasBookingAdminKey, IsCoreRemittanceFinance, IsCoreSuperAdmin
 from booking.tasks import create_and_queue_ota_booking_notification, ota_notification_payload, queue_booking_confirmation_notifications
 from booking.remittance_services import commission_rate_for
 
@@ -468,7 +469,7 @@ class PublicOTARoomTypeCatalogView(APIView):
                     distinct=True,
                 ),
             ).select_related("hotel").prefetch_related(
-                "meal_plan_links", "meal_plan_links__meal_plan",
+                "meal_plan_links", "meal_plan_links__meal_plan", "price_discounts",
                 Prefetch(
                     "rate_plans",
                     queryset=RatePlan.objects.filter(is_active=True).order_by("guest_market", "code", "id"),
@@ -539,7 +540,7 @@ class PublicHotelRoomTypeCatalogView(APIView):
             )
             .select_related("hotel")
             .prefetch_related(
-                "meal_plan_links", "meal_plan_links__meal_plan",
+                "meal_plan_links", "meal_plan_links__meal_plan", "price_discounts",
                 Prefetch(
                     "rate_plans",
                     queryset=RatePlan.objects.filter(is_active=True).order_by("guest_market", "code", "id"),
@@ -3845,6 +3846,10 @@ class RoomBoardView(APIView):
     def serialize_room_board_rate_plan(self, rate_plan):
         if not rate_plan:
             return None
+        from booking.room_pricing import extra_bed_amounts
+        extra_base, extra_usd = extra_bed_amounts(
+            rate_plan.room_type, 'foreign' if rate_plan.guest_market == 'foreign' else 'local',
+        )
         return {
             "id": rate_plan.id,
             "code": rate_plan.code,
@@ -3854,8 +3859,8 @@ class RoomBoardView(APIView):
             "base_price": rate_plan.base_price,
             "usd_display_price": rate_plan.usd_display_price,
             "default_price": rate_plan.default_price,
-            "extra_bed_base_price": rate_plan.extra_bed_base_price,
-            "extra_bed_usd_display_price": rate_plan.extra_bed_usd_display_price,
+            "extra_bed_base_price": extra_base,
+            "extra_bed_usd_display_price": extra_usd,
             "breakfast_included": rate_plan.breakfast_included,
             "refundable": rate_plan.refundable,
             "is_default": rate_plan.is_default,
@@ -4339,11 +4344,11 @@ class HotelViewSet(BusinessScopedQuerysetMixin, FormattedResponseMixin, mixins.L
         return self._invoice_charges(request, "pms_invoice_charges")
 
 
-class RoomTypeViewSet(AdminModelViewSet):
+class RoomTypeViewSet(RoomPricingMixin, AdminModelViewSet):
     queryset = RoomType.objects.select_related("hotel")
     serializer_class = RoomTypeSerializer
     filterset_fields = ["hotel", "core_room_type_id", "booking_enabled", "core_active"]
-    http_method_names = ["get", "patch", "head", "options"]
+    http_method_names = ["get", "post", "put", "patch", "head", "options"]
     business_lookup = "hotel__core_business_id"
 
     def get_queryset(self):
@@ -4393,7 +4398,7 @@ class RoomTypeViewSet(AdminModelViewSet):
             ),
         ).order_by(ota_order, "building", "floor", "room_number", "id")
         return queryset.prefetch_related(
-            "meal_plan_links", "meal_plan_links__meal_plan",
+            "meal_plan_links", "meal_plan_links__meal_plan", "price_discounts",
             Prefetch(
                 "physical_rooms",
                 queryset=room_queryset,
@@ -5331,7 +5336,8 @@ def _date_param(request, name, default=None):
 
 class SuperAdminOTABookingListView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
+    finance_read_only = True
 
     def get(self, request):
         offset = _positive_query_int(request, "offset", 1)
@@ -5392,7 +5398,8 @@ class SuperAdminOTABookingListView(APIView):
 
 class SuperAdminOTABookingDetailView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
+    finance_read_only = True
 
     def get(self, request, booking_id):
         booking = (
@@ -5408,7 +5415,16 @@ class SuperAdminOTABookingDetailView(APIView):
 
 class SuperAdminOTABookingFollowUpView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
+    finance_read_only = True
+
+    def get(self, request, booking_id):
+        booking = Booking.objects.filter(
+            id=booking_id, source=Booking.Source.OTA,
+        ).select_related("ota_follow_up").first()
+        if not booking:
+            raise NotFound("OTA booking not found.")
+        return success({"booking_id": booking.id, "follow_up": _follow_up_payload(booking)})
 
     def patch(self, request, booking_id):
         booking = Booking.objects.filter(id=booking_id, source=Booking.Source.OTA).first()
@@ -5470,7 +5486,8 @@ class SuperAdminOTABookingNoShowView(APIView):
 
 class SuperAdminOTABookingDashboardView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
+    finance_read_only = True
 
     def get(self, request):
         offset = _positive_query_int(request, "offset", 1)
