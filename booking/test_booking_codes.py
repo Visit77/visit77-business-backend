@@ -625,14 +625,16 @@ class BookingCodeTests(TestCase):
         invoice_bytes = b"".join(invoice_response.streaming_content)
         self.assertTrue(invoice_bytes.startswith(b"%PDF"))
         for pdf_bytes in (receipt_bytes, invoice_bytes):
-            text = "\n".join(page.extract_text() for page in PdfReader(BytesIO(pdf_bytes)).pages)
+            pages = PdfReader(BytesIO(pdf_bytes)).pages
+            self.assertEqual(len(pages), 1)
+            text = pages[0].extract_text()
             self.assertIn("Visit 77 Company Limited", text)
             self.assertIn(
                 "contact.myanmar@visit77.com, (+95) 988 577 0011",
                 text,
             )
             labels = (
-                "Total Room Charge", "Additional Charges", "Subtotal",
+                "Total Room Charge", "ADDITIONAL CHARGES", "Subtotal",
                 "Grand Total", "Amount Paid", "Amount Due",
             )
             positions = [text.index(label) for label in labels]

@@ -11,8 +11,8 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import (
+    CondPageBreak,
     Image,
-    PageBreak,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -159,7 +159,6 @@ def _item_sections(remittance, normal, bold, small):
             f"RemittanceItemSection-{item_type}", parent=bold,
             textColor=SECTION_BLUE, fontSize=9.5, leading=13,
         )
-        sections.extend([Spacer(1, 6 * mm), _paragraph(label.upper(), section_label), Spacer(1, 2 * mm)])
         data = [[
             _paragraph("Time", bold),
             _paragraph("Booking ID", bold),
@@ -181,6 +180,7 @@ def _item_sections(remittance, normal, bold, small):
                 row_styles.extend([
                     ("SPAN", (0, table_row), (-1, table_row)),
                     ("BACKGROUND", (0, table_row), (-1, table_row), DATE_BLUE),
+                    ("NOSPLIT", (0, table_row), (-1, table_row + 1)),
                 ])
                 table_row += 1
             refund = refunds.get(item.ledger_entry.payment_id, Decimal("0"))
@@ -195,7 +195,8 @@ def _item_sections(remittance, normal, bold, small):
                 _paragraph(f"{refund:,.0f}" if refund else "-", small),
             ])
             table_row += 1
-        table = Table(data, colWidths=[22 * mm, 44 * mm, 38 * mm, 31 * mm, 31 * mm], repeatRows=1)
+        widths = [22 * mm, 44 * mm, 38 * mm, 31 * mm, 31 * mm]
+        table = Table(data, colWidths=widths, repeatRows=1)
         table.setStyle(TableStyle([
             ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
             ("FONTSIZE", (0, 0), (-1, -1), 8),
@@ -207,7 +208,18 @@ def _item_sections(remittance, normal, bold, small):
             ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
             *row_styles,
         ]))
-        sections.append(table)
+        heading = _paragraph(label.upper(), section_label)
+        _, heading_height = heading.wrap(166 * mm, 0)
+        first_rows = Table(data[:3], colWidths=widths, style=TableStyle([
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("SPAN", (0, 1), (-1, 1)),
+        ]))
+        _, minimum_table_height = first_rows.wrap(166 * mm, 0)
+        sections.extend([
+            CondPageBreak(8 * mm + heading_height + minimum_table_height),
+            Spacer(1, 6 * mm), heading, Spacer(1, 2 * mm), table,
+        ])
     return sections
 
 
@@ -220,7 +232,7 @@ def render_remittance_statement_pdf(remittance):
         leftMargin=18 * mm,
         rightMargin=18 * mm,
         topMargin=12 * mm,
-        bottomMargin=10 * mm,
+        bottomMargin=17 * mm,
         title=f"Remittance {remittance.reference}",
     )
     styles = getSampleStyleSheet()
@@ -364,7 +376,7 @@ def render_remittance_statement_pdf(remittance):
 
     item_sections = _item_sections(remittance, normal, bold, small)
     if item_sections:
-        story.extend([PageBreak(), *item_sections])
+        story.extend(item_sections)
 
     def decorate_page(canvas, document):
         canvas.saveState()
