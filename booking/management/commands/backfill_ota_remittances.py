@@ -63,7 +63,7 @@ class Command(BaseCommand):
                 for period_from, period_to in periods:
                     latest_end = (
                         active_payout_period(hotel, hotel_today)[0] - timedelta(days=1)
-                        if hotel.remittance_payout_option == Hotel.RemittancePayoutOption.THREE_TIMES_WEEKLY
+                        if hotel.remittance_payout_option_for(hotel_today) == Hotel.RemittancePayoutOption.THREE_TIMES_WEEKLY
                         else current_monday - timedelta(days=1)
                     )
                     is_latest_completed_period = period_to == latest_end

@@ -353,6 +353,7 @@ def remittance_data(remittance, detail=False, request=None):
     adjustment_operator = "-" if remittance.adjustment_amount < 0 else "+"
     adjustment_input_amount = abs(remittance.adjustment_amount)
     display_status = remittance.status
+    payout_option = remittance.hotel.remittance_payout_option_for(remittance.period_from)
     receipt_url = _absolute_url(request, _payment_receipt_url(remittance))
     hotel_pdf_url = _absolute_url(
         request, f"/api/v1/admin/remittances/{remittance.id}/pdf/"
@@ -373,8 +374,8 @@ def remittance_data(remittance, detail=False, request=None):
         "hotel_id": remittance.hotel_id,
         "core_business_id": remittance.hotel.core_business_id,
         "hotel_name": remittance.hotel.name,
-        "payout_option": remittance.hotel.remittance_payout_option,
-        "payout_option_label": remittance.hotel.get_remittance_payout_option_display(),
+        "payout_option": payout_option,
+        "payout_option_label": Hotel.RemittancePayoutOption(payout_option).label,
         "period_from": remittance.period_from,
         "period_to": remittance.period_to,
         "currency": remittance.currency,
@@ -633,7 +634,7 @@ class HotelAvailableRevenueView(APIView):
         period_from, period_to = active_payout_period(hotel, local_today)
         record = refresh_current_week_remittance(hotel)
         blocked_by_first_period = False
-        if hotel.remittance_payout_option == Hotel.RemittancePayoutOption.THREE_TIMES_WEEKLY:
+        if hotel.remittance_payout_option_for(local_today) == Hotel.RemittancePayoutOption.THREE_TIMES_WEEKLY:
             week_from, _week_to = current_week_period(local_today, hotel=hotel)
             earlier = OTARemittance.objects.filter(
                 hotel=hotel, period_from__gte=week_from, period_to__lt=period_from,
@@ -643,7 +644,7 @@ class HotelAvailableRevenueView(APIView):
                 period_from, period_to = earlier.period_from, earlier.period_to
                 blocked_by_first_period = True
         if (
-            hotel.remittance_payout_option == Hotel.RemittancePayoutOption.TWICE_WEEKLY
+            hotel.remittance_payout_option_for(local_today) == Hotel.RemittancePayoutOption.TWICE_WEEKLY
             and local_today.weekday() >= 3
         ):
             week_from, _week_to = current_week_period(local_today, hotel=hotel)
@@ -762,7 +763,11 @@ class SuperAdminHotelPayoutOptionView(APIView):
             period_to__lte=week_to,
         ).delete()
         hotel.remittance_payout_option = payout_option
-        hotel.save(update_fields=["remittance_payout_option"])
+        hotel.previous_remittance_payout_option = ""
+        hotel.remittance_payout_effective_date = None
+        hotel.save(update_fields=[
+            "remittance_payout_option", "previous_remittance_payout_option", "remittance_payout_effective_date",
+        ])
         refresh_current_week_remittance(hotel)
         return success({
             "changed": True,

@@ -1,12 +1,14 @@
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
+from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from django.core.management import call_command
 from django.test import TestCase
 from rest_framework.test import APIRequestFactory, force_authenticate
 
-from booking.models import Booking, Hotel, Invoice, OTARemittanceItem, OTARevenueLedger, Payment
+from booking.models import Booking, Hotel, Invoice, OTARemittance, OTARemittanceItem, OTARevenueLedger, Payment
 from booking.remittance_services import active_payout_period, generate_previous_week_remittances, generate_weekly_remittance, refresh_current_week_remittance
 from booking.remittance_views import SuperAdminHotelPayoutOptionView, SuperAdminRemittanceListView
 
@@ -81,3 +83,71 @@ class ThreeTimesWeeklyRemittanceTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['data']['payout_counts']['three_times_weekly'], 1)
         self.assertEqual(response.data['data']['results'][0]['hotel_id'], self.hotel.pk)
+
+    def test_bulk_schedule_change_previews_and_preserves_finalized_periods(self):
+        self.hotel.remittance_payout_option = "weekly"
+        self.hotel.save(update_fields=["remittance_payout_option"])
+        locked = Hotel.objects.create(core_business_id=78, name="Locked", package="ota_pms",
+                                      remittance_payout_option="twice_weekly")
+        pms = Hotel.objects.create(core_business_id=79, name="PMS", package="pms",
+                                   remittance_payout_option="weekly")
+        week_from, week_to = date(2026, 11, 2), date(2026, 11, 8)
+        draft = OTARemittance.objects.create(hotel=self.hotel, period_from=week_from,
+                                              period_to=week_to, status="accruing")
+        finalized = OTARemittance.objects.create(hotel=locked, period_from=week_from,
+                                                  period_to=date(2026, 11, 4), status="checked")
+        with patch("booking.management.commands.set_three_times_weekly_remittances.current_week_period",
+                   return_value=(week_from, week_to)):
+            call_command("set_three_times_weekly_remittances", stdout=StringIO())
+            self.hotel.refresh_from_db()
+            self.assertEqual(self.hotel.remittance_payout_option, "weekly")
+            self.assertTrue(OTARemittance.objects.filter(pk=draft.pk).exists())
+            call_command("set_three_times_weekly_remittances", apply=True, stdout=StringIO())
+
+        self.hotel.refresh_from_db()
+        locked.refresh_from_db()
+        pms.refresh_from_db()
+        self.assertEqual(self.hotel.remittance_payout_option, "three_times_weekly")
+        self.assertEqual(locked.remittance_payout_option, "three_times_weekly")
+        self.assertEqual(locked.remittance_payout_effective_date, date(2026, 11, 9))
+        self.assertEqual(active_payout_period(locked, date(2026, 11, 6)),
+                         (date(2026, 11, 5), date(2026, 11, 8)))
+        self.assertEqual(active_payout_period(locked, date(2026, 11, 9)),
+                         (date(2026, 11, 9), date(2026, 11, 10)))
+        with patch("booking.remittance_services.sync_all_payment_ledgers"), patch(
+            "booking.remittance_services.generate_weekly_remittance"
+        ) as generate:
+            generate_previous_week_remittances(date(2026, 11, 9))
+        generate.assert_any_call(locked, date(2026, 11, 5), date(2026, 11, 8))
+        self.assertEqual(pms.remittance_payout_option, "weekly")
+        self.assertFalse(OTARemittance.objects.filter(pk=draft.pk).exists())
+        self.assertTrue(OTARemittance.objects.filter(pk=finalized.pk, status="checked").exists())
+
+    def test_bulk_schedule_repartitions_pending_ledger_entries(self):
+        self.hotel.remittance_payout_option = "twice_weekly"
+        self.hotel.save(update_fields=["remittance_payout_option"])
+        monday = date(2026, 11, 2)
+        booking = Booking.objects.create(
+            hotel=self.hotel, reference="PENDING-SPLIT", source="ota", status="checked_out",
+            check_in=monday, check_out=monday + timedelta(days=1), contact_name="Guest",
+        )
+        payment = Payment.objects.create(booking=booking, provider="demo", amount=300, currency="MMK")
+        for offset in range(3):
+            OTARevenueLedger.objects.create(
+                hotel=self.hotel, booking=booking, payment=payment,
+                event_key=f"split:{offset}", event_type="booking_collection", gross_amount=100,
+                effective_at=datetime.combine(monday + timedelta(days=offset), time(12), tzinfo=ZoneInfo("Asia/Yangon")),
+            )
+        old = generate_weekly_remittance(self.hotel, monday, monday + timedelta(days=2))
+        self.assertEqual(old.status, "pending")
+        with patch("booking.remittance_services.timezone.now",
+                   return_value=datetime(2026, 11, 6, 12, tzinfo=ZoneInfo("Asia/Yangon"))):
+            call_command("set_three_times_weekly_remittances", apply=True, stdout=StringIO())
+
+        self.hotel.refresh_from_db()
+        self.assertEqual(self.hotel.remittance_payout_option, "three_times_weekly")
+        self.assertFalse(OTARemittance.objects.filter(pk=old.pk).exists())
+        rows = list(self.hotel.ota_remittances.order_by("period_from"))
+        self.assertEqual([(row.period_from.day, row.period_to.day, row.items.count()) for row in rows],
+                         [(2, 3, 2), (4, 5, 1)])
+        self.assertEqual(sum(row.net_remittance_amount for row in rows), old.net_remittance_amount)

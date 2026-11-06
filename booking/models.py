@@ -70,6 +70,20 @@ class Hotel(models.Model):
         default=RemittancePayoutOption.THREE_TIMES_WEEKLY,
         db_index=True,
     )
+    previous_remittance_payout_option = models.CharField(
+        max_length=24, choices=RemittancePayoutOption.choices, blank=True,
+    )
+    remittance_payout_effective_date = models.DateField(null=True, blank=True)
+
+    def remittance_payout_option_for(self, day):
+        if (
+            self.remittance_payout_effective_date
+            and day < self.remittance_payout_effective_date
+            and self.previous_remittance_payout_option
+        ):
+            return self.previous_remittance_payout_option
+        return self.remittance_payout_option
+
     inventory_mode = models.CharField(
         max_length=24,
         choices=InventoryMode.choices,
