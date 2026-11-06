@@ -32,7 +32,7 @@ from booking.booking_services.invoice_charges import (
 )
 from booking.integrations.core import CoreClient, sync_business_from_core
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, GuestProfile, Hotel, Invoice, MealPlan, OTABookingFollowUp, OTABookingNotification, OTARemittance, OTAInvoiceCharge, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, PMSInvoiceCharge, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
-from booking.permissions import HasBookingAdminKey, IsCoreSuperAdmin
+from booking.permissions import HasBookingAdminKey, IsCoreRemittanceFinance, IsCoreSuperAdmin
 from booking.tasks import create_and_queue_ota_booking_notification, ota_notification_payload, queue_booking_confirmation_notifications
 from booking.remittance_services import commission_rate_for
 
@@ -5336,7 +5336,8 @@ def _date_param(request, name, default=None):
 
 class SuperAdminOTABookingListView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
+    finance_read_only = True
 
     def get(self, request):
         offset = _positive_query_int(request, "offset", 1)
@@ -5397,7 +5398,8 @@ class SuperAdminOTABookingListView(APIView):
 
 class SuperAdminOTABookingDetailView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
+    finance_read_only = True
 
     def get(self, request, booking_id):
         booking = (
@@ -5413,7 +5415,16 @@ class SuperAdminOTABookingDetailView(APIView):
 
 class SuperAdminOTABookingFollowUpView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
+    finance_read_only = True
+
+    def get(self, request, booking_id):
+        booking = Booking.objects.filter(
+            id=booking_id, source=Booking.Source.OTA,
+        ).select_related("ota_follow_up").first()
+        if not booking:
+            raise NotFound("OTA booking not found.")
+        return success({"booking_id": booking.id, "follow_up": _follow_up_payload(booking)})
 
     def patch(self, request, booking_id):
         booking = Booking.objects.filter(id=booking_id, source=Booking.Source.OTA).first()
@@ -5475,7 +5486,8 @@ class SuperAdminOTABookingNoShowView(APIView):
 
 class SuperAdminOTABookingDashboardView(APIView):
     authentication_classes = [CoreJWTAuthentication]
-    permission_classes = [IsCoreSuperAdmin]
+    permission_classes = [IsCoreRemittanceFinance]
+    finance_read_only = True
 
     def get(self, request):
         offset = _positive_query_int(request, "offset", 1)

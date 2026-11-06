@@ -1,10 +1,11 @@
+from datetime import date
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.backends import TokenBackend
 
-from booking.models import OTARemittanceActor
+from booking.models import Booking, Hotel, OTARemittanceActor
 
 
 @override_settings(CORE_JWT_SIGNING_KEY="finance-test-key", CORE_JWT_ALGORITHM="HS256")
@@ -46,3 +47,21 @@ class RemittanceFinanceAccessTests(TestCase):
 
         core.return_value = {"finance_access": False}
         self.assertEqual(self.client.get("/api/v1/superadmin/remittances/payment-list/").status_code, 403)
+
+    @patch("booking.integrations.core.CoreClient.get", return_value={"finance_access": True})
+    def test_finance_ota_booking_access_is_read_only(self, core):
+        hotel = Hotel.objects.create(core_business_id=77, name="Test Hotel", package="ota")
+        booking = Booking.objects.create(
+            hotel=hotel, reference="FINANCE-OTA", status="confirmed",
+            check_in=date(2026, 11, 6), check_out=date(2026, 11, 7), contact_name="Test Guest",
+        )
+        base = "/api/v1/superadmin/"
+        follow_up = f"ota-bookings/{booking.pk}/follow-up/"
+        for route in (
+            "ota-bookings/?offset=1&limit=20", f"ota-bookings/{booking.pk}/",
+            follow_up, "ota-booking-dashboard/",
+        ):
+            self.assertEqual(self.client.get(base + route).status_code, 200, route)
+        self.assertEqual(self.client.patch(base + follow_up, {"note": "Changed"}, format="json").status_code, 403)
+        core.return_value = {"finance_access": False}
+        self.assertEqual(self.client.get(base + follow_up).status_code, 403)
