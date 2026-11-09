@@ -30,6 +30,7 @@ from booking.remittance_services import (
     active_payout_period,
     current_week_period,
     hotel_timezone,
+    is_ota_revenue_payment,
     refresh_current_week_remittance,
     sync_all_payment_ledgers,
 )
@@ -215,10 +216,18 @@ def _remittance_local_datetime(remittance, value):
     return timezone.localtime(value, hotel_tz)
 
 
-def _remittance_item_data(remittance, item):
+def _remittance_item_data(remittance, item, request=None):
     local_effective_at = _remittance_local_datetime(remittance, item.ledger_entry.effective_at)
+    payment = item.ledger_entry.payment
+    receipt_url = None
+    if payment.receipt_number and is_ota_revenue_payment(payment):
+        receipt_url = _absolute_url(
+            request,
+            f"/api/v1/public/bookings/{item.booking.public_token}/receipts/{payment.id}/pdf/",
+        )
     return {
         "id": item.id,
+        "ota_receipt_url": receipt_url,
         "booking_id": str(item.booking_id),
         "booking_code": item.booking.booking_code,
         "payment_id": str(item.ledger_entry.payment_id),
@@ -237,7 +246,7 @@ def _remittance_item_data(remittance, item):
     }
 
 
-def _group_remittance_items(remittance, items):
+def _group_remittance_items(remittance, items, request=None):
     section_types = (
         ("booking_collection", "Booking Collection"),
         ("held_release", "Release of Held Funds"),
@@ -255,7 +264,7 @@ def _group_remittance_items(remittance, items):
     for item in items:
         if item.item_type not in section_rows:
             continue
-        row = _remittance_item_data(remittance, item)
+        row = _remittance_item_data(remittance, item, request=request)
         payment_id = item.ledger_entry.payment_id
         if payment_id in refunds_by_payment:
             row["refund_amount"] = refunds_by_payment[payment_id]
@@ -268,7 +277,7 @@ def _group_remittance_items(remittance, items):
         payment_id = item.ledger_entry.payment_id
         if item.item_type != "refund" or payment_id in matched_refund_payments:
             continue
-        row = _remittance_item_data(remittance, item)
+        row = _remittance_item_data(remittance, item, request=request)
         row["gross_amount"] = Decimal("0")
         row["amount"] = Decimal("0")
         section_rows["booking_collection"].append(row)
@@ -420,11 +429,11 @@ def remittance_data(remittance, detail=False, request=None):
     }
     if detail:
         items = list(
-            remittance.items.select_related("booking", "ledger_entry")
+            remittance.items.select_related("booking", "ledger_entry__payment__invoice")
             .order_by("-ledger_entry__effective_at", "-id")
         )
-        data["items"] = [_remittance_item_data(remittance, item) for item in items]
-        data["grouped_items"] = _group_remittance_items(remittance, items)
+        data["items"] = [_remittance_item_data(remittance, item, request=request) for item in items]
+        data["grouped_items"] = _group_remittance_items(remittance, items, request=request)
         data["audit_logs"] = [
             _audit_data(log)
             for log in remittance.audit_logs.select_related("actor")

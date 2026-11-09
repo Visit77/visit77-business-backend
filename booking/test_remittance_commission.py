@@ -34,6 +34,35 @@ class RemittanceCommissionPolicyTests(TestCase):
     def generate(self,**kwargs):
         return generate_weekly_remittance(self.hotel,self.start,self.end,**kwargs)
 
+    def test_detail_receipt_uses_ledger_ota_payment_not_later_pms_receipt(self):
+        entry = self.entry(700)
+        payment = entry.payment
+        payment.receipt_number = 'OTA-RECEIPT'
+        payment.save(update_fields=['receipt_number'])
+        pms_invoice = Invoice.objects.create(
+            booking=entry.booking, invoice_type=Invoice.Type.ROOM_BOOKING,
+            charge_scope=Invoice.ChargeScope.PMS, currency='MMK', subtotal=100, total=100,
+        )
+        Payment.objects.create(
+            booking=entry.booking, invoice=pms_invoice, provider='cash', amount=100,
+            currency='MMK', receipt_number='LATER-PMS-RECEIPT',
+        )
+        from rest_framework.test import APIRequestFactory
+        request = APIRequestFactory().get('/')
+        row = self.generate()
+        payload = remittance_data(row, detail=True, request=request)
+        expected = (
+            f'http://testserver/api/v1/public/bookings/{entry.booking.public_token}/'
+            f'receipts/{payment.id}/pdf/'
+        )
+        self.assertEqual(payload['items'][0]['ota_receipt_url'], expected)
+        self.assertEqual(
+            payload['grouped_items'][0]['date_groups'][0]['items'][0]['ota_receipt_url'], expected,
+        )
+        payment.receipt_number = None
+        payment.save(update_fields=['receipt_number'])
+        self.assertIsNone(remittance_data(row, detail=True)['items'][0]['ota_receipt_url'])
+
     def test_single_payment_service_charge_is_commissionable(self):
         self.entry(256,tax=6,service=50)
         row=self.generate()
