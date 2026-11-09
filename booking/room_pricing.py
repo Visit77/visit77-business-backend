@@ -120,13 +120,14 @@ def market_default_prices(room_type, stay_date, discounts):
     for market in ("local", "foreign"):
         normal_base = getattr(room_type, f"{market}_{'usd' if base_currency == 'USD' else 'mmk'}_price")
         normal_usd = getattr(room_type, f"{market}_usd_price")
-        base, usd = discounted_room_amounts(normal_base, normal_usd, campaigns, stay_date, market, base_currency)
+        normal_base, normal_usd, base, usd = effective_room_amounts(room_type, normal_base, normal_usd, campaigns, stay_date, market, base_currency)
         usd_promo = guest_price_fields(normal_usd, usd)
         result[market] = {
             "base_price": normal_base,
             "base_currency": base_currency,
             "usd_display_price": normal_usd,
             "price_date": str(stay_date),
+            **seasonal_price_metadata(room_type, stay_date, market),
             **guest_price_fields(normal_base, base),
             **{f"usd_{field}": value for field, value in usd_promo.items()},
         }
@@ -141,3 +142,31 @@ def visible_room_discounts(room_type):
     return [discount for discount in room_type.price_discounts.all()
             if discount.ended_at is None
             and (discount.end_date is None or discount.end_date >= today)]
+
+
+def seasonal_rate(room_type, stay_date):
+    return next((rate for rate in room_type.seasonal_rates.all()
+                 if rate.ended_at is None and rate.start_date <= stay_date <= rate.end_date), None)
+
+
+def effective_room_amounts(room_type, base, usd, discounts, stay_date, market, currency):
+    discounted_base, discounted_usd = discounted_room_amounts(base, usd, discounts, stay_date, market, currency)
+    season = seasonal_rate(room_type, stay_date)
+    if season and market in {"local", "foreign"}:
+        seasonal_base = getattr(season, f"{market}_base_price")
+        seasonal_usd = getattr(season, f"{market}_usd_price")
+        if seasonal_base is not None:
+            base = discounted_base = seasonal_base
+        if currency == "USD" and seasonal_base is not None:
+            usd = discounted_usd = seasonal_base
+        elif seasonal_usd is not None:
+            usd = discounted_usd = seasonal_usd
+    return base, usd, discounted_base, discounted_usd
+
+
+def seasonal_price_metadata(room_type, stay_date, market, currency=None):
+    season = seasonal_rate(room_type, stay_date)
+    field = f"{market}_{'usd' if currency == 'USD' and room_type.hotel.base_currency != 'USD' else 'base'}_price"
+    applies = bool(season and market in {"local", "foreign"} and getattr(season, field) is not None)
+    return {"is_seasonal": applies, "seasonal_rate_id": season.id if applies else None,
+            "seasonal_rate_name": season.name if applies else None}

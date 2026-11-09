@@ -8,7 +8,7 @@ from django.db.models import Q
 from django.utils import timezone
 from rest_framework import serializers
 
-from booking.room_pricing import extra_bed_price_payload, extra_bed_amounts, discounted_room_amounts, guest_price_fields, market_default_prices, room_price_today
+from booking.room_pricing import effective_room_amounts, seasonal_price_metadata, extra_bed_price_payload, extra_bed_amounts, discounted_room_amounts, guest_price_fields, market_default_prices, room_price_today
 from booking.add_on_templates import normalize_configuration_schema
 from booking.models import (
     AddOn,
@@ -445,21 +445,22 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
         market = self.context.get("guest_market") or (
             plan.guest_market if plan.guest_market != RatePlan.GuestMarket.ALL else RatePlan.GuestMarket.LOCAL
         )
-        base_price, usd_price = discounted_room_amounts(
-            plan.base_price, plan.usd_display_price,
+        original_base, original_usd, base_price, usd_price = effective_room_amounts(
+            obj, plan.base_price, plan.usd_display_price,
             list(obj.price_discounts.all()) if obj.room_price_setup else [],
             price_date, market, obj.hotel.base_currency,
         )
         display_price = usd_price if display_currency == "USD" and usd_price is not None else base_price
-        promo = guest_price_fields(plan.base_price, base_price)
+        promo = guest_price_fields(original_base, base_price)
         extra_payload = extra_bed_price_payload(obj, market, display_currency)
         extra_base, extra_usd = extra_bed_amounts(obj, market)
         return {
             **promo,
             **{f"usd_{field}": value for field, value in guest_price_fields(
-                plan.usd_display_price, usd_price,
+                original_usd, usd_price,
             ).items()},
             "price_date": str(price_date),
+            **seasonal_price_metadata(obj, price_date, market),
             "id": plan.id,
             "code": plan.code,
             "name": plan.name,
@@ -494,6 +495,7 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
             **{field: payload[field] for field in (
                 "has_discount", "original_price", "discount_percentage", "discount_price", "price_date",
                 "usd_has_discount", "usd_original_price", "usd_discount_percentage", "usd_discount_price",
+                "is_seasonal", "seasonal_rate_id", "seasonal_rate_name",
             )},
             "rate_plan_id": payload["id"],
             "guest_market": payload["guest_market"],
@@ -552,6 +554,13 @@ class RoomBoardQuerySerializer(serializers.Serializer):
 
 
 class RoomTypeSerializer(serializers.ModelSerializer):
+    seasonal_rates = serializers.SerializerMethodField()
+
+    def get_seasonal_rates(self, obj):
+        from booking.room_pricing_serializers import RoomSeasonalRateSerializer
+        rows = [rate for rate in obj.seasonal_rates.all() if rate.ended_at is None and rate.end_date >= room_price_today(obj)]
+        return RoomSeasonalRateSerializer(rows, many=True).data
+
     discounts = serializers.SerializerMethodField()
 
     def get_discounts(self, obj):
@@ -1486,7 +1495,7 @@ class GuestSerializer(serializers.ModelSerializer):
 class BookingRoomNightSerializer(serializers.ModelSerializer):
     class Meta:
         model = BookingRoomNight
-        exclude = ["booking_room"]
+        exclude = ["booking_room", "rate_snapshot"]
 
 
 class BookingRoomSerializer(serializers.ModelSerializer):

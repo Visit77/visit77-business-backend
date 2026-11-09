@@ -9,7 +9,7 @@ from rest_framework.views import APIView
 
 from booking.models import DailyRate, Hotel, RatePlan, RatePeriod, RoomType
 from booking.permissions import HasBookingAdminKey
-from booking.room_pricing import guest_price_fields
+from booking.room_pricing import guest_price_fields, effective_room_amounts, seasonal_price_metadata
 from booking.services import _rate_amounts
 from config.response_formatter import success
 
@@ -39,7 +39,7 @@ def minimum_room_prices_today(business_ids, guest_market="local", display_curren
     rooms = list(RoomType.objects.filter(
         hotel_id__in=today, core_active=True, booking_enabled=True, room_price_setup=True,
     ).select_related("hotel").prefetch_related(
-        "price_discounts", Prefetch("rate_plans", queryset=RatePlan.objects.filter(
+        "price_discounts", "seasonal_rates", Prefetch("rate_plans", queryset=RatePlan.objects.filter(
             is_active=True, guest_market__in=[guest_market, "all"],
         ).order_by("id")),
     ).order_by("id"))
@@ -55,9 +55,11 @@ def minimum_room_prices_today(business_ids, guest_market="local", display_curren
         day = today[room.hotel_id]
         discounts = list(room.price_discounts.all())
         for plan in room.rate_plans.all():
+            plan.room_type = room
             rule = daily.get((plan.id, day)) or next((period for period in periods.get(plan.id, []) if period.start_date <= day and (period.end_date is None or day <= period.end_date)), None)
             base, usd = _rate_amounts(rule, plan, day, guest_market, discounts)
             original_base, original_usd = (rule.base_price, rule.usd_display_price) if rule else (plan.base_price, plan.usd_display_price)
+            original_base, original_usd, _, _ = effective_room_amounts(room, original_base, original_usd, discounts, day, guest_market, plan.currency)
             # Never label an MMK fallback as USD or convert using an invented FX rate.
             price = (base if room.hotel.base_currency == "USD" else usd) if display_currency == "USD" else base if room.hotel.base_currency == "MMK" else None
             original = (original_base if room.hotel.base_currency == "USD" else original_usd) if display_currency == "USD" else original_base if room.hotel.base_currency == "MMK" else None
@@ -81,6 +83,7 @@ def minimum_room_prices_today(business_ids, guest_market="local", display_curren
                 "room_type_name": room.name,
                 "rate_plan_id": plan.id,
                 "price_date": str(day),
+                **seasonal_price_metadata(room, day, guest_market, display_currency),
                 "guest_market": guest_market,
                 "display_currency": display_currency,
                 "display_price": price,

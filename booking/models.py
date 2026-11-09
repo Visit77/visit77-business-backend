@@ -1017,7 +1017,24 @@ class BookingRoom(models.Model):
     total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
 
 
+class RoomSeasonalRate(models.Model):
+    room_type = models.ForeignKey(RoomType, on_delete=models.CASCADE, related_name="seasonal_rates")
+    name = models.CharField(max_length=120, blank=True, default="")
+    start_date = models.DateField()
+    end_date = models.DateField()
+    local_base_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    local_usd_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    foreign_base_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    foreign_usd_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["start_date", "id"]
+        constraints = [models.CheckConstraint(condition=models.Q(end_date__gte=models.F("start_date")), name="seasonal_dates_valid")]
+
+
 class BookingRoomNight(models.Model):
+    rate_snapshot = models.JSONField(default=dict, blank=True)
     booking_room = models.ForeignKey(BookingRoom, on_delete=models.CASCADE, related_name="nights")
     stay_date = models.DateField()
     unit_price = models.DecimalField(max_digits=14, decimal_places=2)

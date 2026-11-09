@@ -5,13 +5,13 @@ import re
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import F, Q
+from django.db.models import prefetch_related_objects, F, Q
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 import logging
 logger = logging.getLogger(__name__)
 
-from booking.room_pricing import validate_extra_bed_settlement, extra_bed_price_payload, extra_bed_amounts, discounted_room_amounts, guest_price_fields, market_default_prices
+from booking.room_pricing import effective_room_amounts, seasonal_price_metadata, validate_extra_bed_settlement, extra_bed_price_payload, extra_bed_amounts, discounted_room_amounts, guest_price_fields, market_default_prices
 from booking.add_on_templates import validate_configuration_values
 from booking.booking_services.invoice_charges import (
     booking_charge_dimensions,
@@ -642,7 +642,7 @@ def _resolve_booking_breakfast(room_type, requested, guest_market):
 
 def _rate_amounts(rule, rate_plan, stay_date, guest_market, discounts):
     base, usd = (rule.base_price, rule.usd_display_price) if rule is not None else (rate_plan.base_price, rate_plan.usd_display_price)
-    return discounted_room_amounts(base, usd, discounts, stay_date, guest_market, rate_plan.currency)
+    return effective_room_amounts(rate_plan.room_type, base, usd, discounts, stay_date, guest_market, rate_plan.currency)[2:]
 
 
 def room_type_booking_options(room_type):
@@ -1096,7 +1096,7 @@ def availability_for_hotels(
         booking_enabled=True,
         core_active=True,
         room_price_setup=True,
-    ).select_related("hotel").prefetch_related("meal_plan_links", "meal_plan_links__meal_plan", "price_discounts").order_by("hotel_id", "id"))
+    ).select_related("hotel").prefetch_related("meal_plan_links", "meal_plan_links__meal_plan", "price_discounts", "seasonal_rates").order_by("hotel_id", "id"))
     room_type_ids = [room_type.id for room_type in room_types]
     inventory = {
         (row.room_type_id, row.stay_date): row
@@ -1164,6 +1164,7 @@ def availability_for_hotels(
         discounts = list(room_type.price_discounts.all())
         room_plans = []
         for plan in plans_by_room_type[room_type.id]:
+            plan.room_type = room_type
             overrides = overrides_by_plan[plan.id]
             matching_periods = periods_by_plan[plan.id]
             periods = {
@@ -1189,6 +1190,9 @@ def availability_for_hotels(
                     (rule.base_price, rule.usd_display_price) if rule is not None
                     else (plan.base_price, plan.usd_display_price)
                 )
+                original_base, original_usd, _, _ = effective_room_amounts(
+                    room_type, original_base, original_usd, discounts, day, guest_market, plan.currency,
+                )
                 guest_prices = guest_price_fields(original_base, base_price)
                 nightly.append({
                     **guest_prices,
@@ -1196,6 +1200,7 @@ def availability_for_hotels(
                         original_usd, usd_price,
                     ).items()},
                     "date": str(day),
+                    **seasonal_price_metadata(room_type, day, guest_market),
                     "base_price": base_price,
                     "usd_display_price": usd_price,
                     "display_currency": selected_display_currency,
@@ -1216,6 +1221,7 @@ def availability_for_hotels(
                 **{field: nightly[0][field] for field in (
                     "has_discount", "original_price", "discount_percentage", "discount_price",
                     "usd_has_discount", "usd_original_price", "usd_discount_percentage", "usd_discount_price",
+                    "is_seasonal", "seasonal_rate_id", "seasonal_rate_name",
                 )},
                 "effective_base_price": nightly[0]["base_price"],
                 "effective_usd_display_price": nightly[0]["usd_display_price"],
@@ -1302,6 +1308,7 @@ def availability_for_hotels(
                     **{field: default_rate_plan[field] for field in (
                         "has_discount", "original_price", "discount_percentage", "discount_price",
                         "usd_has_discount", "usd_original_price", "usd_discount_percentage", "usd_discount_price",
+                        "is_seasonal", "seasonal_rate_id", "seasonal_rate_name",
                     )},
                     "rate_plan_id": default_rate_plan["id"],
                     "guest_market": default_rate_plan["guest_market"],
@@ -1497,6 +1504,8 @@ def estimate_booking(data):
             preference_snapshot.get("guaranteed_constraints") or {},
             quantity,
         )
+        rate_plan.room_type = room_type
+        prefetch_related_objects([room_type], "seasonal_rates")
         discounts = list(room_type.price_discounts.all())
         daily_rate_rows = {row.stay_date: row for row in DailyRate.objects.filter(rate_plan=rate_plan, stay_date__in=dates)}
         periods = _period_by_date(rate_plan, dates)
@@ -1518,6 +1527,7 @@ def estimate_booking(data):
             night_total = unit_price * quantity + extra_bed_total + nightly_option_total + meal_plan_night_total + breakfast_night_total
             nights.append({
                 "stay_date": day,
+                **seasonal_price_metadata(room_type, day, guest_market),
                 "unit_price": unit_price,
                 "usd_display_price": usd_display_price,
                 "quantity": quantity,
@@ -1834,6 +1844,8 @@ def create_booking(data, idempotency_key=None):
             preference_snapshot=preference_snapshot,
             option_total=option_total,
         )
+        rate_plan.room_type = room_type
+        prefetch_related_objects([room_type], "seasonal_rates")
         discounts = list(room_type.price_discounts.all())
         daily_rate_rows = {row.stay_date: row for row in DailyRate.objects.filter(rate_plan=rate_plan, stay_date__in=dates)}
         periods = _period_by_date(rate_plan, dates)
@@ -1863,6 +1875,7 @@ def create_booking(data, idempotency_key=None):
             night_total = unit_price * quantity + extra_bed_total + nightly_option_total + meal_plan_night_total + breakfast_night_total
             BookingRoomNight.objects.create(
                 booking_room=booking_room,
+                rate_snapshot=seasonal_price_metadata(room_type, day, guest_market),
                 stay_date=day,
                 unit_price=unit_price,
                 quantity=quantity,
@@ -2160,6 +2173,7 @@ def _booking_charge_lines(booking):
             "extra_bed_total": Decimal("0"),
             "option_total": Decimal("0"),
             "legacy_total": Decimal("0"),
+            "segments": {},
         })
         group["booking_room_ids"].append(room.id)
         group["quantity"] += room.quantity
@@ -2169,6 +2183,21 @@ def _booking_charge_lines(booking):
         if not nights:
             group["legacy_total"] += room.total
             continue
+
+        segments = []
+        for night in sorted(nights, key=lambda row: row.stay_date):
+            snapshot = night.rate_snapshot or {}
+            signature = (night.unit_price, snapshot.get("seasonal_rate_id"), snapshot.get("seasonal_rate_name"))
+            if segments and segments[-1]["signature"] == signature and segments[-1]["end"] + timedelta(days=1) == night.stay_date:
+                segments[-1]["end"] = night.stay_date
+                segments[-1]["nights"] += 1
+            else:
+                segments.append({"signature": signature, "start": night.stay_date, "end": night.stay_date,
+                                 "nights": 1, "quantity": 0, "unit_price": night.unit_price, "snapshot": snapshot})
+        for segment in segments:
+            key = (segment["signature"], segment["start"], segment["end"])
+            stored = group["segments"].setdefault(key, segment)
+            stored["quantity"] += room.quantity
 
         group["room_total"] += room_price_total
         group["extra_bed_count"] += room.extra_beds
@@ -2242,21 +2271,42 @@ def _booking_charge_lines(booking):
             "core_room_type_id": room_type.core_room_type_id,
         }
         room_total = group["room_total"] + group["legacy_total"]
-        lines.append({
-            "description": f"{room_name} x {group['quantity']} x {nights} Night{'s' if nights != 1 else ''}",
-            "quantity": 1,
-            "unit_price": room_total,
-            "metadata": {
-                **common_metadata,
-                "line_type": "room",
-                "display_title": room_name,
-                "display_description": (
-                    f"{group['quantity']} x {nights} Night{'s' if nights != 1 else ''} "
-                    f"x {booking.currency} "
-                    f"{room_total / Decimal(group['quantity'] * nights):,.0f}"
-                ),
-            },
-        })
+        segments = sorted(group["segments"].values(), key=lambda segment: segment["start"])
+        split_rates = segments and not group["legacy_total"] and any(
+            segment["snapshot"].get("is_seasonal") for segment in segments
+        )
+        if split_rates:
+            for segment in segments:
+                count = segment["nights"]
+                qty = segment["quantity"]
+                season_name = segment["snapshot"].get("seasonal_rate_name")
+                title = f"{room_name} ({season_name})" if season_name else room_name
+                total = segment["unit_price"] * count * qty
+                lines.append({
+                    "description": f"{title} x {qty} x {count} Night{'s' if count != 1 else ''}",
+                    "quantity": 1, "unit_price": total,
+                    "metadata": {**common_metadata, **segment["snapshot"], "line_type": "room",
+                                 "display_title": title,
+                                 "stay_from": str(segment["start"]), "stay_to": str(segment["end"]),
+                                 "night_count": count,
+                                 "display_description": f"{qty} x {count} Nights x {booking.currency} {segment['unit_price']:,.0f}"},
+                })
+        else:
+            lines.append({
+                "description": f"{room_name} x {group['quantity']} x {nights} Night{'s' if nights != 1 else ''}",
+                "quantity": 1,
+                "unit_price": room_total,
+                "metadata": {
+                    **common_metadata,
+                    "line_type": "room",
+                    "display_title": room_name,
+                    "display_description": (
+                        f"{group['quantity']} x {nights} Night{'s' if nights != 1 else ''} "
+                        f"x {booking.currency} "
+                        f"{room_total / Decimal(group['quantity'] * nights):,.0f}"
+                    ),
+                },
+            })
         if group["extra_bed_total"]:
             lines.append({
                 "description": (
@@ -3362,6 +3412,7 @@ def update_reservation_for_check_in(booking, data, *, replace_payment=False):
             if old_night is None:
                 continue
             new_night.unit_price = old_night.unit_price
+            new_night.rate_snapshot = old_night.rate_snapshot
             new_night.total = (
                 (old_night.unit_price * new_night.quantity)
                 + new_night.extra_bed_total
@@ -3371,7 +3422,7 @@ def update_reservation_for_check_in(booking, data, *, replace_payment=False):
             )
             changed_nights.append(new_night)
         if changed_nights:
-            BookingRoomNight.objects.bulk_update(changed_nights, ["unit_price", "total"])
+            BookingRoomNight.objects.bulk_update(changed_nights, ["unit_price", "total", "rate_snapshot"])
             new_room.total = sum(
                 (night.total for night in new_room.nights.all()),
                 Decimal("0"),

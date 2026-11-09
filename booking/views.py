@@ -469,7 +469,7 @@ class PublicOTARoomTypeCatalogView(APIView):
                     distinct=True,
                 ),
             ).select_related("hotel").prefetch_related(
-                "meal_plan_links", "meal_plan_links__meal_plan", "price_discounts",
+                "meal_plan_links", "meal_plan_links__meal_plan", "price_discounts", "seasonal_rates",
                 Prefetch(
                     "rate_plans",
                     queryset=RatePlan.objects.filter(is_active=True).order_by("guest_market", "code", "id"),
@@ -540,7 +540,7 @@ class PublicHotelRoomTypeCatalogView(APIView):
             )
             .select_related("hotel")
             .prefetch_related(
-                "meal_plan_links", "meal_plan_links__meal_plan", "price_discounts",
+                "meal_plan_links", "meal_plan_links__meal_plan", "price_discounts", "seasonal_rates",
                 Prefetch(
                     "rate_plans",
                     queryset=RatePlan.objects.filter(is_active=True).order_by("guest_market", "code", "id"),
@@ -4398,7 +4398,7 @@ class RoomTypeViewSet(RoomPricingMixin, AdminModelViewSet):
             ),
         ).order_by(ota_order, "building", "floor", "room_number", "id")
         return queryset.prefetch_related(
-            "meal_plan_links", "meal_plan_links__meal_plan", "price_discounts",
+            "meal_plan_links", "meal_plan_links__meal_plan", "price_discounts", "seasonal_rates",
             Prefetch(
                 "physical_rooms",
                 queryset=room_queryset,

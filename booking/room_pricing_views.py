@@ -4,8 +4,8 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import MethodNotAllowed, NotFound
 
 from booking.models import RoomPriceDiscount, RoomType
-from booking.room_pricing import sync_market_price, visible_room_discounts
-from booking.room_pricing_serializers import EXTRA_BED_PRICE_FIELDS, ExtraBedPriceSetupSerializer, PRICE_FIELDS, RoomPriceDiscountSerializer, RoomPriceSetupSerializer
+from booking.room_pricing import sync_market_price, visible_room_discounts, room_price_today
+from booking.room_pricing_serializers import RoomSeasonalRateSerializer, EXTRA_BED_PRICE_FIELDS, ExtraBedPriceSetupSerializer, PRICE_FIELDS, RoomPriceDiscountSerializer, RoomPriceSetupSerializer
 from booking.serializers import RatePlanSerializer
 from config.response_formatter import success
 
@@ -24,6 +24,9 @@ class RoomPricingMixin:
         return {
             "room_type_id": room_type.id, "core_room_type_id": room_type.core_room_type_id,
             "room_price_setup": room_type.room_price_setup,
+            "seasonal_rates": RoomSeasonalRateSerializer(
+                room_type.seasonal_rates.filter(ended_at__isnull=True, end_date__gte=room_price_today(room_type)), many=True,
+            ).data,
             "discounts": RoomPriceDiscountSerializer(
                 visible_room_discounts(room_type), many=True, context={"room_type": room_type},
             ).data,
@@ -110,3 +113,42 @@ class RoomPricingMixin:
             discount.ended_at = timezone.now()
             discount.save(update_fields=["ended_at", "updated_at"])
         return success(RoomPriceDiscountSerializer(discount).data)
+
+    @action(detail=True, methods=['get', 'post'], url_path='seasonal-rates')
+    @transaction.atomic
+    def seasonal_rates(self, request, pk=None):
+        room = RoomType.objects.select_for_update().select_related('hotel').get(pk=self.get_object().pk)
+        context = {'room_type': room}
+        if request.method == 'GET':
+            rows = room.seasonal_rates.filter(ended_at__isnull=True, end_date__gte=room_price_today(room))
+            return success({'room_type_id': room.id, 'seasonal_rates': RoomSeasonalRateSerializer(rows, many=True).data})
+        serializer = RoomSeasonalRateSerializer(data=request.data, context=context)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return success(serializer.data, status_code=201)
+
+    @action(detail=True, methods=['get', 'patch', 'put'], url_path=r'seasonal-rates/(?P<seasonal_id>[0-9]+)')
+    @transaction.atomic
+    def seasonal_rate_detail(self, request, pk=None, seasonal_id=None):
+        room = RoomType.objects.select_for_update().get(pk=self.get_object().pk)
+        rate = room.seasonal_rates.filter(pk=seasonal_id).first()
+        if rate is None:
+            raise NotFound('Seasonal rate was not found.')
+        serializer = RoomSeasonalRateSerializer(rate, context={'room_type': room})
+        if request.method != 'GET':
+            serializer = RoomSeasonalRateSerializer(rate, data=request.data, partial=request.method == 'PATCH', context={'room_type': room})
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+        return success(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path=r'seasonal-rates/(?P<seasonal_id>[0-9]+)/end')
+    @transaction.atomic
+    def end_seasonal_rate(self, request, pk=None, seasonal_id=None):
+        room = RoomType.objects.select_for_update().get(pk=self.get_object().pk)
+        rate = room.seasonal_rates.filter(pk=seasonal_id).first()
+        if rate is None:
+            raise NotFound('Seasonal rate was not found.')
+        if rate.ended_at is None:
+            rate.ended_at = timezone.now()
+            rate.save(update_fields=['ended_at'])
+        return success(RoomSeasonalRateSerializer(rate).data)
