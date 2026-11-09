@@ -2275,12 +2275,17 @@ def _booking_charge_lines(booking):
         split_rates = segments and not group["legacy_total"] and any(
             segment["snapshot"].get("is_seasonal") for segment in segments
         )
+        show_season_name = len({
+            (segment["snapshot"].get("is_seasonal", False),
+             segment["snapshot"].get("seasonal_rate_id"))
+            for segment in segments
+        }) > 1
         if split_rates:
             for segment in segments:
                 count = segment["nights"]
                 qty = segment["quantity"]
                 season_name = segment["snapshot"].get("seasonal_rate_name")
-                title = f"{room_name} ({season_name})" if season_name else room_name
+                title = f"{room_name} ({season_name})" if season_name and show_season_name else room_name
                 total = segment["unit_price"] * count * qty
                 lines.append({
                     "description": f"{title} x {qty} x {count} Night{'s' if count != 1 else ''}",

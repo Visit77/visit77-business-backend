@@ -28,6 +28,24 @@ class SeasonalRateTests(TestCase):
         self.payload = dict(core_business_id=77, check_in=self.start, check_out=self.end, contact_name='Guest', contact_phone='09',
             guest_market='local', rooms=[dict(core_room_type_id=301, rate_plan_id=self.plan.id, quantity=1, adults=1, children=0, extra_beds=0)])
 
+    def test_single_season_stay_has_plain_room_name_on_invoice_and_receipt(self):
+        from booking.booking_services.receipt import build_invoice_snapshot, build_receipt_snapshot
+        from booking.services import record_payment
+        self.payload['check_in'] = self.season.start_date
+        self.payload['check_out'] = self.season.start_date + timedelta(days=2)
+        booking, _ = create_booking(self.payload)
+        invoice = booking.invoices.first()
+        line = invoice.lines.get(metadata__line_type='room')
+        self.assertEqual(line.total, 100000)
+        self.assertEqual(line.metadata['display_title'], 'Deluxe')
+        self.assertNotIn('Seasonal Room Rate', line.description)
+        self.assertEqual(line.metadata['seasonal_rate_name'], 'Seasonal Room Rate 1')
+        payment = record_payment(booking, {'provider': 'cash', 'amount': Decimal('100000'), 'status': 'paid'})
+        for snapshot in (build_invoice_snapshot(invoice), build_receipt_snapshot(payment)):
+            room_line = next(row for row in snapshot['invoice']['lines'] if row['line_type'] == 'room')
+            self.assertEqual(room_line['metadata']['display_title'], 'Deluxe')
+            self.assertNotIn('Seasonal Room Rate', room_line['description'])
+
     def test_mixed_stay_availability_booking_invoice_receipt_and_snapshot(self):
         from booking.booking_services.receipt import build_invoice_snapshot, build_receipt_snapshot
         from booking.services import record_payment
