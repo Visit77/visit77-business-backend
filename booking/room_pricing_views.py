@@ -24,14 +24,15 @@ class RoomPricingMixin:
         return {
             "room_type_id": room_type.id, "core_room_type_id": room_type.core_room_type_id,
             "room_price_setup": room_type.room_price_setup,
+            "base_currency": room_type.hotel.base_currency,
             "seasonal_rates": RoomSeasonalRateSerializer(
                 room_type.seasonal_rates.filter(ended_at__isnull=True, end_date__gte=room_price_today(room_type)), many=True,
             ).data,
             "discounts": RoomPriceDiscountSerializer(
                 visible_room_discounts(room_type), many=True, context={"room_type": room_type},
             ).data,
-            **{field: getattr(room_type, field) for field in PRICE_FIELDS},
-            **{field: getattr(room_type, field) for field in EXTRA_BED_PRICE_FIELDS},
+            **{field.replace("_mmk_", "_base_"): getattr(room_type, field) for field in PRICE_FIELDS},
+            **{field: getattr(room_type, field) for field in EXTRA_BED_PRICE_FIELDS if "_mmk_" not in field},
             "extra_bed_local_base_price": room_type.extra_bed_local_mmk_price,
             "extra_bed_foreign_base_price": room_type.extra_bed_foreign_mmk_price,
             "extra_bed_base_currency": "MMK",

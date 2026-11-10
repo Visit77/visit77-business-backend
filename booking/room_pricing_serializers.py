@@ -6,6 +6,9 @@ from rest_framework import serializers
 from booking.models import RoomPriceDiscount, RoomSeasonalRate
 
 PRICE_FIELDS = ("local_mmk_price", "local_usd_price", "foreign_mmk_price", "foreign_usd_price")
+API_PRICE_FIELDS = tuple(field.replace("_mmk_", "_base_") for field in PRICE_FIELDS)
+API_PERCENTAGE_FIELDS = tuple(field.replace("_price", "_percentage") for field in API_PRICE_FIELDS)
+
 PERCENTAGE_FIELDS = tuple(field.replace("_price", "_percentage") for field in PRICE_FIELDS)
 EXTRA_BED_PRICE_FIELDS = tuple(f"extra_bed_{field}" for field in PRICE_FIELDS)
 
@@ -24,29 +27,43 @@ class ExtraBedPriceSetupSerializer(serializers.Serializer):
         return attrs
 
 
-class RoomPriceSetupSerializer(serializers.Serializer):
-    local_mmk_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.01"), required=False, allow_null=True)
+class BasePriceFieldNamesMixin:
+    def to_internal_value(self, data):
+        deprecated = set(data).intersection({'local_mmk_price', 'foreign_mmk_price'})
+        if deprecated:
+            raise serializers.ValidationError({field: f"Use {field.replace('_mmk_', '_base_')} instead." for field in deprecated})
+        return super().to_internal_value(data)
+
+
+class RoomPriceSetupSerializer(BasePriceFieldNamesMixin, serializers.Serializer):
+    local_base_price = serializers.DecimalField(source="local_mmk_price", max_digits=14, decimal_places=2, min_value=Decimal("0.01"), required=False, allow_null=True)
     local_usd_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.01"), required=False, allow_null=True)
-    foreign_mmk_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.01"), required=False, allow_null=True)
+    foreign_base_price = serializers.DecimalField(source="foreign_mmk_price", max_digits=14, decimal_places=2, min_value=Decimal("0.01"), required=False, allow_null=True)
     foreign_usd_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.01"), required=False, allow_null=True)
 
     def validate(self, attrs):
         room_type = self.context["room_type"]
         if not any(attrs.get(field, getattr(room_type, field)) is not None for field in PRICE_FIELDS):
-            raise serializers.ValidationError("Set at least one Local/Foreigner MMK or USD room price.")
+            raise serializers.ValidationError("Set at least one Local/Foreigner base currency or USD room price.")
         return attrs
 
 
-class RoomPriceDiscountSerializer(serializers.ModelSerializer):
+class RoomPriceDiscountSerializer(BasePriceFieldNamesMixin, serializers.ModelSerializer):
+    local_base_price = serializers.DecimalField(source='local_mmk_price', max_digits=14, decimal_places=2, min_value=Decimal('0.01'), required=False, allow_null=True)
+    foreign_base_price = serializers.DecimalField(source='foreign_mmk_price', max_digits=14, decimal_places=2, min_value=Decimal('0.01'), required=False, allow_null=True)
+    local_base_percentage = serializers.DecimalField(source='local_mmk_percentage', max_digits=7, decimal_places=2, read_only=True, allow_null=True)
+    foreign_base_percentage = serializers.DecimalField(source='foreign_mmk_percentage', max_digits=7, decimal_places=2, read_only=True, allow_null=True)
+    base_currency = serializers.CharField(source='room_type.hotel.base_currency', read_only=True)
+
     start_date = serializers.DateField(required=False)
     status = serializers.SerializerMethodField()
 
     class Meta:
         model = RoomPriceDiscount
-        fields = ["id", "timing_mode", "start_date", "end_date", *PRICE_FIELDS, *PERCENTAGE_FIELDS,
+        fields = ["id", "timing_mode", "start_date", "end_date", *API_PRICE_FIELDS, *API_PERCENTAGE_FIELDS, "base_currency",
                   "status", "ended_at", "created_at", "updated_at"]
-        read_only_fields = [*PERCENTAGE_FIELDS, "ended_at", "created_at", "updated_at"]
-        extra_kwargs = {field: {"required": False, "allow_null": True, "min_value": Decimal("0.01")} for field in PRICE_FIELDS}
+        read_only_fields = [*API_PERCENTAGE_FIELDS, "ended_at", "created_at", "updated_at"]
+        extra_kwargs = {field: {"required": False, "allow_null": True, "min_value": Decimal("0.01")} for field in API_PRICE_FIELDS}
 
     def get_status(self, obj):
         if obj.ended_at:
@@ -70,13 +87,13 @@ class RoomPriceDiscountSerializer(serializers.ModelSerializer):
         for field in PRICE_FIELDS:
             attrs.setdefault(field, getattr(self.instance, field, None))
         if not any(attrs.get(field) is not None for field in PRICE_FIELDS):
-            raise serializers.ValidationError("Set at least one Local/Foreigner MMK or USD discount price.")
+            raise serializers.ValidationError("Set at least one Local/Foreigner base currency or USD discount price.")
         for field in PRICE_FIELDS:
             value, normal = attrs.get(field), getattr(room_type, field)
             if value is None:
                 continue
             if normal is None or value >= normal:
-                raise serializers.ValidationError({field: "Set a discount price lower than its configured normal price."})
+                raise serializers.ValidationError({field.replace("_mmk_", "_base_"): "Set a discount price lower than its configured normal price."})
         mode = attrs.get("timing_mode", getattr(self.instance, "timing_mode", None))
         if mode == RoomPriceDiscount.TimingMode.MANUAL:
             start = (

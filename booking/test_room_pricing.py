@@ -33,7 +33,7 @@ class RoomPricingTests(TestCase):
 
     def discount(self, **changes):
         data = {"timing_mode": "scheduled", "start_date": self.start, "end_date": self.start,
-                "local_mmk_price": "80000", **changes}
+                "local_base_price": "80000", **{key.replace("_mmk_", "_base_"): value for key, value in changes.items()}}
         serializer = RoomPriceDiscountSerializer(data=data, context={"room_type": self.room_type})
         self.assertTrue(serializer.is_valid(), serializer.errors)
         return serializer.save()
@@ -154,21 +154,21 @@ class RoomPricingTests(TestCase):
     def test_discount_requires_one_valid_price_and_scheduled_dates(self):
         for data in (
             {"timing_mode": "manual"},
-            {"timing_mode": "manual", "local_mmk_price": "100000"},
-            {"timing_mode": "manual", "local_mmk_price": "-1"},
-            {"timing_mode": "scheduled", "local_mmk_price": "80000"},
-            {"timing_mode": "scheduled", "local_mmk_price": "80000", "start_date": self.end, "end_date": self.start},
+            {"timing_mode": "manual", "local_base_price": "100000"},
+            {"timing_mode": "manual", "local_base_price": "-1"},
+            {"timing_mode": "scheduled", "local_base_price": "80000"},
+            {"timing_mode": "scheduled", "local_base_price": "80000", "start_date": self.end, "end_date": self.start},
         ):
             with self.subTest(data=data):
                 serializer = RoomPriceDiscountSerializer(data=data, context={"room_type": self.room_type})
                 self.assertFalse(serializer.is_valid())
         self.room_type.room_price_setup = False
-        serializer = RoomPriceDiscountSerializer(data={"timing_mode": "manual", "local_mmk_price": "80000"}, context={"room_type": self.room_type})
+        serializer = RoomPriceDiscountSerializer(data={"timing_mode": "manual", "local_base_price": "80000"}, context={"room_type": self.room_type})
         self.assertFalse(serializer.is_valid())
 
     def test_each_currency_can_be_the_only_supplied_discount(self):
         for field, amount in zip(PRICE_FIELDS, (80000, 80, 160000, 160)):
-            serializer = RoomPriceDiscountSerializer(data={"timing_mode": "manual", field: amount}, context={"room_type": self.room_type})
+            serializer = RoomPriceDiscountSerializer(data={"timing_mode": "manual", field.replace("_mmk_", "_base_"): amount}, context={"room_type": self.room_type})
             self.assertTrue(serializer.is_valid(), serializer.errors)
 
     def test_unconfigured_rooms_are_hidden_and_rejected(self):
@@ -225,11 +225,11 @@ class RoomPricingTests(TestCase):
         client = APIClient()
         client.credentials(HTTP_X_BOOKING_ADMIN_KEY="key", HTTP_X_BOOKING_BUSINESS_ID="77")
         url = f"/api/v1/admin/room-types/{self.room_type.id}"
-        response = client.patch(url + "/room-price/", {"local_mmk_price": "120000"}, format="json")
+        response = client.patch(url + "/room-price/", {"local_base_price": "120000"}, format="json")
         self.assertEqual(response.status_code, 200, response.data)
         self.plan.refresh_from_db()
         self.assertEqual(self.plan.base_price, Decimal("120000"))
-        response = client.post(url + "/discounts/", {"timing_mode": "manual", "local_mmk_price": "96000"}, format="json")
+        response = client.post(url + "/discounts/", {"timing_mode": "manual", "local_base_price": "96000"}, format="json")
         self.assertEqual(response.data["status_code"], 201, response.data)
         discount_id = response.data["data"]["id"]
         for _ in range(2):
@@ -245,7 +245,7 @@ class RoomPricingTests(TestCase):
         serializer = RoomPriceSetupSerializer(data={}, context={"room_type": self.room_type})
         self.assertFalse(serializer.is_valid())
         for field in PRICE_FIELDS:
-            serializer = RoomPriceSetupSerializer(data={field: "100"}, context={"room_type": self.room_type})
+            serializer = RoomPriceSetupSerializer(data={field.replace("_mmk_", "_base_"): "100"}, context={"room_type": self.room_type})
             self.assertTrue(serializer.is_valid(), serializer.errors)
 
     def test_display_only_price_does_not_publish_a_free_base_currency_plan(self):
@@ -411,8 +411,8 @@ class RoomPricingTests(TestCase):
             row = response.data["data"]["discounts"][0]
             self.assertEqual(row["id"], discount.id)
             self.assertEqual(row["status"], "active")
-            self.assertEqual(Decimal(str(row["local_mmk_price"])), Decimal("80000"))
-            self.assertEqual(Decimal(str(row["local_mmk_percentage"])), Decimal("20"))
+            self.assertEqual(Decimal(str(row["local_base_price"])), Decimal("80000"))
+            self.assertEqual(Decimal(str(row["local_base_percentage"])), Decimal("20"))
         response = client.get("/api/v1/admin/room-types/")
         rows = response.data["data"]
         if isinstance(rows, dict):
@@ -431,7 +431,7 @@ class RoomPricingTests(TestCase):
         client = self.admin_client()
         url = f"/api/v1/admin/room-types/{self.room_type.id}/discounts/{discount.id}/"
         self.assertEqual(client.get(url).data["data"]["id"], discount.id)
-        response = client.patch(url, {"local_mmk_price": "75000", "local_usd_price": None}, format="json")
+        response = client.patch(url, {"local_base_price": "75000", "local_usd_price": None}, format="json")
         self.assertEqual(response.status_code, 200, response.data)
         discount.refresh_from_db()
         self.assertEqual(discount.local_mmk_price, Decimal("75000"))
@@ -440,7 +440,7 @@ class RoomPricingTests(TestCase):
         self.assertIsNone(discount.local_usd_percentage)
         self.assertEqual(discount.start_date, original_start)
         self.assertEqual(response.data["data"]["status"], "active")
-        bad = client.patch(url, {"local_mmk_price": None}, format="json")
+        bad = client.patch(url, {"local_base_price": None}, format="json")
         self.assertEqual(bad.status_code, 400)
         discount.refresh_from_db()
         self.assertEqual(discount.local_mmk_price, Decimal("75000"))
@@ -451,7 +451,7 @@ class RoomPricingTests(TestCase):
         client = self.admin_client()
         root = f"/api/v1/admin/room-types/{self.room_type.id}"
         url = root + f"/discounts/{discount.id}/"
-        response = client.patch(url, {"end_date": str(self.end), "local_mmk_price": "70000"}, format="json")
+        response = client.patch(url, {"end_date": str(self.end), "local_base_price": "70000"}, format="json")
         self.assertEqual(response.status_code, 200, response.data)
         discount.refresh_from_db()
         self.assertEqual(discount.end_date, self.end)
@@ -462,7 +462,7 @@ class RoomPricingTests(TestCase):
         other_url = f"/api/v1/admin/room-types/{other.id}/discounts/{discount.id}/"
         self.assertEqual(client.get(other_url).status_code, 404)
         client.post(root + f"/discounts/{discount.id}/end/", {}, format="json")
-        self.assertEqual(client.patch(url, {"local_mmk_price": "60000"}, format="json").status_code, 400)
+        self.assertEqual(client.patch(url, {"local_base_price": "60000"}, format="json").status_code, 400)
         self.assertEqual(client.get(root + "/").data["data"]["discounts"], [])
         self.assertTrue(RoomPriceDiscount.objects.filter(pk=discount.pk, ended_at__isnull=False).exists())
 
@@ -587,3 +587,40 @@ class RoomPricingTests(TestCase):
         if isinstance(rows,dict):rows=rows['results']
         self.assertEqual({item['id'] for item in rows[0]['discounts']},{active.pk,scheduled.pk})
         self.assertEqual(self.room_type.price_discounts.count(),4)
+
+    @override_settings(BOOKING_ADMIN_API_KEY='key')
+    def test_base_price_contract_on_setup_and_all_discount_actions(self):
+        client = self.admin_client()
+        root = f'/api/v1/admin/room-types/{self.room_type.id}'
+        prices = {'local_base_price': 120000, 'local_usd_price': 110,
+                  'foreign_base_price': 220000, 'foreign_usd_price': 210}
+        response = client.put(root + '/room-price/', prices, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['data']['base_currency'], 'MMK')
+        for field, value in prices.items():
+            self.assertEqual(response.data['data'][field], value)
+        self.assertFalse(any('_mmk_price' in field for field in response.data['data']))
+        discounted = {'local_base_price': 96000, 'local_usd_price': 88,
+                      'foreign_base_price': 176000, 'foreign_usd_price': 168}
+        response = client.post(root + '/discounts/', {'timing_mode': 'manual', **discounted}, format='json')
+        self.assertEqual(response.data['status_code'], 201, response.data)
+        pk = response.data['data']['id']
+        url = root + f'/discounts/{pk}/'
+        for method, body in (('patch', {'local_base_price': 90000}),
+                             ('put', {'timing_mode': 'manual', **discounted})):
+            result = getattr(client, method)(url, body, format='json')
+            self.assertEqual(result.status_code, 200, result.data)
+        self.assertEqual(client.patch(url, {'local_base_price': 120000}, format='json').status_code, 400)
+        for response in (client.get(url), client.get(root + '/discounts/'), client.post(url + 'end/')):
+            row = response.data['data']
+            if 'discounts' in row:
+                row = row['discounts'][0]
+            self.assertEqual(row['local_base_price'], 96000)
+            self.assertEqual(Decimal(str(row['local_base_percentage'])), 20)
+            self.assertEqual(row['foreign_base_price'], 176000)
+            self.assertEqual(Decimal(str(row['foreign_base_percentage'])), 20)
+            self.assertFalse(any('_mmk_' in field for field in row))
+        self.assertEqual(client.patch(root + '/room-price/', {'local_mmk_price': 1}, format='json').status_code, 400)
+        self.assertEqual(client.post(root + '/discounts/', {'timing_mode': 'manual', 'local_mmk_price': 1}, format='json').status_code, 400)
+        self.room_type.refresh_from_db()
+        self.assertEqual(self.room_type.local_mmk_price, 120000)
