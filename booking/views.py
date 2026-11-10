@@ -30,7 +30,7 @@ from booking.booking_services.invoice_charges import (
     replace_charge_records,
     sync_hotel_charge_config,
 )
-from booking.integrations.core import CoreClient, sync_business_from_core
+from booking.integrations.core import CoreClient, sync_business_from_core, sync_merchant_verification_from_core
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, GuestProfile, Hotel, Invoice, MealPlan, OTABookingFollowUp, OTABookingNotification, OTARemittance, OTAInvoiceCharge, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, PMSInvoiceCharge, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.permissions import HasBookingAdminKey, IsCoreRemittanceFinance, IsCoreSuperAdmin
 from booking.tasks import create_and_queue_ota_booking_notification, ota_notification_payload, queue_booking_confirmation_notifications
@@ -4082,6 +4082,11 @@ class CoreEventView(APIView):
                     snapshot["trial"] = trial
                     hotel.access_snapshot = snapshot
                     hotel.save(update_fields=["access_snapshot"])
+            elif (
+                data["event_type"] == "direct_booking.catalog_changed"
+                and (data.get("payload") or {}).get("resource") == "merchant_verification"
+            ):
+                sync_merchant_verification_from_core(data["business_id"])
             else:
                 sync_business_from_core(data["business_id"])
         return success([])

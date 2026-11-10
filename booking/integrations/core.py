@@ -507,3 +507,30 @@ def sync_business_from_core(core_business_id: int, client=None, *, preserve_acce
         "inventory_updated": inventory_updated,
         "access_preserved": bool(preserve_access and existing_hotel),
     }
+
+
+@transaction.atomic
+def sync_merchant_verification_from_core(core_business_id, client=None):
+    """Refresh merchant/contact data without changing hotel access or inventory."""
+    client = client or CoreClient()
+    hotel = Hotel.objects.select_for_update().filter(core_business_id=core_business_id).first()
+    if hotel is None:
+        return sync_business_from_core(core_business_id, client=client)
+    bundle = client.provisioning_bundle(core_business_id)
+    business = bundle.get('business') if isinstance(bundle, dict) else None
+    if not business:
+        raise CoreIntegrationError('Business was not found in Visit77 Core.')
+    snapshot = dict(hotel.core_snapshot or {})
+    snapshot.update(business)
+    for key in ('merchant_verification', 'business_verification', 'verification'):
+        snapshot.pop(key, None)
+    verification = bundle.get('merchant_verification') or business.get('merchant_verification')
+    if isinstance(verification, dict):
+        snapshot['merchant_verification'] = verification
+    hotel.core_snapshot = snapshot
+    hotel.address = business.get('address') or business.get('address_info') or ''
+    hotel.phone = _phone_text(business.get('phone') or business.get('phone_no'))
+    hotel.timezone = business.get('timezone') or 'Asia/Yangon'
+    hotel.synced_at = timezone.now()
+    hotel.save(update_fields=['core_snapshot', 'address', 'phone', 'timezone', 'synced_at'])
+    return {'hotel_id': hotel.id, 'core_business_id': core_business_id}
