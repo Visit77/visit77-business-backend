@@ -3306,8 +3306,8 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data["data"]["count"], 1)
         self.assertEqual(
-            response.data["data"]["records"][0]["gross_amount"],
-            f"{ota_amount:.2f}",
+            Decimal(str(response.data["data"]["records"][0]["gross_amount"])),
+            ota_amount,
         )
 
     def test_admin_meal_plan_list_supports_business_default_and_package_type_filters(self):

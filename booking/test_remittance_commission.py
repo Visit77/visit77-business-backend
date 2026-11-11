@@ -67,7 +67,7 @@ class RemittanceCommissionPolicyTests(TestCase):
         self.entry(256,tax=6,service=50)
         row=self.generate()
         self.assertEqual(row.commission_amount,Decimal('12.50'))
-        self.assertEqual(row.net_remittance_amount,Decimal('243.50'))
+        self.assertEqual(row.net_remittance_amount,Decimal('244.00'))
         self.assertEqual(row.service_charge_amount,Decimal('50'))
         payload=remittance_data(row)
         self.assertEqual(payload['service_charge_amount'],Decimal('50'))
@@ -97,7 +97,7 @@ class RemittanceCommissionPolicyTests(TestCase):
         self.assertFalse(OTARevenueLedger.objects.filter(pk=bad.pk).exists())
         row.refresh_from_db()
         self.assertEqual(row.commission_amount,Decimal('12.50'))
-        self.assertEqual(row.net_remittance_amount,Decimal('243.50'))
+        self.assertEqual(row.net_remittance_amount,Decimal('244.00'))
         self.assertFalse(row.commission_excludes_service_charge)
 
     def test_policy_migration_updates_unapproved_drafts_and_preserves_paid_history(self):

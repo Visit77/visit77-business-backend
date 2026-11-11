@@ -33,6 +33,7 @@ from booking.remittance_services import (
     is_ota_revenue_payment,
     refresh_current_week_remittance,
     sync_all_payment_ledgers,
+    unreleased_held_entries,
 )
 from config.response_formatter import success
 
@@ -796,16 +797,8 @@ class HotelHeldFundsView(APIView):
         hotel = _hotel_from_request(request)
         sync_all_payment_ledgers(hotel=hotel)
         offset, limit = _pagination(request)
-        released_payment_ids = OTARevenueLedger.objects.filter(
-            hotel=hotel,
-            event_type=OTARevenueLedger.EventType.HELD_RELEASE,
-        ).values("payment_id")
-        entries = list(
-            OTARevenueLedger.objects.filter(
-                hotel=hotel,
-                event_type=OTARevenueLedger.EventType.HELD,
-            )
-            .exclude(payment_id__in=released_payment_ids)
+        entries = (
+            unreleased_held_entries().filter(hotel=hotel)
             .select_related("booking", "payment")
             .order_by("-effective_at", "-id")
         )

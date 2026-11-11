@@ -68,7 +68,15 @@ class RoomPricingMixin:
                 setattr(room_type, field, value)
             if values:
                 room_type.save(update_fields=list(values))
-        return success({**self._room_price_payload(room_type), "base_currency": "MMK"})
+        return success({
+            "room_type_id": room_type.id,
+            "core_room_type_id": room_type.core_room_type_id,
+            "base_currency": "MMK",
+            **{field: getattr(room_type, source) for field, source in zip(
+                ("local_base_price", "local_usd_price", "foreign_base_price", "foreign_usd_price"),
+                EXTRA_BED_PRICE_FIELDS,
+            )},
+        })
 
     @action(detail=True, methods=["get", "post"], url_path="discounts")
     @transaction.atomic

@@ -49,7 +49,7 @@ class RecalculateUnpaidRemittancesCommandTests(TestCase):
         for row in rows:
             row.refresh_from_db()
             self.assertEqual(row.commission_amount, Decimal('12.50'))
-            self.assertEqual(row.net_remittance_amount, Decimal('243.50'))
+            self.assertEqual(row.net_remittance_amount, Decimal('244.00'))
             self.assertFalse(row.commission_excludes_service_charge)
             self.assertIsNone(row.checked_at)
             audit = row.audit_logs.get(action='commission_recalculated')
@@ -74,7 +74,7 @@ class RecalculateUnpaidRemittancesCommandTests(TestCase):
         call_command('recalculate_unpaid_remittances', business_id=77, remittance_id=[row.pk, other.pk], stdout=StringIO())
         row.refresh_from_db()
         self.assertEqual(row.commission_amount, Decimal('18.75'))
-        self.assertEqual(row.net_remittance_amount, Decimal('229.25'))
+        self.assertEqual(row.net_remittance_amount, Decimal('229.00'))
         self.assertEqual(row.refund_amount, Decimal('11'))
         self.assertEqual(row.adjustment_amount, Decimal('3'))
         self.assertEqual(row.commission_rate, Decimal('7.5'))

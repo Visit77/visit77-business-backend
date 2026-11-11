@@ -23,11 +23,12 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Image, Paragraph as ReportLabParagraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from booking.models import Invoice, Payment
+from booking.money_display import format_money as _money
 
 
 DOCUMENT_FONT = "NotoSansMyanmar"
 DOCUMENT_FONT_BOLD = "NotoSansMyanmar-Bold"
-PDF_RENDER_VERSION = 5
+PDF_RENDER_VERSION = 6
 MYANMAR_TEXT_RE = re.compile(r"[\u1000-\u109f\uaa60-\uaa7f\ua9e0-\ua9ff]")
 
 
@@ -63,11 +64,6 @@ def Paragraph(text, style, *args, **kwargs):
     return ReportLabParagraph(text, style, *args, **kwargs)
 
 
-def _money(value, currency):
-    amount = Decimal(str(value or 0))
-    return f"{currency} {amount:,.2f}" if amount % 1 else f"{currency} {int(amount):,}"
-
-
 def _percentage_label(value):
     """Format configured percentages without unnecessary trailing zeroes."""
     try:
@@ -82,6 +78,16 @@ def _charge_display_rows(line, currency):
     display_title = str(metadata.get("display_title") or "").strip()
     display_description = str(metadata.get("display_description") or "").strip()
     if display_title:
+        # Existing invoice snapshots can contain a unit rate rounded by the old
+        # formatter. Recover the rate from the exact total for standard rows.
+        match = re.fullmatch(r'(\d+(?:\.\d+)?) x (\d+) Nights? x MMK [\d,.]+', display_description)
+        if str(currency).upper() == 'MMK' and match:
+            quantity, nights = (Decimal(value) for value in match.groups())
+            if quantity and nights:
+                unit_price = Decimal(str(line.get('total') or 0)) / (quantity * nights)
+                display_description = f'{quantity} x {nights} Night{"s" if nights != 1 else ""}'
+                if unit_price == unit_price.to_integral_value() or quantity * nights == 1:
+                    display_description += f' x {_money(unit_price, currency)}'
         return [
             (f"<b>{escape(display_title)}</b>", ""),
             (
@@ -235,7 +241,7 @@ def _build_document_snapshot(
             elif line_type == "extra_bed":
                 extra_bed_charge += line.total
             elif line_type not in {
-                "service_fee", "invoice_service_charge", "adjustment",
+                "service_fee", "invoice_service_charge", "adjustment", "rounding",
             }:
                 additional_charge += line.total
             lines.append({
@@ -608,7 +614,7 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     ]
     additional_lines = [
         line for line in invoice["lines"]
-        if line["line_type"] not in {"room", "extra_bed", "service_fee"}
+        if line["line_type"] not in {"room", "extra_bed", "service_fee", "rounding"}
         and line not in service_charge_lines and line not in adjustment_lines
     ]
     if room_lines:

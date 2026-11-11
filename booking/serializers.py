@@ -1775,7 +1775,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             (
                 line.total for line in obj.lines.all()
                 if (line.metadata or {}).get("line_type", "other") not in {
-                    "service_fee", "invoice_service_charge", "adjustment",
+                    "service_fee", "invoice_service_charge", "adjustment", "rounding",
                 }
             ),
             Decimal("0"),
@@ -1959,7 +1959,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
         for line in obj.lines.all():
             metadata = line.metadata or {}
             line_type = metadata.get("line_type", "other")
-            if line_type in {"service_fee", "invoice_service_charge", "adjustment"}:
+            if line_type in {"service_fee", "invoice_service_charge", "adjustment", "rounding"}:
                 continue
             raw = {
                 "description": line.description,
@@ -1974,7 +1974,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
         previous_examples = {}
         for line in previous_lines:
             if line.get("line_type", "other") in {
-                "service_fee", "invoice_service_charge", "adjustment",
+                "service_fee", "invoice_service_charge", "adjustment", "rounding",
             }:
                 continue
             key = self._pending_line_key(line)
@@ -2315,7 +2315,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             elif line_type == "manual_charge":
                 manual_charge_lines.append(line)
             elif line_type not in {
-                "service_fee", "invoice_service_charge", "adjustment",
+                "service_fee", "invoice_service_charge", "adjustment", "rounding",
             }:
                 other_service_lines.append(line)
 

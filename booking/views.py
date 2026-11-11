@@ -31,7 +31,7 @@ from booking.booking_services.invoice_charges import (
     sync_hotel_charge_config,
 )
 from booking.integrations.core import CoreClient, sync_business_from_core, sync_merchant_verification_from_core
-from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, GuestProfile, Hotel, Invoice, MealPlan, OTABookingFollowUp, OTABookingNotification, OTARemittance, OTAInvoiceCharge, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, PMSInvoiceCharge, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
+from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, GuestProfile, Hotel, Invoice, MealPlan, OTABookingFollowUp, OTABookingNotification, OTARemittance, OTARevenueLedger, OTAInvoiceCharge, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, PMSInvoiceCharge, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.permissions import HasBookingAdminKey, IsCoreRemittanceFinance, IsCoreSuperAdmin
 from booking.tasks import create_and_queue_ota_booking_notification, ota_notification_payload, queue_booking_confirmation_notifications
 from booking.remittance_services import commission_rate_for
@@ -1124,6 +1124,11 @@ class OTARevenueView(APIView):
             .prefetch_related(
                 "rooms",
                 Prefetch(
+                    "ota_revenue_ledger",
+                    queryset=OTARevenueLedger.objects.exclude(event_type=OTARevenueLedger.EventType.REFUND),
+                    to_attr="ota_settlement_entries",
+                ),
+                Prefetch(
                     "payments",
                     queryset=Payment.objects.filter(
                         status__in=paid_statuses,
@@ -1176,31 +1181,45 @@ class OTARevenueView(APIView):
             release_at = datetime.combine(
                 booking.check_in, time.min, tzinfo=self._hotel_timezone(booking)
             )
+            ledger_types = {}
+            for entry in booking.ota_settlement_entries:
+                ledger_types.setdefault(entry.payment_id, set()).add(entry.event_type)
+            held_amount = released_amount = Decimal("0")
+            for payment in payments:
+                remaining = max(payment.amount - payment.refunded_amount, Decimal("0"))
+                types = ledger_types.get(payment.id, set())
+                if OTARevenueLedger.EventType.BOOKING_COLLECTION in types:
+                    continue
+                if OTARevenueLedger.EventType.HELD_RELEASE in types:
+                    released_amount += remaining
+                    continue
+                if not settings.HELD_FUND_CALCULATION:
+                    continue
+                was_held = OTARevenueLedger.EventType.HELD in types or (
+                    policy_type != "non_refundable"
+                    and payment.paid_at
+                    and payment.paid_at.astimezone(self._hotel_timezone(booking)).date() < booking.check_in
+                )
+                if was_held:
+                    if now < release_at:
+                        held_amount += remaining
+                    else:
+                        released_amount += remaining
+
+            available_amount = remaining_amount - held_amount
             if remaining_amount == 0 and refunded_amount > 0:
                 status_value = "refunded"
-            elif policy_type == "non_refundable" or now >= release_at:
-                status_value = "available"
             else:
-                status_value = "held"
-
-            held_amount = remaining_amount if status_value == "held" else Decimal("0")
-            available_amount = remaining_amount if status_value == "available" else Decimal("0")
-            paid_before_checkin = bool(
-                latest_paid_at.astimezone(self._hotel_timezone(booking)).date() < booking.check_in
-            ) if (latest_paid_at := max((payment.paid_at for payment in payments if payment.paid_at), default=None)) else False
-            released_amount = (
-                remaining_amount
-                if status_value == "available" and policy_type != "non_refundable" and paid_before_checkin
-                else Decimal("0")
-            )
+                status_value = "held" if held_amount else "available"
+            latest_paid_at = max((payment.paid_at for payment in payments if payment.paid_at), default=None)
             booking_collection = available_amount - released_amount
             allocated_tax = (
                 min(booking.tax_total, available_amount)
-                if status_value == "available" else Decimal("0")
+                if available_amount else Decimal("0")
             )
             allocated_service_charge = (
                 min(booking.service_charge_total, available_amount)
-                if status_value == "available" else Decimal("0")
+                if available_amount else Decimal("0")
             )
             for key, value in {
                 "gross_amount": gross_amount,
@@ -1230,7 +1249,7 @@ class OTARevenueView(APIView):
                 "checkout_at": checkout_at,
                 "checkin_at_utc": checkin_at.astimezone(datetime_timezone.utc),
                 "checkout_at_utc": checkout_at.astimezone(datetime_timezone.utc),
-                "held_release_at": release_at,
+                "held_release_at": release_at if settings.HELD_FUND_CALCULATION else None,
                 "currency": booking.currency,
                 "policy_type": policy_type,
                 "status": status_value,
@@ -1580,6 +1599,9 @@ class PublicAYAPaymentView(APIView):
         amount_due = booking.grand_total - booking.amount_paid
         if amount_due <= 0:
             raise ValidationError("This booking has no outstanding payment amount.")
+
+        if booking.currency == "MMK" and amount_due != amount_due.to_integral_value():
+            raise ValidationError("The booking balance must be a whole MMK amount for AYA payment.")
 
         checkout = CoreClient().post("direct-booking/hotel-bookings/aya-checkout/", {
             "business_id": booking.hotel.core_business_id,

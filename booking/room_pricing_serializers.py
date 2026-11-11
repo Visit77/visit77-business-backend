@@ -14,12 +14,16 @@ EXTRA_BED_PRICE_FIELDS = tuple(f"extra_bed_{field}" for field in PRICE_FIELDS)
 
 
 class ExtraBedPriceSetupSerializer(serializers.Serializer):
-    extra_bed_local_mmk_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
-    extra_bed_local_base_price = serializers.DecimalField(source='extra_bed_local_mmk_price', max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
-    extra_bed_local_usd_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
-    extra_bed_foreign_mmk_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
-    extra_bed_foreign_base_price = serializers.DecimalField(source='extra_bed_foreign_mmk_price', max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
-    extra_bed_foreign_usd_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
+    local_base_price = serializers.DecimalField(source='extra_bed_local_mmk_price', max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
+    local_usd_price = serializers.DecimalField(source='extra_bed_local_usd_price', max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
+    foreign_base_price = serializers.DecimalField(source='extra_bed_foreign_mmk_price', max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
+    foreign_usd_price = serializers.DecimalField(source='extra_bed_foreign_usd_price', max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
+
+    def to_internal_value(self, data):
+        deprecated = set(data).intersection({*EXTRA_BED_PRICE_FIELDS, 'extra_bed_local_base_price', 'extra_bed_foreign_base_price', 'local_mmk_price', 'foreign_mmk_price'})
+        if deprecated:
+            raise serializers.ValidationError({field: 'Use local_base_price, local_usd_price, foreign_base_price or foreign_usd_price.' for field in deprecated})
+        return super().to_internal_value(data)
 
     def validate(self, attrs):
         if not self.context['room_type'].room_price_setup:

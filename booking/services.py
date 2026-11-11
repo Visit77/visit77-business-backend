@@ -5,13 +5,14 @@ import re
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import prefetch_related_objects, F, Q
+from django.db.models import prefetch_related_objects, F, Q, Sum
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 import logging
 logger = logging.getLogger(__name__)
 
 from booking.room_pricing import effective_room_amounts, seasonal_price_metadata, validate_extra_bed_settlement, extra_bed_price_payload, extra_bed_amounts, discounted_room_amounts, guest_price_fields, market_default_prices
+from booking.money_display import format_amount, format_money, round_mmk
 from booking.add_on_templates import validate_configuration_values
 from booking.booking_services.invoice_charges import (
     booking_charge_dimensions,
@@ -49,15 +50,6 @@ def stay_dates(check_in, check_out):
     while current < check_out:
         yield current
         current += timedelta(days=1)
-
-
-def format_money(amount, currency):
-    amount = Decimal(amount or 0)
-    if amount == amount.to_integral_value():
-        formatted_amount = f"{int(amount):,}"
-    else:
-        formatted_amount = f"{amount:,.2f}"
-    return f"{currency} {formatted_amount}"
 
 
 def normalize_guest_phone(value):
@@ -1442,6 +1434,29 @@ def uses_shared_daily_inventory(hotel, source, inventory_mode=None):
     )
 
 
+def _priced_booking_add_on(hotel, requested, nights):
+    try:
+        add_on = AddOn.objects.select_related("template").get(id=requested["add_on_id"], hotel=hotel, is_active=True)
+    except AddOn.DoesNotExist:
+        raise ValidationError({"add_ons": "A selected add-on is unavailable."})
+    if add_on.currency != hotel.base_currency:
+        raise ValidationError({"add_ons": "Add-ons must use the hotel base currency."})
+    quantity = requested.get("quantity", 1)
+    configuration = requested.get("configuration", {})
+    configuration_errors = validate_configuration_values(add_on.configuration_schema, configuration)
+    if configuration_errors:
+        raise ValidationError({"add_ons": {str(add_on.id): configuration_errors}})
+    if add_on.pricing_unit == AddOn.PricingUnit.PER_BOOKING:
+        multiplier = 1
+    elif add_on.pricing_unit == AddOn.PricingUnit.PER_NIGHT:
+        multiplier = nights * quantity
+    else:
+        multiplier = quantity
+    unit_price = add_on.price
+    total = unit_price * multiplier
+    return add_on, quantity, configuration, unit_price, total
+
+
 def estimate_booking(data):
     logger.info(data)
     hotel = Hotel.objects.get(core_business_id=data["core_business_id"], is_active=True)
@@ -1646,6 +1661,17 @@ def estimate_booking(data):
             f"Your room selection cannot accommodate {occupancy} guests. "
             "Please add more rooms or adjust your guest count to continue."
         )
+    for requested in data.get("add_ons", []):
+        add_on, quantity, _, _, total = _priced_booking_add_on(hotel, requested, len(dates))
+        grand_total += total
+        summary_items.append({
+            "type": "add_on",
+            "label": add_on.name,
+            "add_on_id": add_on.id,
+            "quantity": quantity,
+            "amount": total,
+            "formatted_amount": format_money(total, hotel.base_currency),
+        })
     charge_config = (
         hotel.pms_invoice_charges
         if str(data.get("source", Booking.Source.OTA)).lower() == Booking.Source.PMS
@@ -1668,6 +1694,7 @@ def estimate_booking(data):
                     "amount": Decimal(charge["amount"]),
                     "formatted_amount": format_money(charge["amount"], hotel.base_currency),
                 })
+    payable_total = round_mmk(grand_total + service_charge_total + tax_total, hotel.base_currency)
     return {
         "hotel": {
             "id": hotel.id,
@@ -1700,10 +1727,10 @@ def estimate_booking(data):
         "service_charge_total": service_charge_total,
         "tax_total": tax_total,
         "invoice_charges": charge_snapshot,
-        "grand_total": grand_total + service_charge_total + tax_total,
+        "grand_total": payable_total,
         "formatted_room_total": format_money(room_total, hotel.base_currency),
         "formatted_breakfast_total": format_money(breakfast_total, hotel.base_currency),
-        "formatted_grand_total": format_money(grand_total + service_charge_total + tax_total, hotel.base_currency),
+        "formatted_grand_total": format_money(payable_total, hotel.base_currency),
         "can_create_booking": can_create_booking,
         "warning": capacity_warning,
         "warnings": [capacity_warning] if capacity_warning else [],
@@ -1928,29 +1955,12 @@ def create_booking(data, idempotency_key=None):
 
     add_on_total = Decimal("0")
     for requested in data.get("add_ons", []):
-        try:
-            add_on = AddOn.objects.select_related("template").get(id=requested["add_on_id"], hotel=hotel, is_active=True)
-        except AddOn.DoesNotExist:
-            raise ValidationError({"add_ons": "A selected add-on is unavailable."})
-        if add_on.currency != hotel.base_currency:
-            raise ValidationError({"add_ons": "Add-ons must use the hotel base currency."})
-        quantity = requested.get("quantity", 1)
-        configuration = requested.get("configuration", {})
-        configuration_errors = validate_configuration_values(add_on.configuration_schema, configuration)
-        if configuration_errors:
-            raise ValidationError({"add_ons": {str(add_on.id): configuration_errors}})
-        if add_on.pricing_unit == AddOn.PricingUnit.PER_BOOKING:
-            multiplier = 1
-        elif add_on.pricing_unit == AddOn.PricingUnit.PER_NIGHT:
-            multiplier = len(dates) * quantity
-        else:
-            multiplier = quantity
-        total = add_on.price * multiplier
+        add_on, quantity, configuration, unit_price, total = _priced_booking_add_on(hotel, requested, len(dates))
         BookingAddOn.objects.create(
             booking=booking,
             add_on=add_on,
             quantity=quantity,
-            unit_price=add_on.price,
+            unit_price=unit_price,
             total=total,
             configuration=configuration,
             add_on_snapshot={
@@ -1991,9 +2001,9 @@ def create_booking(data, idempotency_key=None):
     booking.service_charge_total, booking.tax_total = charge_totals(
         booking.invoice_charge_snapshot,
     )
-    booking.grand_total = (
+    booking.grand_total = round_mmk(
         room_total + add_on_total + booking.service_charge_total
-        + booking.tax_total - booking.discount_total
+        + booking.tax_total - booking.discount_total, booking.currency,
     )
     booking.cancellation_policy_snapshot = policy_snapshot
     booking.save(update_fields=[
@@ -2073,6 +2083,26 @@ def _sync_invoice_status(invoice):
     return invoice
 
 
+def _apply_invoice_rounding(invoice):
+    """Record the difference between the exact charges and the payable total."""
+    exact_total = invoice.subtotal + invoice.tax_total - invoice.discount_total
+    rounded_total = round_mmk(exact_total, invoice.currency)
+    difference = rounded_total - exact_total
+    invoice.total = rounded_total
+    if difference:
+        InvoiceLine.objects.create(
+            invoice=invoice,
+            description="Currency rounding",
+            quantity=1,
+            unit_price=difference,
+            total=difference,
+            metadata={"line_type": "rounding"},
+        )
+        invoice.subtotal += difference
+    return difference
+
+
+@transaction.atomic
 def create_invoice(
     booking, invoice_type, lines, tax_total=Decimal("0"), discount_total=Decimal("0"),
     note="", add_to_booking_total=False, charge_scope=None, charge_snapshot=None,
@@ -2138,11 +2168,13 @@ def create_invoice(
         )
         for item, quantity, unit_price, line_total in normalized_lines
     ])
+    if _apply_invoice_rounding(invoice):
+        invoice.save(update_fields=["subtotal", "total"])
     if add_to_booking_total:
         booking.add_on_total += subtotal
         booking.tax_total += tax_total
         booking.discount_total += discount_total
-        booking.grand_total += total
+        booking.grand_total += invoice.total
         booking.save(update_fields=["add_on_total", "tax_total", "discount_total", "grand_total", "updated_at"])
     return invoice
 
@@ -2294,7 +2326,7 @@ def _booking_charge_lines(booking):
                                  "display_title": title,
                                  "stay_from": str(segment["start"]), "stay_to": str(segment["end"]),
                                  "night_count": count,
-                                 "display_description": f"{qty} x {count} Nights x {booking.currency} {segment['unit_price']:,.0f}"},
+                                 "display_description": f"{qty} x {count} Nights x {booking.currency} {format_amount(segment['unit_price'], booking.currency)}"},
                 })
         else:
             lines.append({
@@ -2308,7 +2340,7 @@ def _booking_charge_lines(booking):
                     "display_description": (
                         f"{group['quantity']} x {nights} Night{'s' if nights != 1 else ''} "
                         f"x {booking.currency} "
-                        f"{room_total / Decimal(group['quantity'] * nights):,.0f}"
+                        f"{format_amount(room_total / Decimal(group['quantity'] * nights), booking.currency)}"
                     ),
                 },
             })
@@ -2327,7 +2359,7 @@ def _booking_charge_lines(booking):
                     "display_description": (
                         f"{group['extra_bed_count']} x {nights} Night{'s' if nights != 1 else ''} "
                         f"x {booking.currency} "
-                        f"{group['extra_bed_total'] / Decimal(group['extra_bed_count'] * nights):,.0f}"
+                        f"{format_amount(group['extra_bed_total'] / Decimal(group['extra_bed_count'] * nights), booking.currency)}"
                     ),
                 },
             })
@@ -2360,7 +2392,7 @@ def _booking_charge_lines(booking):
                     if plan["included"] else
                     f"{plan['quantity']} x {nights} Night{'s' if nights != 1 else ''} "
                     f"x {booking.currency} "
-                    f"{plan['total'] / Decimal(plan['quantity'] * nights):,.0f}"
+                    f"{format_amount(plan['total'] / Decimal(plan['quantity'] * nights), booking.currency)}"
                 ),
             },
         })
@@ -2385,7 +2417,7 @@ def _booking_charge_lines(booking):
                     if breakfast["included"] else
                     f"{breakfast['quantity']} x {nights} Night{'s' if nights != 1 else ''} "
                     f"x {booking.currency} "
-                    f"{breakfast['total'] / Decimal(breakfast['quantity'] * nights):,.0f}"
+                    f"{format_amount(breakfast['total'] / Decimal(breakfast['quantity'] * nights), booking.currency)}"
                 ),
             },
         })
@@ -2450,7 +2482,7 @@ def sync_initial_invoice(booking):
         if booking.source == Booking.Source.OTA else Invoice.ChargeScope.PMS
     )
     invoice.charge_snapshot = booking.invoice_charge_snapshot
-    invoice.total = subtotal + booking.tax_total - booking.discount_total
+    _apply_invoice_rounding(invoice)
     invoice.save(update_fields=[
         "subtotal", "tax_total", "discount_total", "charge_scope",
         "charge_snapshot", "total", "updated_at",
@@ -2525,7 +2557,7 @@ def _replace_invoice_lines(
     invoice.tax_total = Decimal(str(tax_total or 0))
     invoice.discount_total = Decimal(str(discount_total or 0))
     invoice.charge_snapshot = charge_snapshot
-    invoice.total = invoice.subtotal + invoice.tax_total - invoice.discount_total
+    _apply_invoice_rounding(invoice)
     invoice.save(update_fields=["subtotal", "tax_total", "discount_total", "charge_snapshot", "total", "updated_at"])
     return _sync_invoice_status(invoice)
 
@@ -2547,7 +2579,7 @@ def sync_booking_charge_invoices(booking):
 
     non_system_line_types = {
         "ota_other_charge", "invoice_other_charge", "invoice_service_charge",
-        "manual_charge", "adjustment",
+        "manual_charge", "adjustment", "rounding",
     }
     current_lines = [
         item for item in _booking_charge_lines(booking)
@@ -2673,7 +2705,7 @@ def apply_check_in_invoice_adjustments(booking, adjustments=None):
     # replaced as well, otherwise a partially-paid invoice would keep the old
     # service amount and then add taxes for the new manual charges on top of it.
     mutable_line_types = {
-        "manual_charge", "adjustment", "invoice_service_charge",
+        "manual_charge", "adjustment", "invoice_service_charge", "rounding",
     }
     invoice.lines.filter(metadata__line_type__in=mutable_line_types).delete()
     system_subtotal = sum(
@@ -2825,7 +2857,7 @@ def apply_check_in_invoice_adjustments(booking, adjustments=None):
     )
     invoice.discount_total = discount_amount
     invoice.tax_total = auto_tax_total + manual_tax_total
-    invoice.total = invoice.subtotal + invoice.tax_total - invoice.discount_total
+    _apply_invoice_rounding(invoice)
     if invoice.total < invoice.paid_amount:
         raise ValidationError({
             "invoice_adjustments": (
@@ -3453,9 +3485,10 @@ def update_reservation_for_check_in(booking, data, *, replace_payment=False):
         replacement.service_charge_total = booking.service_charge_total
         replacement.tax_total = booking.tax_total
     replacement.discount_total = booking.discount_total
-    replacement.grand_total = (
+    replacement.grand_total = round_mmk(
         replacement.room_total + replacement.add_on_total
-        + replacement.service_charge_total + replacement.tax_total - replacement.discount_total
+        + replacement.service_charge_total + replacement.tax_total - replacement.discount_total,
+        replacement.currency,
     )
     replacement.save(update_fields=[
         "service_charge_total", "invoice_charge_snapshot", "tax_total",
@@ -3571,6 +3604,10 @@ def update_reservation_for_check_in(booking, data, *, replace_payment=False):
         "discount_total", "grand_total", "cancellation_policy_snapshot", "updated_at",
     ])
     sync_booking_charge_invoices(booking)
+    booking.grand_total = booking.invoices.exclude(status=Invoice.Status.VOID).aggregate(
+        total=Sum("total", default=Decimal("0")),
+    )["total"]
+    booking.save(update_fields=["grand_total", "updated_at"])
     # create_booking() creates the replacement's provisional invoice as well.
     # It is only a calculation container; the real stay keeps its own invoices.
     replacement.invoices.all().delete()

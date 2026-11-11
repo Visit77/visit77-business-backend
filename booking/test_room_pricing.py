@@ -2,6 +2,7 @@ from datetime import timedelta
 from decimal import Decimal
 from importlib import import_module
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from django.apps import apps
 from django.db import connection
@@ -31,6 +32,70 @@ class RoomPricingTests(TestCase):
             "contact_name": "Guest", "contact_phone": "091111111", "guest_market": "local",
             "rooms": [{"core_room_type_id": 301, "rate_plan_id": self.plan.id, "quantity": 1, "adults": 1, "children": 0, "extra_beds": 0}]}
 
+    @patch("booking.views.CoreClient.post", return_value={"checkout_type": "form_post"})
+    def test_mmk_rounds_only_payable_total_and_sends_same_amount_to_aya(self, core_post):
+        self.plan.base_price = self.plan.default_price = Decimal("134.50")
+        self.plan.save(update_fields=["base_price", "default_price"])
+        estimate = estimate_booking(self.payload)
+        self.assertEqual(estimate["grand_total"], Decimal("269"))
+        self.hotel.ota_invoice_charges = {
+            "taxes": [{"title": "Tax", "mode": "percentage", "value": "5"}],
+            "service_charges": [{"title": "Service", "mode": "fixed", "value": "0.12"}],
+        }
+        self.hotel.save(update_fields=["ota_invoice_charges"])
+        # 269.00 room + 13.45 tax + 0.24 service = 282.69 before rounding.
+        estimate = estimate_booking(self.payload)
+        self.assertEqual(estimate["room_total"], Decimal("269.00"))
+        self.assertEqual(estimate["tax_total"], Decimal("13.45"))
+        self.assertEqual(estimate["service_charge_total"], Decimal("0.24"))
+        self.assertEqual(estimate["grand_total"], Decimal("283"))
+
+        booking, _ = create_booking(self.payload)
+        invoice = booking.invoices.get()
+        self.assertEqual(booking.grand_total, invoice.total)
+        self.assertEqual(invoice.total, estimate["grand_total"])
+        self.assertEqual(invoice.lines.get(metadata__line_type="rounding").total, Decimal("0.31"))
+        response = APIClient().post(
+            f"/api/v1/public/bookings/{booking.public_token}/aya-payment/", {}, format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(core_post.call_args.args[1]["amount"], 283)
+
+    def test_close_legacy_mmk_invoice_only_when_payment_covers_rounded_total(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        from booking.models import Invoice
+        from booking.services import record_payment
+
+        for total, should_close in (("134.34", True), ("134.50", False)):
+            with self.subTest(total=total):
+                booking, _ = create_booking(self.payload)
+                invoice = booking.invoices.get()
+                invoice.lines.all().delete()
+                invoice.lines.create(description="Legacy charge", quantity=1, unit_price=Decimal(total), total=Decimal(total))
+                invoice.subtotal = invoice.total = booking.grand_total = Decimal(total)
+                invoice.save(update_fields=["subtotal", "total"])
+                booking.save(update_fields=["grand_total"])
+                payment = record_payment(booking, {"provider": "cash", "amount": Decimal("134")})
+
+                call_command("close_mmk_rounding_invoices", invoice_id=invoice.id, stdout=StringIO())
+                invoice.refresh_from_db()
+                self.assertEqual(invoice.status, Invoice.Status.PARTIALLY_PAID)
+                self.assertEqual(invoice.total, Decimal(total))
+
+                for _ in range(2):
+                    call_command("close_mmk_rounding_invoices", invoice_id=invoice.id, apply=True, stdout=StringIO())
+                invoice.refresh_from_db()
+                booking.refresh_from_db()
+                payment.refresh_from_db()
+                self.assertEqual(payment.amount, Decimal("134"))
+                self.assertEqual(booking.grand_total, invoice.total)
+                self.assertEqual(invoice.status, Invoice.Status.PAID if should_close else Invoice.Status.PARTIALLY_PAID)
+                self.assertEqual(invoice.lines.filter(metadata__line_type="rounding").count(), int(should_close))
+                self.assertEqual(invoice.balance, Decimal("0") if should_close else Decimal("0.50"))
+
     def discount(self, **changes):
         data = {"timing_mode": "scheduled", "start_date": self.start, "end_date": self.start,
                 "local_base_price": "80000", **{key.replace("_mmk_", "_base_"): value for key, value in changes.items()}}
@@ -42,22 +107,34 @@ class RoomPricingTests(TestCase):
     def test_extra_bed_price_setup_and_scoping(self):
         url = f'/api/v1/admin/room-types/{self.room_type.id}/extra-bed-price/'
         response = self.admin_client().put(url, {
-            'extra_bed_local_base_price': '20000', 'extra_bed_local_usd_price': '10',
-            'extra_bed_foreign_base_price': '40000', 'extra_bed_foreign_usd_price': '20',
+            'local_base_price': '20000', 'local_usd_price': '10',
+            'foreign_base_price': '40000', 'foreign_usd_price': '20',
         }, format='json')
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data['data']['base_currency'], 'MMK')
-        self.assertEqual(response.data['data']['extra_bed_local_base_price'], 20000)
-        response = self.admin_client().patch(url, {'extra_bed_foreign_base_price': None}, format='json')
+        self.assertEqual(response.data['data']['local_base_price'], 20000)
+        response = self.admin_client().patch(url, {'foreign_base_price': None}, format='json')
         self.assertEqual(response.status_code, 200, response.data)
-        self.assertIsNone(response.data['data']['extra_bed_foreign_base_price'])
+        self.assertIsNone(response.data['data']['foreign_base_price'])
         self.room_type.refresh_from_db()
         self.assertEqual(self.room_type.extra_bed_foreign_usd_price, 20)
-        self.assertEqual(self.admin_client('999').patch(url, {'extra_bed_local_mmk_price': 1}, format='json').status_code, 404)
-        self.assertEqual(self.admin_client().patch(url, {'extra_bed_local_mmk_price': -1}, format='json').status_code, 400)
+        response = self.admin_client().get(url)
+        self.assertEqual(response.data['data']['local_base_price'], 20000)
+        self.assertEqual(response.data['data']['local_usd_price'], 10)
+        self.assertFalse(any(key.startswith('extra_bed_') or '_mmk_' in key for key in response.data['data']))
+        self.assertEqual(self.room_type.local_mmk_price, 100000)
+        self.assertEqual(self.admin_client().patch(url, {'extra_bed_local_mmk_price': 1}, format='json').status_code, 400)
+        response = self.admin_client().put(url, {'foreign_base_price': 0}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIsNone(response.data['data']['local_base_price'])
+        self.assertIsNone(response.data['data']['local_usd_price'])
+        self.assertEqual(response.data['data']['foreign_base_price'], 0)
+        self.assertIsNone(response.data['data']['foreign_usd_price'])
+        self.assertEqual(self.admin_client('999').patch(url, {'local_base_price': 1}, format='json').status_code, 404)
+        self.assertEqual(self.admin_client().patch(url, {'local_base_price': -1}, format='json').status_code, 400)
         self.room_type.room_price_setup = False
         self.room_type.save()
-        self.assertEqual(self.admin_client().patch(url, {'extra_bed_local_mmk_price': 1}, format='json').status_code, 400)
+        self.assertEqual(self.admin_client().patch(url, {'local_base_price': 1}, format='json').status_code, 400)
 
     def test_extra_bed_market_fallback_zero_and_display_currency(self):
         from booking.room_pricing import extra_bed_amounts, extra_bed_price_payload

@@ -2,11 +2,13 @@ from datetime import datetime, time, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from django.conf import settings
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from booking.money_display import round_mmk
 from booking.models import (
     Booking,
     Hotel,
@@ -83,10 +85,25 @@ def is_ota_revenue_payment(payment):
     )
 
 
+PAYABLE_LEDGER_TYPES = (
+    OTARevenueLedger.EventType.BOOKING_COLLECTION,
+    OTARevenueLedger.EventType.HELD_RELEASE,
+)
+
+
+def unreleased_held_entries():
+    payable = OTARevenueLedger.objects.filter(
+        payment_id=OuterRef("payment_id"), event_type__in=PAYABLE_LEDGER_TYPES,
+    )
+    return OTARevenueLedger.objects.filter(
+        event_type=OTARevenueLedger.EventType.HELD,
+    ).filter(~Exists(payable))
+
+
 @transaction.atomic
-def sync_payment_ledger(payment):
-    payment = Payment.objects.select_related("booking__hotel", "invoice").get(pk=payment.pk)
-    booking = payment.booking
+def sync_payment_ledger(payment, *, release_held=False):
+    booking = Booking.objects.select_for_update(of=("self",)).select_related("hotel").get(pk=payment.booking_id)
+    payment = Payment.objects.select_related("invoice").get(pk=payment.pk)
     if booking.source != Booking.Source.OTA or not payment.paid_at:
         return []
     if not is_ota_revenue_payment(payment):
@@ -94,46 +111,70 @@ def sync_payment_ledger(payment):
     if payment.status not in {Payment.Status.PAID, Payment.Status.PARTIALLY_REFUNDED, Payment.Status.REFUNDED}:
         return []
 
-    held = not is_non_refundable(booking) and payment.paid_at.astimezone(
-        hotel_timezone(booking.hotel)
-    ).date() < booking.check_in
-    initial_type = OTARevenueLedger.EventType.HELD if held else OTARevenueLedger.EventType.BOOKING_COLLECTION
-    initial, _ = OTARevenueLedger.objects.update_or_create(
-        event_key=f"payment:{payment.id}:{initial_type}",
-        defaults={
-            "hotel": booking.hotel,
-            "booking": booking,
-            "payment": payment,
-            "event_type": initial_type,
+    # Keep the original settlement path when the flag or refund policy changes.
+    existing = {
+        row.event_type: row for row in OTARevenueLedger.objects.filter(
+            payment=payment, event_type__in=(*PAYABLE_LEDGER_TYPES, OTARevenueLedger.EventType.HELD),
+        )
+    }
+    held_entry = existing.get(OTARevenueLedger.EventType.HELD)
+    payable_entry = next((existing[kind] for kind in PAYABLE_LEDGER_TYPES if kind in existing), None)
+    new_entry = False
+    held_enabled = settings.HELD_FUND_CALCULATION
+    if not payable_entry and not held_entry:
+        amounts = {
             "gross_amount": payment.amount,
             "tax_amount": payment_tax(payment),
             "service_charge_amount": payment_service_charge(payment),
-            "effective_at": payment.paid_at,
-        },
-    )
-    entries = [initial]
-    if held:
-        local_release = datetime.combine(booking.check_in, time.min, tzinfo=hotel_timezone(booking.hotel))
-        if timezone.now() >= local_release:
-            release, _ = OTARevenueLedger.objects.update_or_create(
-                event_key=f"payment:{payment.id}:held_release",
-                defaults={
-                    "hotel": booking.hotel,
-                    "booking": booking,
-                    "payment": payment,
-                    "event_type": OTARevenueLedger.EventType.HELD_RELEASE,
-                    "gross_amount": payment.amount,
-                    "tax_amount": payment_tax(payment),
-                    "service_charge_amount": payment_service_charge(payment),
-                    "effective_at": local_release,
-                },
-            )
-            entries.append(release)
-            booking.settlement_status = Booking.SettlementStatus.AVAILABLE
+        }
+        held = (
+            held_enabled and not is_non_refundable(booking)
+            and payment.paid_at.astimezone(hotel_timezone(booking.hotel)).date() < booking.check_in
+        )
+        kind = OTARevenueLedger.EventType.HELD if held else OTARevenueLedger.EventType.BOOKING_COLLECTION
+        entry = OTARevenueLedger.objects.create(
+            event_key=f"payment:{payment.id}:{kind}",
+            hotel=booking.hotel, booking=booking, payment=payment,
+            event_type=kind, effective_at=payment.paid_at, **amounts,
+        )
+        new_entry = True
+        if held:
+            held_entry = entry
         else:
-            booking.settlement_status = Booking.SettlementStatus.HELD
-    else:
-        booking.settlement_status = Booking.SettlementStatus.AVAILABLE
+            payable_entry = entry
+
+    if held_entry and not payable_entry:
+        now = timezone.now()
+        scheduled_release = datetime.combine(
+            booking.check_in, time.min, tzinfo=hotel_timezone(booking.hotel),
+        )
+        if release_held or not held_enabled or now >= scheduled_release:
+            new_entry = True
+            early = release_held or not held_enabled
+            reason = "manual" if release_held else "held_fund_disabled"
+            payable_entry = OTARevenueLedger.objects.create(
+                event_key=f"payment:{payment.id}:held_release",
+                hotel=booking.hotel, booking=booking, payment=payment,
+                event_type=OTARevenueLedger.EventType.HELD_RELEASE,
+                effective_at=now if early else scheduled_release,
+                metadata={"release_reason": reason} if early else {},
+                gross_amount=held_entry.gross_amount,
+                tax_amount=held_entry.tax_amount,
+                service_charge_amount=held_entry.service_charge_amount,
+            )
+
+    entries = [entry for entry in (held_entry, payable_entry) if entry]
+    if new_entry or booking.settlement_status in {
+        Booking.SettlementStatus.UNPAID, Booking.SettlementStatus.HELD, Booking.SettlementStatus.AVAILABLE,
+    }:
+        settlement_status = (
+            Booking.SettlementStatus.HELD
+            if unreleased_held_entries().filter(booking=booking).exists()
+            else Booking.SettlementStatus.AVAILABLE
+        )
+        if booking.settlement_status != settlement_status:
+            booking.settlement_status = settlement_status
+            booking.save(update_fields=["settlement_status", "updated_at"])
 
     if payment.refunded_amount > 0:
         refund, _ = OTARevenueLedger.objects.update_or_create(
@@ -148,7 +189,6 @@ def sync_payment_ledger(payment):
             },
         )
         entries.append(refund)
-    booking.save(update_fields=["settlement_status", "updated_at"])
     return entries
 
 
@@ -246,7 +286,7 @@ def cleanup_non_ota_revenue_ledgers(hotel=None):
         remittance.commission_rate = rate
         remittance.commission_amount = commission
         remittance.net_remittance_amount = _money(
-            base_net + remittance.adjustment_amount
+            round_mmk(base_net + remittance.adjustment_amount, None if preserve_policy else remittance.currency)
         )
         remittance.save(update_fields=[
             "gross_booking_amount", "released_held_funds_amount", "tax_amount",
@@ -330,7 +370,8 @@ def generate_weekly_remittance(
     rate = commission_rate_for(hotel)
     commissionable = max(collections + releases - tax, Decimal("0"))
     commission = _money(commissionable * rate / Decimal("100"))
-    net = _money(collections + releases - commission - refunds)
+    exact_net = collections + releases - commission - refunds
+    net = _money(exact_net if historical else round_mmk(exact_net, hotel.base_currency))
     status = (
         OTARemittance.Status.ACCRUING if accruing
         else OTARemittance.Status.RECEIVED if completed
@@ -528,7 +569,7 @@ def recalculate_unpaid_remittance(remittance_id, *, dry_run=False):
     gross = record.gross_booking_amount + record.released_held_funds_amount
     base = max(gross - record.tax_amount, Decimal("0"))
     commission = _money(base * record.commission_rate / Decimal("100"))
-    payout = _money(gross - commission - record.refund_amount + record.adjustment_amount)
+    payout = _money(round_mmk(gross - commission - record.refund_amount + record.adjustment_amount, record.currency))
     changed = (
         record.commission_excludes_service_charge
         or commission != record.commission_amount

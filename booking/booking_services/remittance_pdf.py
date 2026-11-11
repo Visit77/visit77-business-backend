@@ -20,17 +20,13 @@ from reportlab.platypus import (
 )
 
 from booking.booking_services.receipt import MYANMAR_TEXT_RE, Paragraph, _register_document_fonts
+from booking.money_display import format_amount, format_money as _money
 
 BLUE = colors.HexColor("#3039F5")
 SECTION_BLUE = colors.HexColor("#2563EB")
 DATE_BLUE = colors.HexColor("#AAB9CC")
 GRID = colors.HexColor("#7E91AD")
 LIGHT_GREY = colors.HexColor("#EEF3F9")
-
-
-def _money(value, currency):
-    amount = Decimal(str(value or 0))
-    return f"{currency} {amount:,.2f}" if amount % 1 else f"{currency} {int(amount):,}"
 
 
 def _local_datetime(remittance, value):
@@ -171,8 +167,8 @@ def _item_sections(remittance, normal, bold, small):
                     f"{item.booking.check_in:%d.%m.%Y}\n{item.booking.check_out:%d.%m.%Y}",
                     small,
                 ),
-                _paragraph(f"{item.gross_amount:,.0f}", small),
-                _paragraph(f"{refund:,.0f}" if refund else "-", small),
+                _paragraph(format_amount(item.gross_amount, remittance.currency), small),
+                _paragraph(format_amount(refund, remittance.currency) if refund else "-", small),
             ])
             table_row += 1
         widths = [22 * mm, 44 * mm, 38 * mm, 31 * mm, 31 * mm]
