@@ -1,0 +1,163 @@
+from datetime import timedelta
+from decimal import Decimal
+from io import BytesIO
+
+from django.test import TestCase, override_settings
+from django.utils import timezone
+from pypdf import PdfReader
+from rest_framework.exceptions import ValidationError
+from rest_framework.test import APIClient
+
+from booking.authentication import CoreJWTUser
+from booking.booking_services.receipt import build_invoice_snapshot, render_invoice_pdf, render_receipt_pdf
+from booking.models import Booking, BookingCoupon, Hotel, Invoice, OTARevenueLedger, RatePlan, RoomType
+from booking.remittance_services import generate_weekly_remittance, sync_payment_ledger
+from booking.serializers import BookingSerializer
+from booking.services import cancel_booking, create_booking, create_invoice, estimate_booking, record_payment, refund_payment
+
+
+@override_settings(BOOKING_ADMIN_API_KEY="key", HELD_FUND_CALCULATION=False)
+class BookingCouponTests(TestCase):
+    def setUp(self):
+        self.now = timezone.now()
+        self.hotel = Hotel.objects.create(
+            core_business_id=7529, name="Coupon Hotel", package="ota", inventory_mode="room_type_count",
+            timezone="UTC", core_snapshot={"coupon_locations": [{"country_id": 1, "state_id": 5, "city_id": 68}]},
+        )
+        self.room = RoomType.objects.create(
+            hotel=self.hotel, core_room_type_id=1977, name="Economy", room_price_setup=True,
+            room_type_count_inventory=5, local_mmk_price=35000,
+        )
+        self.plan = RatePlan.objects.create(
+            room_type=self.room, code="local", name="Local", guest_market="local", default_price=35000,
+            cancellation_policy={"type": "free_full_refund"},
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(CoreJWTUser(id=1, is_superuser=True))
+        self.campaign_data = {
+            "title": "Visit 77 Hotel Coupon", "type": "booking", "discount_type": "fixed",
+            "discount_value": 10000, "currency": "MMK", "quantity_per_user": 2, "country_id": 1,
+            "state_ids": [5], "city_ids": [68], "business_ids": [7529],
+            "start_at": (self.now - timedelta(days=1)).isoformat(),
+            "end_at": (self.now + timedelta(days=10)).isoformat(),
+        }
+        start = self.now.date() + timedelta(days=2)
+        self.data = {
+            "core_business_id": 7529, "booked_by_core_user_id": 7,
+            "check_in": start, "check_out": start + timedelta(days=2),
+            "contact_name": "Guest", "contact_phone": "09",
+            "rooms": [{"core_room_type_id": 1977, "rate_plan_id": self.plan.id, "quantity": 1}],
+        }
+
+    def campaign(self, **overrides):
+        response = self.client.post(
+            "/api/v1/admin/coupon-campaigns/", {**self.campaign_data, **overrides}, format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        return response.data["data"]["id"]
+
+    def claim(self, campaign_id, user=7):
+        client = APIClient()
+        client.force_authenticate(CoreJWTUser(id=user))
+        return client.post(f"/api/v1/coupon-campaigns/{campaign_id}/claim/")
+
+    def test_claim_and_coupon_invoice_payment_remittance_and_refund(self):
+        campaign_id = self.campaign()
+        claim = self.claim(campaign_id)
+        self.assertEqual(claim.status_code, 200, claim.data)
+        tickets = claim.data["data"]
+        self.assertEqual(len(tickets), 2)
+        self.assertNotEqual(tickets[0]["code"], tickets[1]["code"])
+        self.assertEqual(self.claim(campaign_id).data["data"], tickets)
+
+        data = {**self.data, "coupon_code": tickets[0]["code"].lower()}
+        estimate = estimate_booking(data)
+        self.assertEqual(estimate["grand_total"], Decimal("70000"))
+        self.assertEqual(estimate["payable_total"], Decimal("60000"))
+        self.assertNotIn("coupon_discount_amount", estimate)
+        self.assertFalse(any(item["type"] == "visit77_coupon" for item in estimate["summary_items"]))
+        with self.assertRaises(ValidationError):
+            estimate_booking({**data, "booked_by_core_user_id": 8})
+        booking, _ = create_booking(data, idempotency_key="coupon-test")
+        booking_data = BookingSerializer(booking).data
+        self.assertEqual(booking_data["grand_total"], "70000.00")
+        self.assertNotIn("coupon_discount_amount", booking_data)
+        self.assertEqual(create_booking(data, idempotency_key="coupon-test")[0].pk, booking.pk)
+        with self.assertRaises(ValidationError):
+            create_booking(data)
+        invoice = booking.invoices.get()
+        self.assertEqual((invoice.total, invoice.coupon_discount_amount, invoice.discount_total), (60000, 10000, 0))
+        payment = record_payment(booking, {"provider": "cash", "amount": Decimal("60000")})
+        self.assertEqual(payment.amount, 60000)
+        self.assertIsNotNone(BookingCoupon.objects.get(pk=tickets[0]["id"]).used_at)
+        for pdf in (render_invoice_pdf(build_invoice_snapshot(invoice)), render_receipt_pdf(payment.receipt_snapshot)):
+            text = "".join(page.extract_text() for page in PdfReader(BytesIO(pdf)).pages)
+            grand_total = text.index("Grand Total")
+            coupon = text.index("Visit 77 Coupon Discount", grand_total)
+            amount_paid = text.index("Amount Paid", coupon)
+            self.assertIn("MMK 70,000", text[grand_total:coupon])
+            self.assertIn("MMK 10,000", text[coupon:amount_paid])
+            self.assertIn("MMK 60,000", text[amount_paid:])
+
+        gross = payment.ota_revenue_ledger.get(event_type="booking_collection")
+        self.assertEqual(gross.gross_amount, 70000)
+        self.assertEqual(Decimal(gross.metadata["coupon_subsidy_amount"]), 10000)
+        revenue = APIClient().get(
+            "/api/v1/admin/ota-revenue/",
+            HTTP_X_BOOKING_ADMIN_KEY="key", HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(revenue.status_code, 200, revenue.data)
+        revenue_data = revenue.data["data"]
+        self.assertEqual(Decimal(str(revenue_data["records"][0]["gross_amount"])), 70000)
+        for summary in (revenue_data["records"][0], revenue_data["totals"]):
+            self.assertNotIn("coupon_subsidy_amount", summary)
+            self.assertNotIn("coupon_subsidy_reversal_amount", summary)
+        statement = generate_weekly_remittance(self.hotel, self.now.date(), self.now.date(), accruing=True)
+        self.assertEqual(statement.gross_booking_amount, 70000)
+        self.assertEqual(statement.net_remittance_amount, 66500)
+
+        for _ in range(2):
+            payment = refund_payment(payment, Decimal("30000"))
+        sync_payment_ledger(payment)
+        refunds = list(payment.ota_revenue_ledger.filter(event_type="refund"))
+        self.assertEqual([row.refund_amount for row in refunds], [35000, 35000])
+        self.assertTrue(all(Decimal(row.metadata["coupon_subsidy_reversal_amount"]) == 5000 for row in refunds))
+
+    def test_targeted_grant_is_private_and_scope_checks_apply_at_checkout(self):
+        campaign_id = self.campaign(audience="targeted", user_ids=[7])
+        self.assertEqual(self.claim(campaign_id, user=8).status_code, 400)
+        coupon = BookingCoupon.objects.filter(campaign_id=campaign_id, user_id=7).first()
+        self.assertIsNotNone(coupon)
+        client = APIClient()
+        payload = {"business_ids": [7529], "core_user_id": 7}
+        url = "/api/v1/admin/directory/minimum-room-prices/"
+        response = client.post(url, payload, format="json", HTTP_X_BOOKING_ADMIN_KEY="key")
+        row = response.data["data"]["minimum_rooms"]["7529"]
+        self.assertEqual(row["available_coupons"][0]["remaining_quantity"], 2)
+        response = client.post(url, {**payload, "core_user_id": 8}, format="json", HTTP_X_BOOKING_ADMIN_KEY="key")
+        self.assertEqual(response.data["data"]["minimum_rooms"]["7529"]["available_coupons"], [])
+        self.hotel.core_snapshot["coupon_locations"][0]["city_id"] = 99
+        self.hotel.save(update_fields=["core_snapshot"])
+        with self.assertRaises(ValidationError):
+            estimate_booking({**self.data, "coupon_id": coupon.id})
+
+    def test_fully_funded_booking_and_cancellation_reverse_subsidy(self):
+        campaign_id = self.campaign(discount_type="percentage", discount_value=100)
+        coupon = self.claim(campaign_id).data["data"][0]
+        booking, _ = create_booking({**self.data, "coupon_id": coupon["id"]})
+        self.assertEqual((booking.grand_total, booking.status), (0, Booking.Status.CONFIRMED))
+        payment = booking.payments.get()
+        self.assertEqual(payment.amount, 0)
+        self.assertEqual(payment.ota_revenue_ledger.get(event_type="booking_collection").gross_amount, 70000)
+        cancel_booking(booking)
+        self.assertEqual(payment.ota_revenue_ledger.get(event_type=OTARevenueLedger.EventType.REFUND).refund_amount, 70000)
+
+    def test_cancel_unpaid_reservation_releases_ticket_and_pms_invoice_has_no_coupon(self):
+        coupon = self.claim(self.campaign()).data["data"][0]
+        booking, _ = create_booking({**self.data, "coupon_id": coupon["id"]})
+        cancel_booking(booking)
+        ticket = BookingCoupon.objects.get(pk=coupon["id"])
+        self.assertIsNone(ticket.booking_id)
+        booking, _ = create_booking({**self.data, "coupon_id": coupon["id"]})
+        extra = create_invoice(booking, Invoice.Type.EXTRA_SERVICE, [{"description": "Extra", "unit_price": 500}])
+        self.assertEqual((extra.total, extra.coupon_discount_amount), (500, 0))

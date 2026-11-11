@@ -20,9 +20,25 @@ class ExtraBedPriceSetupSerializer(serializers.Serializer):
     foreign_usd_price = serializers.DecimalField(source='extra_bed_foreign_usd_price', max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
 
     def to_internal_value(self, data):
-        deprecated = set(data).intersection({*EXTRA_BED_PRICE_FIELDS, 'extra_bed_local_base_price', 'extra_bed_foreign_base_price', 'local_mmk_price', 'foreign_mmk_price'})
+        deprecated = set(data).intersection({
+            'extra_bed_local_mmk_price', 'extra_bed_foreign_mmk_price',
+            'local_mmk_price', 'foreign_mmk_price',
+        })
         if deprecated:
-            raise serializers.ValidationError({field: 'Use local_base_price, local_usd_price, foreign_base_price or foreign_usd_price.' for field in deprecated})
+            raise serializers.ValidationError({
+                field: f"Use {field.replace('_mmk_', '_base_')} instead."
+                for field in deprecated
+            })
+
+        if any(f"extra_bed_{field}" in data for field in API_PRICE_FIELDS):
+            data = data.copy()
+            for field in API_PRICE_FIELDS:
+                prefixed = f"extra_bed_{field}"
+                if prefixed not in data:
+                    continue
+                if field in data:
+                    raise serializers.ValidationError({prefixed: f"Send either {field} or {prefixed}."})
+                data[field] = data[prefixed]
         return super().to_internal_value(data)
 
     def validate(self, attrs):

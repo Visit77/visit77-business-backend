@@ -123,6 +123,16 @@ class RoomPricingTests(TestCase):
         self.assertEqual(response.data['data']['local_usd_price'], 10)
         self.assertFalse(any(key.startswith('extra_bed_') or '_mmk_' in key for key in response.data['data']))
         self.assertEqual(self.room_type.local_mmk_price, 100000)
+        response = self.admin_client().patch(url, {
+            'extra_bed_local_base_price': '7000.0',
+            'extra_bed_local_usd_price': '0.0',
+            'extra_bed_foreign_usd_price': '100.0',
+        }, format='multipart')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['data']['local_base_price'], 7000)
+        self.assertEqual(response.data['data']['local_usd_price'], 0)
+        self.assertEqual(response.data['data']['foreign_usd_price'], 100)
+        self.assertIsNone(response.data['data']['foreign_base_price'])
         self.assertEqual(self.admin_client().patch(url, {'extra_bed_local_mmk_price': 1}, format='json').status_code, 400)
         response = self.admin_client().put(url, {'foreign_base_price': 0}, format='json')
         self.assertEqual(response.status_code, 200, response.data)
