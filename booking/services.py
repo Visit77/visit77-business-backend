@@ -633,9 +633,13 @@ def _resolve_booking_breakfast(room_type, requested, guest_market):
     return snapshot, unit_price
 
 
-def _rate_amounts(rule, rate_plan, stay_date, guest_market, discounts):
+def _effective_rate_amounts(rule, rate_plan, stay_date, guest_market, discounts):
     base, usd = (rule.base_price, rule.usd_display_price) if rule is not None else (rate_plan.base_price, rate_plan.usd_display_price)
-    return effective_room_amounts(rate_plan.room_type, base, usd, discounts, stay_date, guest_market, rate_plan.currency)[2:]
+    return effective_room_amounts(rate_plan.room_type, base, usd, discounts, stay_date, guest_market, rate_plan.currency)
+
+
+def _rate_amounts(rule, rate_plan, stay_date, guest_market, discounts):
+    return _effective_rate_amounts(rule, rate_plan, stay_date, guest_market, discounts)[2:]
 
 
 def room_type_booking_options(room_type):
@@ -1900,7 +1904,9 @@ def create_booking(data, idempotency_key=None):
         nightly_option_total = (option_total / len(dates)) if dates else Decimal("0")
         for day in dates:
             rule = daily_rate_rows.get(day) or periods.get(day)
-            unit_price, _usd_display_price = _rate_amounts(rule, rate_plan, day, guest_market, discounts)
+            original_price, _, unit_price, _ = _effective_rate_amounts(rule, rate_plan, day, guest_market, discounts)
+            rate_snapshot = seasonal_price_metadata(room_type, day, guest_market)
+            rate_snapshot["has_discount"] = original_price is not None and unit_price < original_price
             coupon_room_subtotal += unit_price * quantity
             extra_bed_total = extra_bed_amounts(room_type, booking.guest_market)[0] * requested.get("extra_beds", 0)
             meal_plan_night_total = sum((
@@ -1911,7 +1917,7 @@ def create_booking(data, idempotency_key=None):
             night_total = unit_price * quantity + extra_bed_total + nightly_option_total + meal_plan_night_total + breakfast_night_total
             BookingRoomNight.objects.create(
                 booking_room=booking_room,
-                rate_snapshot=seasonal_price_metadata(room_type, day, guest_market),
+                rate_snapshot=rate_snapshot,
                 stay_date=day,
                 unit_price=unit_price,
                 quantity=quantity,
@@ -2241,7 +2247,10 @@ def _booking_charge_lines(booking):
         segments = []
         for night in sorted(nights, key=lambda row: row.stay_date):
             snapshot = night.rate_snapshot or {}
-            signature = (night.unit_price, snapshot.get("seasonal_rate_id"), snapshot.get("seasonal_rate_name"))
+            signature = (
+                night.unit_price, snapshot.get("seasonal_rate_id"), snapshot.get("seasonal_rate_name"),
+                snapshot.get("has_discount", False),
+            )
             if segments and segments[-1]["signature"] == signature and segments[-1]["end"] + timedelta(days=1) == night.stay_date:
                 segments[-1]["end"] = night.stay_date
                 segments[-1]["nights"] += 1
@@ -2326,8 +2335,10 @@ def _booking_charge_lines(booking):
         }
         room_total = group["room_total"] + group["legacy_total"]
         segments = sorted(group["segments"].values(), key=lambda segment: segment["start"])
-        split_rates = segments and not group["legacy_total"] and any(
-            segment["snapshot"].get("is_seasonal") for segment in segments
+        discount_states = {segment["snapshot"].get("has_discount", False) for segment in segments}
+        show_discount_label = len(discount_states) > 1
+        split_rates = segments and not group["legacy_total"] and (
+            show_discount_label or any(segment["snapshot"].get("is_seasonal") for segment in segments)
         )
         show_season_name = len({
             (segment["snapshot"].get("is_seasonal", False),
@@ -2340,15 +2351,20 @@ def _booking_charge_lines(booking):
                 qty = segment["quantity"]
                 season_name = segment["snapshot"].get("seasonal_rate_name")
                 title = f"{room_name} ({season_name})" if season_name and show_season_name else room_name
+                discount_label = " (Discount)" if show_discount_label and segment["snapshot"].get("has_discount") else ""
+                stay_description = f"{qty} x {count} Night{'s' if count != 1 else ''}"
                 total = segment["unit_price"] * count * qty
                 lines.append({
-                    "description": f"{title} x {qty} x {count} Night{'s' if count != 1 else ''}",
+                    "description": f"{title} x {stay_description}{discount_label}",
                     "quantity": 1, "unit_price": total,
                     "metadata": {**common_metadata, **segment["snapshot"], "line_type": "room",
                                  "display_title": title,
                                  "stay_from": str(segment["start"]), "stay_to": str(segment["end"]),
                                  "night_count": count,
-                                 "display_description": f"{qty} x {count} Nights x {booking.currency} {format_amount(segment['unit_price'], booking.currency)}"},
+                                 "display_description": (
+                                     f"{stay_description} x {booking.currency} "
+                                     f"{format_amount(segment['unit_price'], booking.currency)}{discount_label}"
+                                 )},
                 })
         else:
             lines.append({

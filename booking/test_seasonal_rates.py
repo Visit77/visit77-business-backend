@@ -72,6 +72,39 @@ class SeasonalRateTests(TestCase):
         self.assertEqual(night.unit_price, 50000)
         self.assertEqual(night.rate_snapshot['seasonal_rate_name'], 'Seasonal Room Rate 1')
 
+    def test_room_discount_label_only_for_mixed_stay(self):
+        from booking.booking_services.receipt import build_invoice_snapshot, build_receipt_snapshot
+        from booking.services import record_payment
+
+        self.season.start_date = self.start + timedelta(days=3)
+        self.season.save(update_fields=['start_date'])
+        RoomPriceDiscount.objects.create(
+            room_type=self.room, timing_mode='scheduled', local_mmk_price=16000,
+            start_date=self.start + timedelta(days=1), end_date=self.start + timedelta(days=2),
+        )
+        for nights, totals, labels in (
+            (2, [20000, 16000], [False, True]),
+            (4, [20000, 32000, 50000], [False, True, False]),
+        ):
+            with self.subTest(nights=nights):
+                booking, _ = create_booking({**self.payload, 'check_out': self.start + timedelta(days=nights)})
+                invoice = booking.invoices.get()
+                payment = record_payment(booking, {'provider': 'cash', 'amount': invoice.total})
+                for snapshot in (build_invoice_snapshot(invoice), build_receipt_snapshot(payment)):
+                    lines = [line for line in snapshot['invoice']['lines'] if line['line_type'] == 'room']
+                    self.assertEqual([Decimal(line['total']) for line in lines], totals)
+                    self.assertEqual([
+                        '(Discount)' in line['metadata']['display_description'] for line in lines
+                    ], labels)
+
+        booking, _ = create_booking({
+            **self.payload, 'check_in': self.start + timedelta(days=1),
+            'check_out': self.start + timedelta(days=3),
+        })
+        line = booking.invoices.get().lines.get(metadata__line_type='room')
+        self.assertEqual(line.total, 32000)
+        self.assertNotIn('(Discount)', line.metadata['display_description'])
+
     def test_season_suppresses_campaign_only_for_supplied_currency(self):
         self.season.local_usd_price = None
         self.season.save()
