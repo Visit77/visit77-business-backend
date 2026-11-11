@@ -194,7 +194,10 @@ def build_booking_confirmation_context(booking, primary_guest):
         "taxes": _email_money(invoice.tax_total if invoice else booking.tax_total, booking.currency),
         "has_invoice_discount": (invoice.discount_total if invoice else booking.discount_total) > 0,
         "discount": _email_money(invoice.discount_total if invoice else booking.discount_total, booking.currency),
-        "total_price": _email_money(invoice.total if invoice else booking.grand_total, booking.currency),
+        "total_price": _email_money(
+            invoice.total + invoice.coupon_discount_amount if invoice else booking.price_before_coupon,
+            booking.currency,
+        ),
         "booking_code": booking.booking_code,
         "booking_url": booking_url,
         "policy_name": policy_name,

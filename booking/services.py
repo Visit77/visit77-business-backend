@@ -12,6 +12,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from booking.room_pricing import effective_room_amounts, seasonal_price_metadata, validate_extra_bed_settlement, extra_bed_price_payload, extra_bed_amounts, discounted_room_amounts, guest_price_fields, market_default_prices
+from booking.coupons import booking_coupon_discount, consume_booking_coupon, release_booking_coupon
 from booking.money_display import format_amount, format_money, round_mmk
 from booking.add_on_templates import validate_configuration_values
 from booking.booking_services.invoice_charges import (
@@ -1468,6 +1469,7 @@ def estimate_booking(data):
     dates = list(stay_dates(check_in, check_out))
     guest_market = data.get("guest_market", RatePlan.GuestMarket.LOCAL)
     room_total = Decimal("0")
+    coupon_room_subtotal = Decimal("0")
     breakfast_total = Decimal("0")
     grand_total = Decimal("0")
     rooms = []
@@ -1533,6 +1535,7 @@ def estimate_booking(data):
         for day in dates:
             rule = daily_rate_rows.get(day) or periods.get(day)
             unit_price, usd_display_price = _rate_amounts(rule, rate_plan, day, guest_market, discounts)
+            coupon_room_subtotal += unit_price * quantity
             extra_bed_total = extra_bed_amounts(room_type, guest_market)[0] * extra_beds
             meal_plan_night_total = sum((
                 _meal_plan_nightly_total(link, plan, guest_market, quantity)
@@ -1694,7 +1697,10 @@ def estimate_booking(data):
                     "amount": Decimal(charge["amount"]),
                     "formatted_amount": format_money(charge["amount"], hotel.base_currency),
                 })
-    payable_total = round_mmk(grand_total + service_charge_total + tax_total, hotel.base_currency)
+    total_before_coupon = grand_total + service_charge_total + tax_total
+    coupon_discount = booking_coupon_discount(data, hotel, coupon_room_subtotal, total_before_coupon)
+    regular_total = round_mmk(total_before_coupon, hotel.base_currency)
+    payable_total = regular_total - coupon_discount
     return {
         "hotel": {
             "id": hotel.id,
@@ -1727,10 +1733,11 @@ def estimate_booking(data):
         "service_charge_total": service_charge_total,
         "tax_total": tax_total,
         "invoice_charges": charge_snapshot,
-        "grand_total": payable_total,
+        "grand_total": regular_total,
+        "payable_total": payable_total,
         "formatted_room_total": format_money(room_total, hotel.base_currency),
         "formatted_breakfast_total": format_money(breakfast_total, hotel.base_currency),
-        "formatted_grand_total": format_money(payable_total, hotel.base_currency),
+        "formatted_grand_total": format_money(regular_total, hotel.base_currency),
         "can_create_booking": can_create_booking,
         "warning": capacity_warning,
         "warnings": [capacity_warning] if capacity_warning else [],
@@ -1780,6 +1787,7 @@ def create_booking(data, idempotency_key=None):
     )
 
     room_total = Decimal("0")
+    coupon_room_subtotal = Decimal("0")
     booking_currency = hotel.base_currency
     guest_market = data.get("guest_market", RatePlan.GuestMarket.LOCAL)
     policy_snapshot = {}
@@ -1893,6 +1901,7 @@ def create_booking(data, idempotency_key=None):
         for day in dates:
             rule = daily_rate_rows.get(day) or periods.get(day)
             unit_price, _usd_display_price = _rate_amounts(rule, rate_plan, day, guest_market, discounts)
+            coupon_room_subtotal += unit_price * quantity
             extra_bed_total = extra_bed_amounts(room_type, booking.guest_market)[0] * requested.get("extra_beds", 0)
             meal_plan_night_total = sum((
                 _meal_plan_nightly_total(link, plan, guest_market, quantity)
@@ -2001,17 +2010,23 @@ def create_booking(data, idempotency_key=None):
     booking.service_charge_total, booking.tax_total = charge_totals(
         booking.invoice_charge_snapshot,
     )
-    booking.grand_total = round_mmk(
-        room_total + add_on_total + booking.service_charge_total
-        + booking.tax_total - booking.discount_total, booking.currency,
+    total_before_coupon = (
+        room_total + add_on_total + booking.service_charge_total + booking.tax_total - booking.discount_total
     )
+    booking.coupon_discount_amount = booking_coupon_discount(
+        data, hotel, coupon_room_subtotal, total_before_coupon, booking=booking,
+    )
+    booking.grand_total = round_mmk(total_before_coupon, booking.currency) - booking.coupon_discount_amount
     booking.cancellation_policy_snapshot = policy_snapshot
     booking.save(update_fields=[
         "currency", "room_total", "add_on_total", "service_charge_total",
-        "tax_total", "invoice_charge_snapshot", "grand_total",
+        "tax_total", "invoice_charge_snapshot", "grand_total", "coupon_discount_amount",
         "cancellation_policy_snapshot",
     ])
-    ensure_initial_invoice(booking)
+    invoice = ensure_initial_invoice(booking)
+    if booking.coupon_discount_amount and booking.grand_total == 0:
+        record_payment(booking, {"invoice_id": invoice.id, "provider": Payment.Provider.COUPON, "amount": Decimal("0")})
+        booking.refresh_from_db()
     return booking, True
 
 
@@ -2085,9 +2100,9 @@ def _sync_invoice_status(invoice):
 
 def _apply_invoice_rounding(invoice):
     """Record the difference between the exact charges and the payable total."""
-    exact_total = invoice.subtotal + invoice.tax_total - invoice.discount_total
-    rounded_total = round_mmk(exact_total, invoice.currency)
-    difference = rounded_total - exact_total
+    pre_coupon_total = invoice.subtotal + invoice.tax_total - invoice.discount_total
+    rounded_total = round_mmk(pre_coupon_total, invoice.currency) - invoice.coupon_discount_amount
+    difference = rounded_total + invoice.coupon_discount_amount - pre_coupon_total
     invoice.total = rounded_total
     if difference:
         InvoiceLine.objects.create(
@@ -2140,10 +2155,16 @@ def create_invoice(
     charge_snapshot = charge_snapshot or {"taxes": [], "service_charges": []}
     tax_total = Decimal(str(tax_total or 0))
     discount_total = Decimal(str(discount_total or 0))
-    total = subtotal + tax_total - discount_total
+    coupon_discount = (
+        booking.coupon_discount_amount
+        if invoice_type == Invoice.Type.ROOM_BOOKING and charge_scope == Invoice.ChargeScope.OTA
+        else Decimal("0")
+    )
+    total_before_coupon = subtotal + tax_total - discount_total
+    total = total_before_coupon - coupon_discount
     if not normalized_lines:
         raise ValidationError({"lines": "At least one invoice line is required."})
-    if tax_total < 0 or discount_total < 0 or total < 0:
+    if tax_total < 0 or discount_total < 0 or total_before_coupon < 0 or round_mmk(total_before_coupon, booking.currency) < coupon_discount:
         raise ValidationError({"total": "Invoice totals cannot be negative."})
     invoice = Invoice.objects.create(
         booking=booking,
@@ -2154,6 +2175,7 @@ def create_invoice(
         subtotal=subtotal,
         tax_total=tax_total,
         discount_total=discount_total,
+        coupon_discount_amount=coupon_discount,
         total=total,
         note=note,
     )
@@ -2924,10 +2946,14 @@ def record_payment(booking, data, auto_assign=True):
         paid_at=timezone.now() if data.get("status", Payment.Status.PAID) == Payment.Status.PAID else None,
     )
     if payment.status == Payment.Status.PAID:
+        coupon_only = payment.provider == Payment.Provider.COUPON and bool(invoice.coupon_discount_amount) and invoice.total == 0
+        commits_booking = payment.amount > 0 or coupon_only
+        if commits_booking:
+            consume_booking_coupon(invoice)
         was_pending = booking.status == Booking.Status.PENDING_PAYMENT
         booking.amount_paid += payment.amount
         # A successful full payment or accepted deposit commits the reservation.
-        if payment.amount > 0 and was_pending:
+        if commits_booking and was_pending:
             _move_inventory(booking, "held_rooms", "reserved_rooms")
             booking.status = Booking.Status.CONFIRMED
             booking.hold_expires_at = None
@@ -2936,9 +2962,12 @@ def record_payment(booking, data, auto_assign=True):
         finalize_receipt_snapshot(
             payment, pending_charge_groups=pending_charge_groups
         )
-        if auto_assign and payment.amount > 0 and was_pending and booking.status == Booking.Status.CONFIRMED:
+        if auto_assign and commits_booking and was_pending and booking.status == Booking.Status.CONFIRMED:
             auto_assign_physical_rooms_for_booking(booking)
     _sync_invoice_status(invoice)
+    if payment.status == Payment.Status.PAID and invoice.coupon_discount_amount:
+        from booking.remittance_services import sync_payment_ledger
+        sync_payment_ledger(payment)
     return payment
 
 
@@ -3485,9 +3514,11 @@ def update_reservation_for_check_in(booking, data, *, replace_payment=False):
         replacement.service_charge_total = booking.service_charge_total
         replacement.tax_total = booking.tax_total
     replacement.discount_total = booking.discount_total
+    replacement.coupon_discount_amount = booking.coupon_discount_amount
     replacement.grand_total = round_mmk(
         replacement.room_total + replacement.add_on_total
-        + replacement.service_charge_total + replacement.tax_total - replacement.discount_total,
+        + replacement.service_charge_total + replacement.tax_total - replacement.discount_total
+        - replacement.coupon_discount_amount,
         replacement.currency,
     )
     replacement.save(update_fields=[
@@ -3643,6 +3674,9 @@ def refund_payment(payment, amount, provider_reference=""):
     booking.save(update_fields=["amount_paid", "updated_at"])
     if invoice:
         _sync_invoice_status(invoice)
+        if invoice.coupon_discount_amount:
+            from booking.remittance_services import sync_payment_ledger
+            sync_payment_ledger(payment)
     return payment
 
 
@@ -3697,11 +3731,20 @@ def refund_quote(booking, at=None):
         check_in_at = timezone.make_aware(check_in_at, timezone.get_current_timezone())
     hours_before = Decimal(str((check_in_at - at).total_seconds())) / Decimal("3600")
     room_items = []
-    eligible_total = Decimal("0")
+    eligible_total = policy_refund_total = Decimal("0")
+    guest_share = Decimal("1")
+    if booking.coupon_discount_amount:
+        ota_invoice = booking.invoices.filter(
+            charge_scope=Invoice.ChargeScope.OTA, invoice_type=Invoice.Type.ROOM_BOOKING,
+        ).first()
+        if ota_invoice:
+            guest_share = ota_invoice.total / (ota_invoice.total + ota_invoice.coupon_discount_amount)
     for room in booking.rooms.all():
         policy = (booking.cancellation_policy_snapshot or {}).get(str(room.rate_plan_id), {})
         percent = _refund_percent(policy, hours_before)
-        amount = (room.total * percent / Decimal("100")).quantize(Decimal("0.01"))
+        policy_amount = room.total * percent / Decimal("100")
+        policy_refund_total += policy_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        amount = (policy_amount * guest_share).quantize(Decimal("0.01"))
         eligible_total += amount
         room_items.append({
             "booking_room_id": room.id,
@@ -3722,6 +3765,7 @@ def refund_quote(booking, at=None):
         "check_in_at": check_in_at,
         "hours_before_check_in": max(hours_before, Decimal("0")).quantize(Decimal("0.01")),
         "eligible_refund_total": eligible_total,
+        "policy_refund_total": policy_refund_total,
         "already_refunded": already_refunded,
         "refundable_remaining": refundable_remaining,
         "rooms": room_items,
@@ -3744,6 +3788,20 @@ def cancel_booking(booking):
     booking.status = Booking.Status.CANCELED
     booking.hold_expires_at = None
     booking.save(update_fields=["status", "hold_expires_at", "updated_at"])
+    release_booking_coupon(booking)
+    if booking.coupon_discount_amount and booking.grand_total == 0:
+        from booking.remittance_services import sync_payment_ledger
+        policy_refund = refund_quote(booking)["policy_refund_total"]
+        for payment in booking.payments.filter(provider=Payment.Provider.COUPON, status=Payment.Status.PAID):
+            subsidy_refund = min(policy_refund, payment.invoice.coupon_discount_amount)
+            payment.metadata = {
+                **payment.metadata,
+                "coupon_only_reversal_amount": str(subsidy_refund),
+                "refunded_at": timezone.now().isoformat(),
+            }
+            payment.save(update_fields=["metadata"])
+            sync_payment_ledger(payment)
+
 
     # A confirmed reservation must never make a physical room operationally
     # occupied. Repair legacy/stale states while releasing its assignment, but
@@ -3882,6 +3940,7 @@ def expire_pending_bookings():
         _move_inventory(booking, "held_rooms")
         booking.status = Booking.Status.EXPIRED
         booking.save(update_fields=["status", "updated_at"])
+        release_booking_coupon(booking)
         expired += 1
     return expired
 
@@ -3897,6 +3956,7 @@ def deprovision_hotel(core_business_id):
         booking.status = Booking.Status.EXPIRED
         booking.hold_expires_at = None
         booking.save(update_fields=["status", "hold_expires_at", "updated_at"])
+        release_booking_coupon(booking)
     hotel.is_active = False
     hotel.room_types.update(booking_enabled=False)
     hotel.save(update_fields=["is_active"])

@@ -941,6 +941,7 @@ class Booking(models.Model):
     add_on_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     service_charge_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     tax_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    coupon_discount_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     discount_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     grand_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     amount_paid = models.DecimalField(max_digits=14, decimal_places=2, default=0)
@@ -965,6 +966,10 @@ class Booking(models.Model):
         ordering = ["-created_at"]
         constraints = [models.UniqueConstraint(fields=["hotel", "idempotency_key"], condition=models.Q(idempotency_key__isnull=False), name="uniq_booking_idempotency")]
         indexes = [models.Index(fields=["hotel", "check_in", "check_out"]), models.Index(fields=["reference"])]
+
+    @property
+    def price_before_coupon(self):
+        return self.grand_total + self.coupon_discount_amount
 
     @property
     def nights(self):
@@ -1159,6 +1164,7 @@ class Invoice(models.Model):
     currency = models.CharField(max_length=3)
     subtotal = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     tax_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    coupon_discount_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     discount_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     note = models.TextField(blank=True)
@@ -1227,6 +1233,7 @@ class Payment(models.Model):
         PARTIALLY_REFUNDED = "partially_refunded", "Partially refunded"
 
     class Provider(models.TextChoices):
+        COUPON = "coupon", "Visit77 coupon"
         DEMO = "demo", "Demo"
         AYA = "aya", "AYA"
         CASH = "cash", "Cash"
@@ -1526,3 +1533,40 @@ class OTARemittanceAuditLog(models.Model):
 
     class Meta:
         ordering = ["created_at", "id"]
+
+
+class CouponCampaign(models.Model):
+    title = models.CharField(max_length=160)
+    type = models.CharField(max_length=16, default="booking")
+    discount_type = models.CharField(max_length=16, choices=[("fixed", "Fixed"), ("percentage", "Percentage")])
+    discount_value = models.DecimalField(max_digits=14, decimal_places=2)
+    currency = models.CharField(max_length=3)
+    quantity_per_user = models.PositiveSmallIntegerField(default=1)
+    country_id = models.PositiveBigIntegerField()
+    state_ids = models.JSONField(default=list, blank=True)
+    city_ids = models.JSONField(default=list, blank=True)
+    business_ids = models.JSONField(default=list, blank=True)
+    audience = models.CharField(max_length=16, choices=[("public", "Public"), ("targeted", "Targeted")], default="public")
+    user_ids = models.JSONField(default=list, blank=True)
+    start_at = models.DateTimeField()
+    end_at = models.DateTimeField()
+    publish_at = models.DateTimeField(default=timezone.now)
+    banner_image = models.ImageField(upload_to="booking/coupons/banners/", blank=True)
+    popup_image = models.ImageField(upload_to="booking/coupons/popups/", blank=True)
+    is_active = models.BooleanField(default=True)
+
+
+class BookingCoupon(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    code = models.CharField(max_length=32, unique=True)
+    campaign = models.ForeignKey(CouponCampaign, on_delete=models.PROTECT, related_name="coupons")
+    user_id = models.PositiveBigIntegerField()
+    slot = models.PositiveSmallIntegerField()
+    booking = models.OneToOneField(Booking, null=True, blank=True, on_delete=models.PROTECT, related_name="reserved_coupon")
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["campaign", "user_id", "slot"], name="unique_coupon_user_campaign_slot"),
+        ]
+        indexes = [models.Index(fields=["user_id", "campaign"])]

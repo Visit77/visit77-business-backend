@@ -34,7 +34,9 @@ from booking.integrations.core import CoreClient, sync_business_from_core, sync_
 from booking.models import AddOn, AddOnTemplate, AddOnTemplateRequest, Booking, BookingRoom, CoreIntegrationEvent, DailyInventory, DailyRate, Guest, GuestIdentityDocument, GuestProfile, Hotel, Invoice, MealPlan, OTABookingFollowUp, OTABookingNotification, OTARemittance, OTARevenueLedger, OTAInvoiceCharge, OTAInventoryClosure, Payment, PhysicalRoom, PhysicalRoomActionHistory, PhysicalRoomBlock, PMSInvoiceCharge, RatePlan, RatePeriod, RoomAssignment, RoomType, RoomTypeMealPlan
 from booking.permissions import HasBookingAdminKey, IsCoreRemittanceFinance, IsCoreSuperAdmin
 from booking.tasks import create_and_queue_ota_booking_notification, ota_notification_payload, queue_booking_confirmation_notifications
-from booking.remittance_services import commission_rate_for
+from booking.remittance_services import (
+    commission_rate_for, coupon_subsidy_reversal, payment_coupon_subsidy, payment_service_charge, payment_tax,
+)
 
 from booking.serializers import (
     AddOnSerializer,
@@ -366,7 +368,7 @@ def _payment_summary(booking):
         "service_charge_total": booking.service_charge_total,
         "tax_total": booking.tax_total,
         "discount_total": booking.discount_total,
-        "grand_total": booking.grand_total,
+        "grand_total": booking.price_before_coupon,
         "amount_paid": booking.amount_paid,
         "amount_due": amount_due,
         "payment_status": (
@@ -793,6 +795,8 @@ class PublicBookingCreateView(APIView):
                     ),
                     file=file,
                 )
+        if created and booking.coupon_discount_amount and booking.grand_total == 0:
+            transaction.on_commit(lambda: queue_booking_confirmation_notifications(str(booking.id)), robust=True)
         response_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
         return success(
             BookingSerializer(booking).data,
@@ -804,12 +808,16 @@ class PublicBookingCreateView(APIView):
 
 class PublicBookingEstimateView(APIView):
     permission_classes = [AllowAny]
+    authentication_classes = [CoreJWTAuthentication]
 
     def post(self, request):
         serializer = BookingEstimateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            return success(estimate_booking(serializer.validated_data))
+            return success(estimate_booking({
+                **serializer.validated_data,
+                "booked_by_core_user_id": request.user.id if request.user.is_authenticated else None,
+            }))
         except Hotel.DoesNotExist:
             raise NotFound("Hotel is not available in the booking engine.")
 
@@ -1163,6 +1171,7 @@ class OTARevenueView(APIView):
             "released_held_funds": Decimal("0"),
             "tax_excluded_from_commission": Decimal("0"),
             "service_charge_excluded_from_commission": Decimal("0"),
+            "service_charge_amount": Decimal("0"),
             "held_amount": Decimal("0"),
             "available_amount": Decimal("0"),
             "refunded_amount": Decimal("0"),
@@ -1170,9 +1179,6 @@ class OTARevenueView(APIView):
         }
         for booking in queryset.order_by("-created_at", "-id"):
             payments = booking.ota_revenue_payments
-            gross_amount = sum((payment.amount for payment in payments), Decimal("0"))
-            refunded_amount = sum((payment.refunded_amount for payment in payments), Decimal("0"))
-            remaining_amount = max(gross_amount - refunded_amount, Decimal("0"))
             policy_type = self._policy_type(booking)
             checkin_at, checkout_at = self._stay_datetimes(booking)
 
@@ -1181,52 +1187,55 @@ class OTARevenueView(APIView):
             release_at = datetime.combine(
                 booking.check_in, time.min, tzinfo=self._hotel_timezone(booking)
             )
-            ledger_types = {}
+            ledger_by_payment = {}
             for entry in booking.ota_settlement_entries:
-                ledger_types.setdefault(entry.payment_id, set()).add(entry.event_type)
-            held_amount = released_amount = Decimal("0")
+                ledger_by_payment.setdefault(entry.payment_id, {})[entry.event_type] = entry
+            gross_amount = refunded_amount = held_amount = available_amount = Decimal("0")
+            released_amount = booking_collection = allocated_tax = allocated_service_charge = Decimal("0")
             for payment in payments:
-                remaining = max(payment.amount - payment.refunded_amount, Decimal("0"))
-                types = ledger_types.get(payment.id, set())
-                if OTARevenueLedger.EventType.BOOKING_COLLECTION in types:
-                    continue
-                if OTARevenueLedger.EventType.HELD_RELEASE in types:
-                    released_amount += remaining
-                    continue
-                if not settings.HELD_FUND_CALCULATION:
-                    continue
-                was_held = OTARevenueLedger.EventType.HELD in types or (
-                    policy_type != "non_refundable"
-                    and payment.paid_at
-                    and payment.paid_at.astimezone(self._hotel_timezone(booking)).date() < booking.check_in
-                )
-                if was_held:
-                    if now < release_at:
-                        held_amount += remaining
-                    else:
-                        released_amount += remaining
+                ledger = ledger_by_payment.get(payment.id, {})
+                collection = ledger.get(OTARevenueLedger.EventType.BOOKING_COLLECTION)
+                release = ledger.get(OTARevenueLedger.EventType.HELD_RELEASE)
+                hold = ledger.get(OTARevenueLedger.EventType.HELD)
+                entry = collection or release or hold
+                subsidy = Decimal(str(entry.metadata.get("coupon_subsidy_amount", 0))) if entry else payment_coupon_subsidy(payment)
+                reversal = coupon_subsidy_reversal(payment, subsidy)
+                gross = payment.amount + subsidy
+                refund = payment.refunded_amount + reversal
+                remaining = max(gross - refund, Decimal("0"))
+                gross_amount += gross
+                refunded_amount += refund
 
-            available_amount = remaining_amount - held_amount
+                was_held = settings.HELD_FUND_CALCULATION and (
+                    hold or (
+                        policy_type != "non_refundable"
+                        and payment.paid_at
+                        and payment.paid_at.astimezone(self._hotel_timezone(booking)).date() < booking.check_in
+                    )
+                )
+                if not (collection or release) and was_held and now < release_at:
+                    held_amount += remaining
+                    continue
+                available_amount += remaining
+                if not collection and (release or was_held):
+                    released_amount += gross
+                else:
+                    booking_collection += gross
+                allocated_tax += entry.tax_amount if entry else payment_tax(payment)
+                allocated_service_charge += entry.service_charge_amount if entry else payment_service_charge(payment)
+
+            remaining_amount = available_amount + held_amount
             if remaining_amount == 0 and refunded_amount > 0:
                 status_value = "refunded"
             else:
                 status_value = "held" if held_amount else "available"
             latest_paid_at = max((payment.paid_at for payment in payments if payment.paid_at), default=None)
-            booking_collection = available_amount - released_amount
-            allocated_tax = (
-                min(booking.tax_total, available_amount)
-                if available_amount else Decimal("0")
-            )
-            allocated_service_charge = (
-                min(booking.service_charge_total, available_amount)
-                if available_amount else Decimal("0")
-            )
             for key, value in {
                 "gross_amount": gross_amount,
                 "booking_collection": booking_collection,
                 "released_held_funds": released_amount,
                 "tax_excluded_from_commission": allocated_tax,
-                "service_charge_excluded_from_commission": allocated_service_charge,
+                "service_charge_amount": allocated_service_charge,
                 "held_amount": held_amount,
                 "available_amount": available_amount,
                 "refunded_amount": refunded_amount,
@@ -1351,7 +1360,7 @@ def _guest_stay_payload(guest):
         },
         "rooms": rooms,
         "currency": booking.currency,
-        "grand_total": booking.grand_total,
+        "grand_total": booking.price_before_coupon,
         "created_at": booking.created_at,
     }
 
@@ -3327,7 +3336,7 @@ class RoomBoardView(APIView):
                     "room_total": booking_room.total,
                     "payment_status": payment_status,
                     "amount_paid": booking.amount_paid,
-                    "grand_total": booking.grand_total,
+                    "grand_total": booking.price_before_coupon,
                     "special_request": booking.special_request,
                 }
             room_data = {
@@ -3557,8 +3566,8 @@ class RoomBoardView(APIView):
                 "nightly_price": first_night.unit_price if first_night else None,
                 "room_total": booking_room.total,
                 "currency": booking.currency,
-                "grand_total": booking.grand_total,
-                "formatted_grand_total": format_money(booking.grand_total, booking.currency),
+                "grand_total": booking.price_before_coupon,
+                "formatted_grand_total": format_money(booking.price_before_coupon, booking.currency),
                 "amount_paid": booking.amount_paid,
                 "amount_due": amount_due,
                 "payment_status": (
@@ -3845,7 +3854,7 @@ class RoomBoardView(APIView):
                 "add_on_total": booking.add_on_total,
                 "tax_total": booking.tax_total,
                 "discount_total": booking.discount_total,
-                "grand_total": booking.grand_total,
+                "grand_total": booking.price_before_coupon,
                 "amount_paid": booking.amount_paid,
                 "amount_due": max(booking.grand_total - booking.amount_paid, 0),
             },
@@ -5324,7 +5333,7 @@ def _ota_booking_payload(booking):
             "rooms": room_lines,
         },
         "currency": booking.currency,
-        "amount": booking.grand_total,
+        "amount": booking.price_before_coupon,
         "amount_paid": booking.amount_paid,
         "amount_due": max(booking.grand_total - booking.amount_paid, Decimal("0")),
         "follow_up": _follow_up_payload(booking),
@@ -5545,13 +5554,13 @@ class SuperAdminOTABookingDashboardView(APIView):
         for booking in all_bookings:
             day = timezone.localtime(booking.created_at).date()
             lifetime[booking.hotel_id]["count"] += 1
-            lifetime[booking.hotel_id]["amounts"][booking.currency] += booking.grand_total
+            lifetime[booking.hotel_id]["amounts"][booking.currency] += booking.price_before_coupon
             latest_date[booking.hotel_id] = max(latest_date.get(booking.hotel_id, day), day)
             if date_from <= day <= date_to:
                 daily[(booking.hotel_id, day)]["count"] += 1
-                daily[(booking.hotel_id, day)]["amounts"][booking.currency] += booking.grand_total
+                daily[(booking.hotel_id, day)]["amounts"][booking.currency] += booking.price_before_coupon
                 period[booking.hotel_id]["count"] += 1
-                period[booking.hotel_id]["amounts"][booking.currency] += booking.grand_total
+                period[booking.hotel_id]["amounts"][booking.currency] += booking.price_before_coupon
 
         inactive_days = _positive_query_int(request, "inactive_days", 60)
         inactive_cutoff = today - timedelta(days=inactive_days)

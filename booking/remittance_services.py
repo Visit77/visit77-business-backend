@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Exists, OuterRef, Q
+from django.db.models import Exists, OuterRef, Q, Sum
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -50,8 +50,41 @@ def commission_rate_for(hotel):
     return Decimal(configured if configured is not None else "5.00")
 
 
+def _coupon_payment_share(payment, amount):
+    """Allocate a funded invoice amount by cumulative guest collections."""
+    invoice = payment.invoice
+    if invoice.total == 0:
+        return amount if payment.provider == Payment.Provider.COUPON else Decimal("0")
+    previous = invoice.receipts.filter(
+        status__in=[Payment.Status.PAID, Payment.Status.PARTIALLY_REFUNDED, Payment.Status.REFUNDED],
+        paid_at__isnull=False,
+    ).filter(
+        Q(created_at__lt=payment.created_at)
+        | Q(created_at=payment.created_at, pk__lt=payment.pk)
+    ).aggregate(total=Sum("amount", default=Decimal("0")))["total"]
+    before = min(previous, invoice.total)
+    after = min(previous + payment.amount, invoice.total)
+    return _money(amount * after / invoice.total) - _money(amount * before / invoice.total)
+
+
+def payment_coupon_subsidy(payment):
+    if not payment.invoice_id or not payment.invoice.coupon_discount_amount:
+        return Decimal("0")
+    return _coupon_payment_share(payment, payment.invoice.coupon_discount_amount)
+
+
+def coupon_subsidy_reversal(payment, subsidy):
+    if payment.amount:
+        return _money(subsidy * payment.refunded_amount / payment.amount)
+    if payment.provider == Payment.Provider.COUPON:
+        return min(subsidy, Decimal(str((payment.metadata or {}).get("coupon_only_reversal_amount", 0))))
+    return Decimal("0")
+
+
 def payment_tax(payment):
     booking = payment.booking
+    if payment.invoice_id and payment.invoice.coupon_discount_amount:
+        return _coupon_payment_share(payment, payment.invoice.tax_total)
     if booking.grand_total <= 0:
         return Decimal("0")
     return _money(booking.tax_total * payment.amount / booking.grand_total)
@@ -59,6 +92,10 @@ def payment_tax(payment):
 
 def payment_service_charge(payment):
     booking = payment.booking
+    if payment.invoice_id and payment.invoice.coupon_discount_amount:
+        amount = sum((Decimal(charge["amount"]) for charge in
+                      (payment.invoice.charge_snapshot or {}).get("service_charges", [])), Decimal("0"))
+        return _coupon_payment_share(payment, amount)
     if booking.grand_total <= 0:
         return Decimal("0")
     return _money(booking.service_charge_total * payment.amount / booking.grand_total)
@@ -122,8 +159,9 @@ def sync_payment_ledger(payment, *, release_held=False):
     new_entry = False
     held_enabled = settings.HELD_FUND_CALCULATION
     if not payable_entry and not held_entry:
+        subsidy = payment_coupon_subsidy(payment)
         amounts = {
-            "gross_amount": payment.amount,
+            "gross_amount": payment.amount + subsidy,
             "tax_amount": payment_tax(payment),
             "service_charge_amount": payment_service_charge(payment),
         }
@@ -135,7 +173,8 @@ def sync_payment_ledger(payment, *, release_held=False):
         entry = OTARevenueLedger.objects.create(
             event_key=f"payment:{payment.id}:{kind}",
             hotel=booking.hotel, booking=booking, payment=payment,
-            event_type=kind, effective_at=payment.paid_at, **amounts,
+            event_type=kind, effective_at=payment.paid_at,
+            metadata={"coupon_subsidy_amount": str(subsidy)} if subsidy else {}, **amounts,
         )
         new_entry = True
         if held:
@@ -157,7 +196,7 @@ def sync_payment_ledger(payment, *, release_held=False):
                 hotel=booking.hotel, booking=booking, payment=payment,
                 event_type=OTARevenueLedger.EventType.HELD_RELEASE,
                 effective_at=now if early else scheduled_release,
-                metadata={"release_reason": reason} if early else {},
+                metadata={**held_entry.metadata, **({"release_reason": reason} if early else {})},
                 gross_amount=held_entry.gross_amount,
                 tax_amount=held_entry.tax_amount,
                 service_charge_amount=held_entry.service_charge_amount,
@@ -176,7 +215,25 @@ def sync_payment_ledger(payment, *, release_held=False):
             booking.settlement_status = settlement_status
             booking.save(update_fields=["settlement_status", "updated_at"])
 
-    if payment.refunded_amount > 0:
+    if payment.invoice.coupon_discount_amount:
+        source = payable_entry or held_entry
+        subsidy = Decimal(str(source.metadata.get("coupon_subsidy_amount", 0)))
+        reversal = coupon_subsidy_reversal(payment, subsidy)
+        total_refund = payment.refunded_amount + reversal
+        prior_refunds = OTARevenueLedger.objects.filter(payment=payment, event_type=OTARevenueLedger.EventType.REFUND)
+        already_recorded = prior_refunds.aggregate(total=Sum("refund_amount", default=Decimal("0")))["total"]
+        if total_refund > already_recorded:
+            prior_reversals = sum((Decimal(row.get("coupon_subsidy_reversal_amount", "0"))
+                                   for row in prior_refunds.values_list("metadata", flat=True)), Decimal("0"))
+            entries.append(OTARevenueLedger.objects.create(
+                event_key=f"payment:{payment.id}:coupon_refund:{total_refund}",
+                hotel=booking.hotel, booking=booking, payment=payment,
+                event_type=OTARevenueLedger.EventType.REFUND,
+                refund_amount=total_refund - already_recorded,
+                effective_at=_refund_time(payment),
+                metadata={"coupon_subsidy_reversal_amount": str(reversal - prior_reversals)},
+            ))
+    elif payment.refunded_amount > 0:
         refund, _ = OTARevenueLedger.objects.update_or_create(
             event_key=f"payment:{payment.id}:refund",
             defaults={

@@ -29,6 +29,7 @@ from booking.remittance_export import remittance_detail_workbook, remittance_pay
 from booking.remittance_services import (
     active_payout_period,
     current_week_period,
+    coupon_subsidy_reversal,
     hotel_timezone,
     is_ota_revenue_payment,
     refresh_current_week_remittance,
@@ -804,7 +805,9 @@ class HotelHeldFundsView(APIView):
         )
         rows = []
         for entry in entries:
-            remaining = max(entry.gross_amount - entry.payment.refunded_amount, Decimal("0"))
+            subsidy = Decimal(str(entry.metadata.get("coupon_subsidy_amount", 0)))
+            reversed_subsidy = coupon_subsidy_reversal(entry.payment, subsidy)
+            remaining = max(entry.gross_amount - entry.payment.refunded_amount - reversed_subsidy, Decimal("0"))
             if remaining <= 0:
                 continue
             row = _ledger_item_data(hotel, entry, amount=remaining)

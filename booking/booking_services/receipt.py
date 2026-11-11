@@ -28,7 +28,7 @@ from booking.money_display import format_money as _money
 
 DOCUMENT_FONT = "NotoSansMyanmar"
 DOCUMENT_FONT_BOLD = "NotoSansMyanmar-Bold"
-PDF_RENDER_VERSION = 6
+PDF_RENDER_VERSION = 7
 MYANMAR_TEXT_RE = re.compile(r"[\u1000-\u109f\uaa60-\uaa7f\ua9e0-\ua9ff]")
 
 
@@ -339,6 +339,7 @@ def _build_document_snapshot(
             "subtotal": str(display_subtotal),
             "tax_total": str(invoice.tax_total if invoice else booking.tax_total),
             "discount_total": str(invoice.discount_total if invoice else booking.discount_total),
+            "coupon_discount_amount": str(invoice.coupon_discount_amount if invoice else Decimal("0")),
             "invoice_total": str(invoice.total if invoice else booking.grand_total),
             "manual_adjustments": (
                 (invoice.charge_snapshot or {}).get("manual_adjustments") or {}
@@ -704,12 +705,20 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
     ):
         amount_rows.append(("-", "0"))
     section_ends.append(len(amount_rows) + 1)
+    coupon_discount = Decimal(str(invoice.get("coupon_discount_amount") or 0))
+    invoice_total = Decimal(str(invoice["invoice_total"]))
+    grand_total = invoice_total + coupon_discount
     centered_label_rows.add(len(amount_rows))
     amount_rows.append(
-        ("<b>Grand Total</b>", f"<b>{_money(invoice['invoice_total'], currency)}</b>"),
+        ("<b>Grand Total</b>", f"<b>{_money(grand_total, currency)}</b>"),
     )
+    if coupon_discount:
+        centered_label_rows.add(len(amount_rows))
+        amount_rows.append((
+            '<font color="#C00000"><b>Visit 77 Coupon Discount</b></font>',
+            f'<font color="#C00000"><b>{_money(coupon_discount, currency)}</b></font>',
+        ))
     if document_title == "Invoice":
-        invoice_total = Decimal(str(invoice["invoice_total"]))
         remaining_balance = Decimal(str(snapshot["remaining_balance"]))
         paid_total = max(invoice_total - remaining_balance, Decimal("0"))
         for row in (

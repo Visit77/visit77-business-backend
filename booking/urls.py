@@ -1,3 +1,4 @@
+from booking.coupon_views import CouponCampaignAdminView, CouponCampaignDiscoveryView, CouponClaimView, MyCouponsView
 from booking.directory_pricing import AdminDirectoryMinimumPricesView
 from django.urls import path
 from rest_framework.routers import DefaultRouter
@@ -209,6 +210,11 @@ urlpatterns = [
         AdminReceiptDetailView.as_view(),
     ),
     path("public/search/availability/", PublicGlobalAvailabilityView.as_view()),
+    path("admin/coupon-campaigns/", CouponCampaignAdminView.as_view()),
+    path("admin/coupon-campaigns/<int:campaign_id>/", CouponCampaignAdminView.as_view()),
+    path("coupon-campaigns/", CouponCampaignDiscoveryView.as_view()),
+    path("coupon-campaigns/<int:campaign_id>/claim/", CouponClaimView.as_view()),
+    path("me/coupons/", MyCouponsView.as_view()),
     path("admin/directory/minimum-room-prices/", AdminDirectoryMinimumPricesView.as_view()),
     path("admin/availability/hotel-ids/", AdminAvailableHotelIdsView.as_view()),
     path("admin/ota/hotel-ids/", AdminOTAHotelIdsView.as_view()),

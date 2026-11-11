@@ -2512,6 +2512,9 @@ class InvoiceCreateSerializer(serializers.Serializer):
 
 
 class BookingSerializer(serializers.ModelSerializer):
+    grand_total = serializers.DecimalField(
+        source="price_before_coupon", max_digits=14, decimal_places=2, read_only=True,
+    )
     booking_code = serializers.CharField(read_only=True)
     room_charge_total = serializers.SerializerMethodField()
     breakfast_total = serializers.SerializerMethodField()
@@ -2583,7 +2586,7 @@ class BookingSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Booking
-        fields = "__all__"
+        exclude = ["coupon_discount_amount"]
 
 
 class BookingDetailSerializer(BookingSerializer):
@@ -2948,6 +2951,8 @@ class RequestedAddOnSerializer(serializers.Serializer):
 
 
 class BookingCreateSerializer(serializers.Serializer):
+    coupon_id = serializers.UUIDField(required=False)
+    coupon_code = serializers.CharField(required=False, max_length=32)
     core_business_id = serializers.IntegerField(min_value=1)
     core_customer_user_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     check_in = serializers.DateField()
@@ -3057,6 +3062,8 @@ class PMSAvailableRoomSearchSerializer(serializers.Serializer):
 
 
 class BookingEstimateSerializer(serializers.Serializer):
+    coupon_id = serializers.UUIDField(required=False)
+    coupon_code = serializers.CharField(required=False, max_length=32)
     core_business_id = serializers.IntegerField(min_value=1)
     check_in = serializers.DateField()
     check_out = serializers.DateField()

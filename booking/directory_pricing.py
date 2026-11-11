@@ -7,6 +7,7 @@ from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.views import APIView
 
+from booking.coupon_views import available_campaign_payloads
 from booking.models import DailyRate, Hotel, RatePlan, RatePeriod, RoomType
 from booking.permissions import HasBookingAdminKey
 from booking.room_pricing import guest_price_fields, effective_room_amounts, market_default_prices, seasonal_price_metadata
@@ -18,6 +19,7 @@ class DirectoryPriceQuerySerializer(serializers.Serializer):
     guest_market = serializers.ChoiceField(choices=["local", "foreign"], default="local")
     display_currency = serializers.ChoiceField(choices=["MMK", "USD"], default="MMK")
     check_in = serializers.DateField(required=False)
+    core_user_id = serializers.IntegerField(min_value=1, required=False)
     min_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0"), required=False)
     max_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0"), required=False)
 
@@ -114,5 +116,11 @@ class AdminDirectoryMinimumPricesView(APIView):
         scope = getattr(request, "booking_core_business_id", None)
         if scope is not None:
             params["business_ids"] = [value for value in params["business_ids"] if value == scope]
+        user_id = params.pop("core_user_id", None)
         prices = minimum_room_prices_today(**params)
+        coupons = available_campaign_payloads(
+            Hotel.objects.filter(core_business_id__in=prices), user_id, request,
+        )
+        for business_id, price in prices.items():
+            price["available_coupons"] = coupons.get(business_id, [])
         return success({"minimum_rooms": {str(key): value for key, value in prices.items()}})
