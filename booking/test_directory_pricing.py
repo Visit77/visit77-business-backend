@@ -6,7 +6,7 @@ from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from booking.directory_pricing import minimum_room_prices_today
-from booking.models import Hotel, RoomType, RatePlan, RoomPriceDiscount, DailyRate
+from booking.models import Hotel, RoomType, RatePlan, RoomPriceDiscount, DailyRate, RoomSeasonalRate
 
 
 @patch('django.utils.timezone.now', return_value=datetime(2026, 11, 2, 20, tzinfo=dt_timezone.utc))
@@ -35,6 +35,31 @@ class DirectoryMinimumPriceTests(TestCase):
         self.assertEqual(row['discount_percentage'], Decimal('20'))
         self.assertTrue(row['has_discount'])
         self.assertEqual(self.room.default_inventory, 0)  # advertised rate, not an inventory claim
+
+    @override_settings(BOOKING_ADMIN_API_KEY="key")
+    def test_directory_uses_selected_checkin_for_seasonal_base_price(self, now):
+        self.other.booking_enabled = False
+        self.other.save(update_fields=["booking_enabled"])
+        season = RoomSeasonalRate.objects.create(
+            room_type=self.room, name="November", start_date=date(2026, 11, 20),
+            end_date=date(2026, 11, 21), local_base_price=30000,
+        )
+        self.assertEqual(minimum_room_prices_today([77])[77]["base_price"], 100000)
+        response = APIClient().post(
+            "/api/v1/admin/directory/minimum-room-prices/",
+            {"business_ids": [77], "check_in": "2026-11-20"},
+            format="json", HTTP_X_BOOKING_ADMIN_KEY="key",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        row = response.data["data"]["minimum_rooms"]["77"]
+        self.assertEqual(row["price_date"], "2026-11-20")
+        self.assertEqual(row["seasonal_rate_id"], season.id)
+        self.assertEqual(row["base_price"], 30000)
+        self.assertEqual(row["local_base_price"], 30000)
+        self.assertEqual(row["display_price"], 30000)
+        self.assertEqual(row["local_usd_display_price"], 25)
+        self.assertEqual(row["foreign_base_price"], 150000)
+        self.assertFalse(row["has_discount"])
 
     def test_discounted_room_wins_over_cheaper_undiscounted_room(self, now):
         self.campaign(local_mmk_price=95000)
