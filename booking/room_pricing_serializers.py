@@ -186,15 +186,10 @@ class RoomSeasonalRateSerializer(serializers.ModelSerializer):
         return attrs
 
     def _set_default_name(self, validated_data):
-        import re
         if 'name' not in validated_data and self.instance is not None:
             return
-        if validated_data.get('name'):
-            return
-        names = self.Meta.model.objects.filter(room_type=self.context['room_type']).values_list('name', flat=True)
-        numbers = [int(match.group(1)) for name in names
-                   if (match := re.fullmatch(r'Seasonal Room Rate ([0-9]+)', name or ''))]
-        validated_data['name'] = f'Seasonal Room Rate {max(numbers, default=0) + 1}'
+        if not validated_data.get('name'):
+            validated_data['name'] = 'Seasonal Rate'
 
     def create(self, validated_data):
         from django.db import transaction

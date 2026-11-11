@@ -147,25 +147,27 @@ class SeasonalRateTests(TestCase):
         self.assertEqual(len(RoomTypeSerializer(self.room).data['seasonal_rates']), 2)
 
     @override_settings(BOOKING_ADMIN_API_KEY='key')
-    def test_optional_names_increment_per_room_even_after_end(self):
+    def test_optional_names_default_to_seasonal_rate(self):
         client = APIClient()
         client.credentials(HTTP_X_BOOKING_ADMIN_KEY='key', HTTP_X_BOOKING_BUSINESS_ID='77')
         url = f'/api/v1/admin/room-types/{self.room.id}/seasonal-rates/'
         body = dict(start_date=str(self.end), end_date=str(self.end), local_base_price=45000)
         response = client.post(url, body, format='json')
         self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(response.data['data']['name'], 'Seasonal Room Rate 2')
+        self.assertEqual(response.data['data']['name'], 'Seasonal Rate')
         pk = response.data['data']['id']
         self.assertEqual(client.post(f'{url}{pk}/end/').status_code, 200)
         body['name'] = None
         response = client.post(url, body, format='json')
-        self.assertEqual(response.data['data']['name'], 'Seasonal Room Rate 3')
+        self.assertEqual(response.data['data']['name'], 'Seasonal Rate')
         self.assertEqual(response.data['data']['base_currency'], 'MMK')
         pk = response.data['data']['id']
+        response = client.patch(f'{url}{pk}/', {'name': 'Holiday Rate'}, format='json')
+        self.assertEqual(response.data['data']['name'], 'Holiday Rate')
         response = client.patch(f'{url}{pk}/', {'local_base_price': 46000}, format='json')
-        self.assertEqual(response.data['data']['name'], 'Seasonal Room Rate 3')
+        self.assertEqual(response.data['data']['name'], 'Holiday Rate')
         response = client.patch(f'{url}{pk}/', {'name': None}, format='json')
-        self.assertEqual(response.data['data']['name'], 'Seasonal Room Rate 4')
+        self.assertEqual(response.data['data']['name'], 'Seasonal Rate')
 
     def test_seasonal_base_amount_uses_hotel_currency_for_non_mmk_hotel(self):
         from booking.services import _rate_amounts
