@@ -125,7 +125,9 @@ class BookingCouponTests(TestCase):
             admin = self.client.get(f"/api/v1/admin/coupon-campaigns/{campaign_id}/").data["data"]
             discovery = APIClient().get("/api/v1/coupon-campaigns/", {"country_id": 1}).data["data"][0]
         for field, path in (("banner_image", banner), ("popup_image", popup)):
-            for url in (admin[field], discovery[f"{field}_url"]):
+            self.assertNotIn(field, admin)
+            self.assertNotIn(field, discovery)
+            for url in (admin[f"{field}_url"], discovery[f"{field}_url"]):
                 self.assertTrue(url.startswith(f"https://media.example.com/{path}?Expires="), url)
                 self.assertIn("Signature=", url)
                 self.assertIn("Key-Pair-Id=TESTKEY", url)

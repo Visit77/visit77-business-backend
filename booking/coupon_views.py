@@ -31,8 +31,10 @@ class CampaignImageField(serializers.ImageField):
 
 
 class CampaignSerializer(serializers.ModelSerializer):
-    banner_image = CampaignImageField(required=False)
-    popup_image = CampaignImageField(required=False)
+    banner_image = serializers.ImageField(required=False, write_only=True)
+    popup_image = serializers.ImageField(required=False, write_only=True)
+    banner_image_url = CampaignImageField(source="banner_image", read_only=True)
+    popup_image_url = CampaignImageField(source="popup_image", read_only=True)
     publish_at = PublishAtField(required=False)
     type = serializers.ChoiceField(choices=["booking"], default="booking")
     discount_value = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.01"))
