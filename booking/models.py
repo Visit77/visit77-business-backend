@@ -1543,6 +1543,7 @@ class CouponCampaign(models.Model):
     currency = models.CharField(max_length=3)
     quantity_per_user = models.PositiveSmallIntegerField(default=1)
     country_id = models.PositiveBigIntegerField()
+    category_id = models.PositiveBigIntegerField(null=True, blank=True)
     state_ids = models.JSONField(default=list, blank=True)
     city_ids = models.JSONField(default=list, blank=True)
     business_ids = models.JSONField(default=list, blank=True)

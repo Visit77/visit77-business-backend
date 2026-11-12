@@ -97,6 +97,18 @@ class BookingCouponTests(TestCase):
         self.assertEqual(len(client.get(url).data["data"]), 2)
         self.assertEqual(client.get(url, {"status": "invalid"}).status_code, 400)
 
+    def test_campaign_category_filters_hotel_discovery(self):
+        campaign_id = self.campaign(category_id=4)
+        url = "/api/v1/coupon-campaigns/"
+        filters = {"country_id": 1, "business_id": self.hotel.core_business_id}
+        client = APIClient()
+        self.assertEqual(client.get(url, filters).data["data"], [])
+
+        self.hotel.core_snapshot["category_id"] = 4
+        self.hotel.save(update_fields=["core_snapshot"])
+        campaigns = client.get(url, filters).data["data"]
+        self.assertEqual([(row["id"], row["category_id"]) for row in campaigns], [(campaign_id, 4)])
+
     def test_claim_and_coupon_invoice_payment_remittance_and_refund(self):
         campaign_id = self.campaign()
         claim = self.claim(campaign_id)
@@ -104,7 +116,10 @@ class BookingCouponTests(TestCase):
         tickets = claim.data["data"]
         self.assertEqual(len(tickets), 2)
         self.assertNotEqual(tickets[0]["code"], tickets[1]["code"])
-        self.assertEqual(self.claim(campaign_id).data["data"], tickets)
+        duplicate_claim = self.claim(campaign_id)
+        self.assertEqual(duplicate_claim.status_code, 400, duplicate_claim.data)
+        self.assertIn("Already claimed.", str(duplicate_claim.data))
+        self.assertEqual(BookingCoupon.objects.filter(campaign_id=campaign_id, user_id=7).count(), 2)
 
         data = {**self.data, "coupon_code": tickets[0]["code"].lower()}
         estimate = estimate_booking(data)

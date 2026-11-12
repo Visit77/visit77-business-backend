@@ -69,6 +69,7 @@ def campaign_payload(campaign, request=None, tickets=()):
         "id": campaign.id, "title": campaign.title, "type": campaign.type,
         "discount_type": campaign.discount_type, "discount_value": campaign.discount_value,
         "currency": campaign.currency, "quantity_per_user": campaign.quantity_per_user,
+        "category_id": campaign.category_id,
         "start_at": campaign.start_at, "end_at": campaign.end_at,
         "claim_status": "claimed" if tickets else "claimable",
         "remaining_quantity": remaining,
@@ -201,6 +202,8 @@ class CouponClaimView(APIView):
         user_id = request.user.id
         if campaign.audience == "targeted" and user_id not in campaign.user_ids:
             raise serializers.ValidationError({"coupon": "This campaign is unavailable."})
+        if campaign.coupons.filter(user_id=user_id).exists():
+            raise serializers.ValidationError({"coupon": "Already claimed."})
         return success([ticket_payload(ticket, request) for ticket in issue_coupons(campaign, user_id)])
 
 
