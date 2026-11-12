@@ -97,15 +97,11 @@ class BookingCouponTests(TestCase):
         self.assertEqual(len(client.get(url).data["data"]), 2)
         self.assertEqual(client.get(url, {"status": "invalid"}).status_code, 400)
 
-    def test_campaign_category_filters_hotel_discovery(self):
+    def test_campaign_category_is_returned_without_filtering_hotel_discovery(self):
         campaign_id = self.campaign(category_id=4)
         url = "/api/v1/coupon-campaigns/"
         filters = {"country_id": 1, "business_id": self.hotel.core_business_id}
         client = APIClient()
-        self.assertEqual(client.get(url, filters).data["data"], [])
-
-        self.hotel.core_snapshot["category_id"] = 4
-        self.hotel.save(update_fields=["core_snapshot"])
         campaigns = client.get(url, filters).data["data"]
         self.assertEqual([(row["id"], row["category_id"]) for row in campaigns], [(campaign_id, 4)])
 

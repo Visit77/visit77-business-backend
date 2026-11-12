@@ -24,8 +24,6 @@ def campaign_matches_hotel(campaign, hotel):
     ):
         return False
     snapshot = hotel.core_snapshot or {}
-    if campaign.category_id is not None and snapshot.get("category_id") != campaign.category_id:
-        return False
     locations = snapshot.get("coupon_locations") or [{
         "country_id": snapshot.get("country_id"),
         "state_id": (snapshot.get("state") or {}).get("id"),
