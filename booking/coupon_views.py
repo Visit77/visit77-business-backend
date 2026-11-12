@@ -17,7 +17,15 @@ from booking.permissions import IsCoreSuperAdmin
 from config.response_formatter import success
 
 
+class PublishAtField(serializers.DateTimeField):
+    def to_internal_value(self, value):
+        if value == "now":
+            value = timezone.now()
+        return super().to_internal_value(value)
+
+
 class CampaignSerializer(serializers.ModelSerializer):
+    publish_at = PublishAtField(required=False)
     type = serializers.ChoiceField(choices=["booking"], default="booking")
     discount_value = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.01"))
     quantity_per_user = serializers.IntegerField(min_value=1, max_value=100, default=1)
@@ -94,7 +102,7 @@ def available_campaign_payloads(hotels, user_id=None, request=None, country_id=N
     }
 
 
-def ticket_payload(ticket, request=None):
+def ticket_status(ticket):
     state = "used" if ticket.used_at else "reserved" if ticket.booking_id else "available"
     if state == "available" and (
         not ticket.campaign.is_active or ticket.campaign.end_at < timezone.now()
@@ -103,8 +111,12 @@ def ticket_payload(ticket, request=None):
         state = "expired"
     if state == "available" and max(ticket.campaign.start_at, ticket.campaign.publish_at) > timezone.now():
         state = "scheduled"
+    return state
+
+
+def ticket_payload(ticket, request=None, *, status=None):
     return {
-        "id": str(ticket.id), "code": ticket.code, "status": state,
+        "id": str(ticket.id), "code": ticket.code, "status": status or ticket_status(ticket),
         "campaign": campaign_payload(ticket.campaign, request, [ticket]),
     }
 
@@ -197,5 +209,15 @@ class MyCouponsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        requested_status = request.query_params.get("status")
+        if requested_status is not None:
+            requested_status = serializers.ChoiceField(
+                choices=("available", "expired", "scheduled", "reserved", "used"),
+            ).run_validation(requested_status)
         tickets = BookingCoupon.objects.select_related("campaign").filter(user_id=request.user.id).order_by("campaign__end_at", "slot")
-        return success([ticket_payload(ticket, request) for ticket in tickets])
+        results = []
+        for ticket in tickets:
+            status = ticket_status(ticket)
+            if requested_status is None or status == requested_status:
+                results.append(ticket_payload(ticket, request, status=status))
+        return success(results)

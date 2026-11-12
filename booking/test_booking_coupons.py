@@ -10,7 +10,7 @@ from rest_framework.test import APIClient
 
 from booking.authentication import CoreJWTUser
 from booking.booking_services.receipt import build_invoice_snapshot, render_invoice_pdf, render_receipt_pdf
-from booking.models import Booking, BookingCoupon, Hotel, Invoice, OTARevenueLedger, RatePlan, RoomType
+from booking.models import Booking, BookingCoupon, CouponCampaign, Hotel, Invoice, OTARevenueLedger, RatePlan, RoomType
 from booking.remittance_services import generate_weekly_remittance, sync_payment_ledger
 from booking.serializers import BookingSerializer
 from booking.services import cancel_booking, create_booking, create_invoice, estimate_booking, record_payment, refund_payment
@@ -60,6 +60,42 @@ class BookingCouponTests(TestCase):
         client = APIClient()
         client.force_authenticate(CoreJWTUser(id=user))
         return client.post(f"/api/v1/coupon-campaigns/{campaign_id}/claim/")
+
+    def test_publish_at_accepts_now_and_scheduled_datetime(self):
+        url = "/api/v1/admin/coupon-campaigns/"
+        scheduled = self.now + timedelta(days=1)
+        campaign_id = self.campaign(publish_at=scheduled.isoformat())
+        self.assertEqual(CouponCampaign.objects.get(pk=campaign_id).publish_at, scheduled)
+
+        before = timezone.now()
+        response = self.client.patch(f"{url}{campaign_id}/", {"publish_at": "now"}, format="multipart")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertLessEqual(before, CouponCampaign.objects.get(pk=campaign_id).publish_at)
+        self.assertLessEqual(CouponCampaign.objects.get(pk=campaign_id).publish_at, timezone.now())
+
+        now_id = self.campaign(publish_at="now")
+        self.assertLessEqual(before, CouponCampaign.objects.get(pk=now_id).publish_at)
+
+    def test_my_coupons_filters_by_status_for_current_user(self):
+        available = self.campaign(quantity_per_user=1)
+        expired = self.campaign(quantity_per_user=1)
+        self.claim(available)
+        self.claim(expired)
+        self.claim(available, user=8)
+        CouponCampaign.objects.filter(pk=expired).update(end_at=self.now - timedelta(seconds=1))
+
+        client = APIClient()
+        client.force_authenticate(CoreJWTUser(id=7))
+        url = "/api/v1/me/coupons/"
+        for status, expected_campaign in (("available", available), ("expired", expired)):
+            response = client.get(url, {"status": status})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                [(ticket["status"], ticket["campaign"]["id"]) for ticket in response.data["data"]],
+                [(status, expected_campaign)],
+            )
+        self.assertEqual(len(client.get(url).data["data"]), 2)
+        self.assertEqual(client.get(url, {"status": "invalid"}).status_code, 400)
 
     def test_claim_and_coupon_invoice_payment_remittance_and_refund(self):
         campaign_id = self.campaign()
