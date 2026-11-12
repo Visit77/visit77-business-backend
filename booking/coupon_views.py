@@ -14,6 +14,7 @@ from booking.authentication import CoreJWTAuthentication
 from booking.coupons import active_campaigns, campaign_matches_hotel, issue_coupons
 from booking.models import BookingCoupon, CouponCampaign, Hotel
 from booking.permissions import IsCoreSuperAdmin
+from booking.storage import coupon_image_url
 from config.response_formatter import success
 
 
@@ -24,7 +25,14 @@ class PublishAtField(serializers.DateTimeField):
         return super().to_internal_value(value)
 
 
+class CampaignImageField(serializers.ImageField):
+    def to_representation(self, value):
+        return coupon_image_url(value, self.context.get("request"))
+
+
 class CampaignSerializer(serializers.ModelSerializer):
+    banner_image = CampaignImageField(required=False)
+    popup_image = CampaignImageField(required=False)
     publish_at = PublishAtField(required=False)
     type = serializers.ChoiceField(choices=["booking"], default="booking")
     discount_value = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.01"))
@@ -75,8 +83,7 @@ def campaign_payload(campaign, request=None, tickets=()):
         "remaining_quantity": remaining,
     }
     for field in ("banner_image", "popup_image"):
-        image = getattr(campaign, field)
-        payload[f"{field}_url"] = (request.build_absolute_uri(image.url) if request else image.url) if image else None
+        payload[f"{field}_url"] = coupon_image_url(getattr(campaign, field), request)
     return payload
 
 

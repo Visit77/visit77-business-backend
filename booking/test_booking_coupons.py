@@ -1,6 +1,10 @@
 from datetime import timedelta
 from decimal import Decimal
 from io import BytesIO
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from botocore.signers import CloudFrontSigner
 
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -104,6 +108,27 @@ class BookingCouponTests(TestCase):
         client = APIClient()
         campaigns = client.get(url, filters).data["data"]
         self.assertEqual([(row["id"], row["category_id"]) for row in campaigns], [(campaign_id, 4)])
+
+    def test_campaign_image_responses_sign_existing_cloudfront_paths(self):
+        campaign_id = self.campaign()
+        banner = "booking/coupons/banners/example.jpg"
+        popup = "booking/coupons/popups/example.jpg"
+        CouponCampaign.objects.filter(pk=campaign_id).update(banner_image=banner, popup_image=popup)
+        storage = CouponCampaign._meta.get_field("banner_image").storage
+        signer = CloudFrontSigner("TESTKEY", lambda message: b"test-signature")
+        with (
+            patch.object(storage, "custom_domain", "media.example.com", create=True),
+            patch.object(storage, "url", side_effect=lambda name: f"https://media.example.com/{name}"),
+            patch("booking.storage.get_private_document_storage",
+                  return_value=SimpleNamespace(cloudfront_signer=signer, querystring_expire=900)),
+        ):
+            admin = self.client.get(f"/api/v1/admin/coupon-campaigns/{campaign_id}/").data["data"]
+            discovery = APIClient().get("/api/v1/coupon-campaigns/", {"country_id": 1}).data["data"][0]
+        for field, path in (("banner_image", banner), ("popup_image", popup)):
+            for url in (admin[field], discovery[f"{field}_url"]):
+                self.assertTrue(url.startswith(f"https://media.example.com/{path}?Expires="), url)
+                self.assertIn("Signature=", url)
+                self.assertIn("Key-Pair-Id=TESTKEY", url)
 
     def test_claim_and_coupon_invoice_payment_remittance_and_refund(self):
         campaign_id = self.campaign()
