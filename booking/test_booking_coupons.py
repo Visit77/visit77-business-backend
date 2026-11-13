@@ -65,6 +65,23 @@ class BookingCouponTests(TestCase):
         client.force_authenticate(CoreJWTUser(id=user))
         return client.post(f"/api/v1/coupon-campaigns/{campaign_id}/claim/")
 
+    def test_admin_campaign_status(self):
+        future = self.now + timedelta(days=1)
+        active = self.campaign()
+        scheduled = self.campaign(publish_at=future.isoformat())
+        upcoming = self.campaign(start_at=future.isoformat())
+        expired = self.campaign()
+        disabled = self.campaign(is_active=False)
+        CouponCampaign.objects.filter(pk=expired).update(end_at=self.now - timedelta(seconds=1))
+
+        response = self.client.get("/api/v1/admin/coupon-campaigns/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            {row["id"]: row["status"] for row in response.data["data"]},
+            {active: "active", scheduled: "upcoming", upcoming: "upcoming",
+             expired: "expired", disabled: "expired"},
+        )
+
     def test_publish_at_accepts_now_and_scheduled_datetime(self):
         url = "/api/v1/admin/coupon-campaigns/"
         scheduled = self.now + timedelta(days=1)

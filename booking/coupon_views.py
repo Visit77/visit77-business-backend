@@ -31,6 +31,7 @@ class CampaignImageField(serializers.ImageField):
 
 
 class CampaignSerializer(serializers.ModelSerializer):
+    status = serializers.SerializerMethodField()
     banner_image = serializers.ImageField(required=False, write_only=True)
     popup_image = serializers.ImageField(required=False, write_only=True)
     banner_image_url = CampaignImageField(source="banner_image", read_only=True)
@@ -48,6 +49,14 @@ class CampaignSerializer(serializers.ModelSerializer):
     class Meta:
         model = CouponCampaign
         fields = "__all__"
+
+    def get_status(self, campaign):
+        now = timezone.now()
+        if not campaign.is_active or campaign.end_at < now:
+            return "expired"
+        if max(campaign.publish_at, campaign.start_at) > now:
+            return "upcoming"
+        return "active"
 
     def validate(self, attrs):
         def value(name, default=None):
