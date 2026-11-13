@@ -268,6 +268,21 @@ class RoomPricingTests(TestCase):
                 operation(self.payload)
         self.assertFalse(Booking.objects.exists())
 
+    def test_confirmation_email_rounds_mmk_charges_for_display(self):
+        from booking.booking_services.email import build_booking_confirmation_context
+
+        booking, _ = create_booking(self.payload)
+        booking.invoices.all().delete()
+        booking.add_on_total = Decimal("0.20")
+        booking.service_charge_total = Decimal("6.30")
+        booking.tax_total = Decimal("10.50")
+        booking.grand_total = Decimal("227")
+        context = build_booking_confirmation_context(booking, SimpleNamespace(name="Guest"))
+        self.assertEqual(context["additional_charges"], "MMK 0")
+        self.assertEqual(context["service_charges"], "MMK 6")
+        self.assertEqual(context["taxes"], "MMK 11")
+        self.assertEqual(context["total_price"], "MMK 227")
+
     def test_quote_booking_invoice_and_email_use_net_room_amount(self):
         from booking.booking_services.email import build_booking_confirmation_context
         discount = self.discount()
@@ -280,7 +295,7 @@ class RoomPricingTests(TestCase):
         self.assertEqual(list(booking.rooms.get().nights.order_by("stay_date").values_list("unit_price", flat=True)), [Decimal("80000"), Decimal("100000")])
         invoice = booking.invoices.first()
         self.assertEqual(invoice.discount_total, 0)
-        self.assertEqual(invoice.lines.get(metadata__line_type="room").total, Decimal("180000"))
+        self.assertEqual(sum(line.total for line in invoice.lines.filter(metadata__line_type="room")), Decimal("180000"))
         from booking.booking_services.receipt import build_invoice_snapshot, build_receipt_snapshot
         from booking.services import record_payment
         snapshot = build_invoice_snapshot(invoice)

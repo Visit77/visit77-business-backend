@@ -11,6 +11,7 @@ import json
 
 from booking.booking_services.receipt import ensure_receipt_pdf
 from booking.models import Payment
+from booking.money_display import format_money
 
 
 VISIT77_LOGO_CID = "visit77-logo"
@@ -40,12 +41,6 @@ def booking_room_summary(booking):
         f"Room: {room_type_name} x {quantity}"
         for room_type_name, quantity in room_quantities.items()
     )
-
-
-def _email_money(value, currency):
-    value = Decimal(str(value or 0))
-    amount = f"{value:,.2f}" if value % 1 else f"{int(value):,}"
-    return f"{currency} {amount}"
 
 
 def _contact_values(value):
@@ -178,23 +173,23 @@ def build_booking_confirmation_context(booking, primary_guest):
         "guest_name": primary_guest.name or booking.contact_name,
         "meal_info": ", ".join(meals) if meals else "No meal selected",
         "special_requests": booking.special_request or "None",
-        "room_charge": _email_money(
+        "room_charge": format_money(
             room_charge_total if invoice else booking.room_total,
             booking.currency,
         ),
-        "additional_charges": _email_money(
+        "additional_charges": format_money(
             additional_charge_total,
             booking.currency,
         ),
-        "extra_bed": _email_money(extra_bed_total, booking.currency),
-        "service_charges": _email_money(
+        "extra_bed": format_money(extra_bed_total, booking.currency),
+        "service_charges": format_money(
             service_charge_total if invoice else booking.service_charge_total,
             booking.currency,
         ),
-        "taxes": _email_money(invoice.tax_total if invoice else booking.tax_total, booking.currency),
+        "taxes": format_money(invoice.tax_total if invoice else booking.tax_total, booking.currency),
         "has_invoice_discount": (invoice.discount_total if invoice else booking.discount_total) > 0,
-        "discount": _email_money(invoice.discount_total if invoice else booking.discount_total, booking.currency),
-        "total_price": _email_money(
+        "discount": format_money(invoice.discount_total if invoice else booking.discount_total, booking.currency),
+        "total_price": format_money(
             invoice.total + invoice.coupon_discount_amount if invoice else booking.price_before_coupon,
             booking.currency,
         ),
