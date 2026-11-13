@@ -173,9 +173,11 @@ class CouponCampaignAdminView(APIView):
 
         for row in rows:
             row["country_name"] = names.get("countries", {}).get(str(row["country_id"]))
-            for scope in ("state", "city", "business"):
-                lookup = names.get({"state": "states", "city": "cities", "business": "businesses"}[scope], {})
-                row[f"{scope}_names"] = [lookup.get(str(pk)) for pk in row[f"{scope}_ids"]]
+            states = names.get("states", {})
+            row["state_names"] = [states.get(str(pk)) for pk in row["state_ids"]]
+            for ids_field, objects_field in (("city_ids", "cities"), ("business_ids", "businesses")):
+                lookup = names.get(objects_field, {})
+                row[objects_field] = [{"id": pk, "name": lookup.get(str(pk))} for pk in row[ids_field]]
         return success(rows[0] if campaign_id is not None else rows)
 
     @transaction.atomic

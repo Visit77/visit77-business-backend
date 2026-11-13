@@ -85,8 +85,8 @@ class BookingCouponTests(TestCase):
                 row = row[0]
             self.assertEqual(row["country_name"], "Myanmar")
             self.assertEqual(row["state_names"], ["Yangon Region"])
-            self.assertEqual(row["city_names"], ["Yangon"])
-            self.assertEqual(row["business_names"], ["Coupon Hotel"])
+            self.assertEqual(row["cities"], [{"id": 68, "name": "Yangon"}])
+            self.assertEqual(row["businesses"], [{"id": 7529, "name": "Coupon Hotel"}])
 
     def test_admin_campaign_status(self):
         future = self.now + timedelta(days=1)
