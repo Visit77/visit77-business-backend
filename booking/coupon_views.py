@@ -175,9 +175,14 @@ class CouponCampaignAdminView(APIView):
             row["country_name"] = names.get("countries", {}).get(str(row["country_id"]))
             states = names.get("states", {})
             row["state_names"] = [states.get(str(pk)) for pk in row["state_ids"]]
-            for ids_field, objects_field in (("city_ids", "cities"), ("business_ids", "businesses")):
-                lookup = names.get(objects_field, {})
-                row[objects_field] = [{"id": pk, "name": lookup.get(str(pk))} for pk in row[ids_field]]
+            cities = names.get("cities", {})
+            row["cities"] = [{"id": pk, "name": cities.get(str(pk))} for pk in row["city_ids"]]
+            businesses = names.get("businesses", {})
+            profiles = names.get("business_profiles", {})
+            row["businesses"] = [
+                {"id": pk, "name": businesses.get(str(pk)), "profile": profiles.get(str(pk))}
+                for pk in row["business_ids"]
+            ]
         return success(rows[0] if campaign_id is not None else rows)
 
     @transaction.atomic
@@ -199,7 +204,12 @@ class CouponCampaignAdminView(APIView):
         if hasattr(data, "dict"):
             data = data.dict()
             for field in ("state_ids", "city_ids", "business_ids", "user_ids"):
-                if field in data:
+                bracket_key = f"{field}[]"
+                if bracket_key in request.data:
+                    if field in data:
+                        raise serializers.ValidationError({field: f"Use either {field} or {bracket_key}."})
+                    data[field] = request.data.getlist(bracket_key)
+                elif field in data:
                     try:
                         data[field] = json.loads(data[field])
                     except (ValueError, TypeError) as exc:

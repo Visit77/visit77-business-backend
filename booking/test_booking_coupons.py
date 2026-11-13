@@ -65,11 +65,31 @@ class BookingCouponTests(TestCase):
         client.force_authenticate(CoreJWTUser(id=user))
         return client.post(f"/api/v1/coupon-campaigns/{campaign_id}/claim/")
 
+    def test_campaign_multipart_accepts_repeated_bracket_list_fields(self):
+        url = "/api/v1/admin/coupon-campaigns/"
+        fields = ("state_ids", "city_ids", "business_ids", "user_ids")
+        body = {key: value for key, value in self.campaign_data.items() if key not in fields}
+        response = self.client.post(url, {
+            **body, "audience": "targeted", **{f"{field}[]": [1, 2] for field in fields},
+        }, format="multipart")
+        self.assertEqual(response.status_code, 201, response.data)
+        campaign = response.data["data"]
+        for field in fields:
+            self.assertEqual(campaign[field], [1, 2])
+
+        response = self.client.patch(f"{url}{campaign['id']}/", {
+            "business_ids[]": [3, 4], "city_ids": "[]",
+        }, format="multipart")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["business_ids"], [3, 4])
+        self.assertEqual(response.data["data"]["city_ids"], [])
+
     def test_admin_campaign_get_resolves_scope_names_in_one_request(self):
         campaign_id = self.campaign()
         names = {
             "countries": {"1": "Myanmar"}, "states": {"5": "Yangon Region"},
             "cities": {"68": "Yangon"}, "businesses": {"7529": "Coupon Hotel"},
+            "business_profiles": {"7529": "https://media.example.com/hotel.jpg"},
         }
         base_url = "/api/v1/admin/coupon-campaigns/"
         for url in (base_url, f"{base_url}{campaign_id}/"):
@@ -86,7 +106,7 @@ class BookingCouponTests(TestCase):
             self.assertEqual(row["country_name"], "Myanmar")
             self.assertEqual(row["state_names"], ["Yangon Region"])
             self.assertEqual(row["cities"], [{"id": 68, "name": "Yangon"}])
-            self.assertEqual(row["businesses"], [{"id": 7529, "name": "Coupon Hotel"}])
+            self.assertEqual(row["businesses"], [{"id": 7529, "name": "Coupon Hotel", "profile": "https://media.example.com/hotel.jpg"}])
 
     def test_admin_campaign_status(self):
         future = self.now + timedelta(days=1)
