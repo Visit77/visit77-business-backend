@@ -65,6 +65,29 @@ class BookingCouponTests(TestCase):
         client.force_authenticate(CoreJWTUser(id=user))
         return client.post(f"/api/v1/coupon-campaigns/{campaign_id}/claim/")
 
+    def test_admin_campaign_get_resolves_scope_names_in_one_request(self):
+        campaign_id = self.campaign()
+        names = {
+            "countries": {"1": "Myanmar"}, "states": {"5": "Yangon Region"},
+            "cities": {"68": "Yangon"}, "businesses": {"7529": "Coupon Hotel"},
+        }
+        base_url = "/api/v1/admin/coupon-campaigns/"
+        for url in (base_url, f"{base_url}{campaign_id}/"):
+            with patch("booking.coupon_views.CoreClient.post", return_value=names) as lookup:
+                response = self.client.get(url)
+            lookup.assert_called_once_with(
+                "booking-integrations/coupons/scope-names/",
+                json={"countries": [1], "states": [5], "cities": [68], "businesses": [7529]},
+            )
+            self.assertEqual(response.status_code, 200)
+            row = response.data["data"]
+            if isinstance(row, list):
+                row = row[0]
+            self.assertEqual(row["country_name"], "Myanmar")
+            self.assertEqual(row["state_names"], ["Yangon Region"])
+            self.assertEqual(row["city_names"], ["Yangon"])
+            self.assertEqual(row["business_names"], ["Coupon Hotel"])
+
     def test_admin_campaign_status(self):
         future = self.now + timedelta(days=1)
         active = self.campaign()
