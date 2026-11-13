@@ -235,9 +235,18 @@ class MyCouponsView(APIView):
             requested_status = serializers.ChoiceField(
                 choices=("available", "expired", "scheduled", "reserved", "used"),
             ).run_validation(requested_status)
+        business_id = request.query_params.get("business_id")
+        hotel = None
+        if business_id is not None:
+            business_id = serializers.IntegerField(min_value=1).run_validation(business_id)
+            hotel = get_object_or_404(Hotel, core_business_id=business_id)
+            if requested_status is None:
+                requested_status = "available"
         tickets = BookingCoupon.objects.select_related("campaign").filter(user_id=request.user.id).order_by("campaign__end_at", "slot")
         results = []
         for ticket in tickets:
+            if hotel is not None and not campaign_matches_hotel(ticket.campaign, hotel):
+                continue
             status = ticket_status(ticket)
             if requested_status is None or status == requested_status:
                 results.append(ticket_payload(ticket, request, status=status))

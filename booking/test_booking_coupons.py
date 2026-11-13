@@ -97,6 +97,25 @@ class BookingCouponTests(TestCase):
         now_id = self.campaign(publish_at="now")
         self.assertLessEqual(before, CouponCampaign.objects.get(pk=now_id).publish_at)
 
+    def test_my_coupons_filters_by_core_business_id(self):
+        general = self.campaign(state_ids=[], city_ids=[], business_ids=[], quantity_per_user=1)
+        hotel_only = self.campaign(business_ids=[self.hotel.core_business_id], quantity_per_user=1)
+        other_hotel = self.campaign(business_ids=[999], quantity_per_user=1)
+        expired = self.campaign(quantity_per_user=1)
+        for campaign_id in (general, hotel_only, other_hotel, expired):
+            self.claim(campaign_id)
+        CouponCampaign.objects.filter(pk=expired).update(end_at=self.now - timedelta(seconds=1))
+
+        client = APIClient()
+        client.force_authenticate(CoreJWTUser(id=7))
+        url = "/api/v1/me/coupons/"
+        for status in ({}, {"status": "available"}):
+            response = client.get(url, {"business_id": self.hotel.core_business_id, **status})
+            self.assertEqual(response.status_code, 200, response.data)
+            self.assertEqual({ticket["campaign"]["id"] for ticket in response.data["data"]}, {general, hotel_only})
+        self.assertEqual(client.get(url, {"business_id": "invalid"}).status_code, 400)
+        self.assertEqual(client.get(url, {"business_id": 999}).status_code, 404)
+
     def test_my_coupons_filters_by_status_for_current_user(self):
         available = self.campaign(quantity_per_user=1)
         expired = self.campaign(quantity_per_user=1)
