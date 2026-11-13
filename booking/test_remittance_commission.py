@@ -63,6 +63,15 @@ class RemittanceCommissionPolicyTests(TestCase):
         payment.save(update_fields=['receipt_number'])
         self.assertIsNone(remittance_data(row, detail=True)['items'][0]['ota_receipt_url'])
 
+    def test_booking_collection_excludes_only_collection_tax(self):
+        self.entry(100000, tax=500, service=1000)
+        self.entry(10000, tax=100, event='held_release')
+        payload = remittance_data(self.generate())
+        self.assertEqual(payload['booking_collection'], Decimal('100000'))
+        self.assertEqual(payload['tax_excluded_from_commission'], Decimal('600'))
+        self.assertEqual(payload['booking_collection_tax'], Decimal('500'))
+        self.assertEqual(payload['booking_collection_excluding_tax'], Decimal('99500'))
+
     def test_single_payment_service_charge_is_commissionable(self):
         self.entry(256,tax=6,service=50)
         row=self.generate()
@@ -71,6 +80,8 @@ class RemittanceCommissionPolicyTests(TestCase):
         self.assertEqual(row.service_charge_amount,Decimal('50'))
         payload=remittance_data(row)
         self.assertEqual(payload['service_charge_amount'],Decimal('50'))
+        self.assertEqual(payload['booking_collection_tax'], Decimal('6'))
+        self.assertEqual(payload['booking_collection_excluding_tax'], Decimal('250'))
         self.assertEqual(payload['service_charge_excluded_from_commission'],0)
         self.assertFalse(payload['commission_excludes_service_charge'])
 

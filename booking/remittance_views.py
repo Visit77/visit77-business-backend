@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.contrib.auth.hashers import check_password, make_password
 from django.db import transaction
-from django.db.models import OuterRef, Q, Subquery
+from django.db.models import OuterRef, Q, Subquery, Sum
 from django.db.models.functions import Lower
 from django.http import FileResponse
 from django.utils import timezone
@@ -360,6 +360,11 @@ def _date_grouped_rows(rows):
 
 
 def remittance_data(remittance, detail=False, request=None):
+    collection_tax = remittance.tax_amount
+    if remittance.released_held_funds_amount:
+        collection_tax -= remittance.items.filter(
+            item_type=OTARevenueLedger.EventType.HELD_RELEASE,
+        ).aggregate(total=Sum("tax_amount", default=Decimal("0")))["total"]
     available_amount = remittance.net_remittance_amount - remittance.adjustment_amount
     adjustment_operator = "-" if remittance.adjustment_amount < 0 else "+"
     adjustment_input_amount = abs(remittance.adjustment_amount)
@@ -391,6 +396,8 @@ def remittance_data(remittance, detail=False, request=None):
         "period_to": remittance.period_to,
         "currency": remittance.currency,
         "booking_collection": remittance.gross_booking_amount,
+        "booking_collection_tax": collection_tax,
+        "booking_collection_excluding_tax": remittance.gross_booking_amount - collection_tax,
         "released_held_funds": remittance.released_held_funds_amount,
         "tax_excluded_from_commission": remittance.tax_amount,
         "service_charge_amount": remittance.service_charge_amount,
@@ -681,6 +688,8 @@ class HotelAvailableRevenueView(APIView):
                 "currency": hotel.base_currency,
                 "status": OTARemittance.Status.ACCRUING,
                 "booking_collection": Decimal("0"),
+                "booking_collection_tax": Decimal("0"),
+                "booking_collection_excluding_tax": Decimal("0"),
                 "released_held_funds": Decimal("0"),
                 "tax_excluded_from_commission": Decimal("0"),
                 "service_charge_amount": Decimal("0"),
@@ -702,6 +711,8 @@ class HotelAvailableRevenueView(APIView):
             "currency": record.currency,
             "status": record.status,
             "booking_collection": record.gross_booking_amount,
+            "booking_collection_tax": data["booking_collection_tax"],
+            "booking_collection_excluding_tax": data["booking_collection_excluding_tax"],
             "released_held_funds": record.released_held_funds_amount,
             "tax_excluded_from_commission": record.tax_amount,
             "service_charge_amount": record.service_charge_amount,
