@@ -13,7 +13,21 @@ PERCENTAGE_FIELDS = tuple(field.replace("_price", "_percentage") for field in PR
 EXTRA_BED_PRICE_FIELDS = tuple(f"extra_bed_{field}" for field in PRICE_FIELDS)
 
 
-class ExtraBedPriceSetupSerializer(serializers.Serializer):
+class BasePriceFieldNamesMixin:
+    reject_local_mmk_price = True
+
+    def to_internal_value(self, data):
+        if "foreign_mmk_price" in data:
+            data = data.copy()
+            if "foreign_base_price" not in data:
+                data["foreign_base_price"] = data["foreign_mmk_price"]
+            del data["foreign_mmk_price"]
+        if self.reject_local_mmk_price and "local_mmk_price" in data:
+            raise serializers.ValidationError({"local_mmk_price": "Use local_base_price instead."})
+        return super().to_internal_value(data)
+
+
+class ExtraBedPriceSetupSerializer(BasePriceFieldNamesMixin, serializers.Serializer):
     local_base_price = serializers.DecimalField(source='extra_bed_local_mmk_price', max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
     local_usd_price = serializers.DecimalField(source='extra_bed_local_usd_price', max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
     foreign_base_price = serializers.DecimalField(source='extra_bed_foreign_mmk_price', max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
@@ -22,7 +36,6 @@ class ExtraBedPriceSetupSerializer(serializers.Serializer):
     def to_internal_value(self, data):
         deprecated = set(data).intersection({
             'extra_bed_local_mmk_price', 'extra_bed_foreign_mmk_price',
-            'local_mmk_price', 'foreign_mmk_price',
         })
         if deprecated:
             raise serializers.ValidationError({
@@ -45,14 +58,6 @@ class ExtraBedPriceSetupSerializer(serializers.Serializer):
         if not self.context['room_type'].room_price_setup:
             raise serializers.ValidationError('Set the normal room price before adding an extra bed rate.')
         return attrs
-
-
-class BasePriceFieldNamesMixin:
-    def to_internal_value(self, data):
-        deprecated = set(data).intersection({'local_mmk_price', 'foreign_mmk_price'})
-        if deprecated:
-            raise serializers.ValidationError({field: f"Use {field.replace('_mmk_', '_base_')} instead." for field in deprecated})
-        return super().to_internal_value(data)
 
 
 class RoomPriceSetupSerializer(BasePriceFieldNamesMixin, serializers.Serializer):
@@ -156,7 +161,8 @@ class RoomPriceDiscountSerializer(BasePriceFieldNamesMixin, serializers.ModelSer
 SEASONAL_PRICE_FIELDS = ("local_base_price", "local_usd_price", "foreign_base_price", "foreign_usd_price")
 
 
-class RoomSeasonalRateSerializer(serializers.ModelSerializer):
+class RoomSeasonalRateSerializer(BasePriceFieldNamesMixin, serializers.ModelSerializer):
+    reject_local_mmk_price = False
     name = serializers.CharField(max_length=120, required=False, allow_null=True, allow_blank=True)
     base_currency = serializers.CharField(source='room_type.hotel.base_currency', read_only=True)
 

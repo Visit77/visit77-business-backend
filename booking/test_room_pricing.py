@@ -702,6 +702,10 @@ class RoomPricingTests(TestCase):
         for field, value in prices.items():
             self.assertEqual(response.data['data'][field], value)
         self.assertFalse(any('_mmk_price' in field for field in response.data['data']))
+        response = client.patch(root + '/room-price/', {'foreign_mmk_price': '220000'}, format='multipart')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['data']['foreign_base_price'], 220000)
+        self.assertNotIn('foreign_mmk_price', response.data['data'])
         discounted = {'local_base_price': 96000, 'local_usd_price': 88,
                       'foreign_base_price': 176000, 'foreign_usd_price': 168}
         response = client.post(root + '/discounts/', {'timing_mode': 'manual', **discounted}, format='json')
