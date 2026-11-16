@@ -755,7 +755,7 @@ class PublicBookingCreateView(APIView):
                 raise ValidationError({"rooms": "Room indexes must start at 0 and be consecutive."})
             data["rooms"] = [nested_rooms[index] for index in indexes]
 
-        for field in ("rooms", "guests", "add_ons"):
+        for field in ("rooms", "guests", "add_ons", "coupon_ids", "coupon_codes"):
             raw_value = data.get(field)
             if isinstance(raw_value, str):
                 try:

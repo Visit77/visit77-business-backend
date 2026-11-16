@@ -8,11 +8,16 @@ from booking.models import Booking, BookingCoupon, CouponCampaign, Hotel, Invoic
 from booking.money_display import round_mmk
 
 
-def active_campaigns(now=None):
+def published_campaigns(now=None):
     now = now or timezone.now()
     return CouponCampaign.objects.filter(
-        type="booking", is_active=True, publish_at__lte=now, start_at__lte=now, end_at__gte=now,
+        type="booking", is_active=True, publish_at__lte=now, end_at__gte=now,
     )
+
+
+def active_campaigns(now=None):
+    now = now or timezone.now()
+    return published_campaigns(now).filter(start_at__lte=now)
 
 
 def campaign_matches_hotel(campaign, hotel):
@@ -49,36 +54,57 @@ def issue_coupons(campaign, user_id):
 
 
 def booking_coupon_discount(data, hotel, room_subtotal, total, *, booking=None):
-    coupon_id = data.get("coupon_id")
-    code = data.get("coupon_code")
-    if not (coupon_id or code):
+    ids = data.get("coupon_ids") or []
+    codes = data.get("coupon_codes") or []
+    if data.get("coupon_id"):
+        ids = [*ids, data["coupon_id"]]
+    if data.get("coupon_code"):
+        codes = [*codes, data["coupon_code"]]
+    if not (ids or codes):
         return Decimal("0")
-    user_id = data.get("booked_by_core_user_id")
-    if not user_id or (coupon_id and code) or data.get("source", Booking.Source.OTA) != Booking.Source.OTA:
-        raise ValidationError({"coupon": "Log in and select one coupon for an OTA booking."})
 
-    tickets = BookingCoupon.objects.select_related("campaign").filter(user_id=user_id)
+    user_id = data.get("booked_by_core_user_id")
+    if not user_id or data.get("source", Booking.Source.OTA) != Booking.Source.OTA:
+        raise ValidationError({"coupon": "Log in to use coupons for an OTA booking."})
+    if ids and codes:
+        raise ValidationError({"coupon": "Use coupon IDs or coupon codes in one request."})
+
+    identifiers = [str(pk) for pk in ids] if ids else [code.upper() for code in codes]
+    if len(identifiers) != len(set(identifiers)):
+        raise ValidationError({"coupon": "Each coupon can only be selected once."})
+
+    tickets = BookingCoupon.objects.select_related("campaign").filter(
+        user_id=user_id, **{"pk__in" if ids else "code__in": identifiers},
+    ).order_by("pk")
     if booking is not None:
         tickets = tickets.select_for_update(of=("self",))
-    coupon = tickets.filter(pk=coupon_id).first() if coupon_id else tickets.filter(code=code.upper()).first()
-    if (
-        not coupon or coupon.used_at or coupon.booking_id
-        or not active_campaigns().filter(pk=coupon.campaign_id).exists()
-        or (coupon.campaign.audience == "targeted" and user_id not in coupon.campaign.user_ids)
-        or not campaign_matches_hotel(coupon.campaign, hotel)
-    ):
-        raise ValidationError({"coupon": "This coupon is unavailable for this booking."})
-    campaign = coupon.campaign
-    discount = campaign.discount_value
-    if campaign.discount_type == "percentage":
-        discount = (room_subtotal * discount / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    coupons = list(tickets)
+    if len(coupons) != len(identifiers):
+        raise ValidationError({"coupon": "A selected coupon is unavailable for this booking."})
+
+    eligible_campaigns = set(active_campaigns().filter(
+        pk__in={coupon.campaign_id for coupon in coupons},
+    ).values_list("pk", flat=True))
+    discount = Decimal("0")
+    for coupon in coupons:
+        campaign = coupon.campaign
+        if (
+            coupon.used_at or coupon.booking_id or campaign.pk not in eligible_campaigns
+            or (campaign.audience == "targeted" and user_id not in campaign.user_ids)
+            or not campaign_matches_hotel(campaign, hotel)
+        ):
+            raise ValidationError({"coupon": "A selected coupon is unavailable for this booking."})
+        value = campaign.discount_value
+        if campaign.discount_type == "percentage":
+            value = (room_subtotal * value / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        discount += value
+
     discount = min(discount, room_subtotal, total)
     applied = round_mmk(total, hotel.base_currency) - round_mmk(total - discount, hotel.base_currency)
     if applied <= 0:
-        raise ValidationError({"coupon": "This coupon has no value on this booking."})
+        raise ValidationError({"coupon": "The selected coupons have no value on this booking."})
     if booking is not None:
-        coupon.booking = booking
-        coupon.save(update_fields=["booking"])
+        BookingCoupon.objects.filter(pk__in=[coupon.pk for coupon in coupons]).update(booking=booking)
     return applied
 
 

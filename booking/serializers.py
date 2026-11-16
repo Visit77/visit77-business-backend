@@ -2953,6 +2953,10 @@ class RequestedAddOnSerializer(serializers.Serializer):
 class BookingCreateSerializer(serializers.Serializer):
     coupon_id = serializers.UUIDField(required=False)
     coupon_code = serializers.CharField(required=False, max_length=32)
+    coupon_ids = serializers.ListField(child=serializers.UUIDField(), required=False, max_length=100)
+    coupon_codes = serializers.ListField(
+        child=serializers.CharField(max_length=32), required=False, max_length=100,
+    )
     core_business_id = serializers.IntegerField(min_value=1)
     core_customer_user_id = serializers.IntegerField(min_value=1, required=False, allow_null=True)
     check_in = serializers.DateField()
@@ -3064,6 +3068,10 @@ class PMSAvailableRoomSearchSerializer(serializers.Serializer):
 class BookingEstimateSerializer(serializers.Serializer):
     coupon_id = serializers.UUIDField(required=False)
     coupon_code = serializers.CharField(required=False, max_length=32)
+    coupon_ids = serializers.ListField(child=serializers.UUIDField(), required=False, max_length=100)
+    coupon_codes = serializers.ListField(
+        child=serializers.CharField(max_length=32), required=False, max_length=100,
+    )
     core_business_id = serializers.IntegerField(min_value=1)
     check_in = serializers.DateField()
     check_out = serializers.DateField()

@@ -159,6 +159,25 @@ class BookingCouponTests(TestCase):
         self.assertEqual(client.get(url, {"business_id": "invalid"}).status_code, 400)
         self.assertEqual(client.get(url, {"business_id": 999}).status_code, 404)
 
+    def test_published_coupon_can_be_claimed_before_it_can_be_used(self):
+        future = (self.now + timedelta(days=1)).isoformat()
+        upcoming = self.campaign(start_at=future)
+        unpublished = self.campaign(publish_at=future)
+        active = self.campaign()
+        ticket = self.claim(upcoming).data["data"][0]
+        self.assertEqual(ticket["status"], "available_soon")
+        self.assertEqual(self.claim(unpublished).status_code, 404)
+        self.claim(active)
+        with self.assertRaises(ValidationError):
+            estimate_booking({**self.data, "coupon_id": ticket["id"]})
+
+        client = APIClient()
+        discovery = client.get("/api/v1/coupon-campaigns/", {"country_id": 1})
+        self.assertEqual({row["id"] for row in discovery.data["data"]}, {upcoming, active})
+        client.force_authenticate(CoreJWTUser(id=7))
+        response = client.get("/api/v1/me/coupons/", {"status": "available,available_soon"})
+        self.assertEqual({row["status"] for row in response.data["data"]}, {"available", "available_soon"})
+
     def test_my_coupons_filters_by_status_for_current_user(self):
         available = self.campaign(quantity_per_user=1)
         expired = self.campaign(quantity_per_user=1)
@@ -210,6 +229,37 @@ class BookingCouponTests(TestCase):
                 self.assertTrue(url.startswith(f"https://media.example.com/{path}?Expires="), url)
                 self.assertIn("Signature=", url)
                 self.assertIn("Key-Pair-Id=TESTKEY", url)
+
+    def test_multiple_coupons_are_reserved_released_and_consumed_together(self):
+        fixed = self.claim(self.campaign(quantity_per_user=1)).data["data"][0]
+        percent = self.claim(self.campaign(
+            discount_type="percentage", discount_value=10, quantity_per_user=1,
+        )).data["data"][0]
+        ids = [fixed["id"], percent["id"]]
+        client = APIClient()
+        client.force_authenticate(CoreJWTUser(id=7))
+        estimate_url = "/api/v1/public/bookings/estimate/"
+        create_url = "/api/v1/public/bookings/"
+        body = {**self.data, "coupon_ids": ids}
+        response = client.post(estimate_url, body, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(Decimal(str(response.data["data"]["payable_total"])), 53000)
+        self.assertEqual(client.post(estimate_url, {**body, "coupon_ids": [ids[0]] * 2}, format="json").status_code, 400)
+
+        response = client.post(create_url, body, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        booking = Booking.objects.get(pk=response.data["data"]["id"])
+        self.assertEqual(booking.reserved_coupons.count(), 2)
+        self.assertEqual(booking.invoices.get().coupon_discount_amount, 17000)
+        cancel_booking(booking)
+        self.assertFalse(booking.reserved_coupons.exists())
+
+        response = client.post(create_url, {**self.data, "coupon_codes": [fixed["code"], percent["code"]]}, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        booking = Booking.objects.get(pk=response.data["data"]["id"])
+        payment = record_payment(booking, {"provider": "cash", "amount": Decimal("53000")})
+        self.assertEqual(booking.reserved_coupons.filter(used_at__isnull=False).count(), 2)
+        self.assertEqual(payment.ota_revenue_ledger.get(event_type="booking_collection").gross_amount, 70000)
 
     def test_claim_and_coupon_invoice_payment_remittance_and_refund(self):
         campaign_id = self.campaign()

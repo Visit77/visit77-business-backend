@@ -1563,7 +1563,7 @@ class BookingCoupon(models.Model):
     campaign = models.ForeignKey(CouponCampaign, on_delete=models.PROTECT, related_name="coupons")
     user_id = models.PositiveBigIntegerField()
     slot = models.PositiveSmallIntegerField()
-    booking = models.OneToOneField(Booking, null=True, blank=True, on_delete=models.PROTECT, related_name="reserved_coupon")
+    booking = models.ForeignKey(Booking, null=True, blank=True, on_delete=models.PROTECT, related_name="reserved_coupons")
     used_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:

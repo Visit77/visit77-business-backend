@@ -12,7 +12,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 
 from booking.authentication import CoreJWTAuthentication
-from booking.coupons import active_campaigns, campaign_matches_hotel, issue_coupons
+from booking.coupons import campaign_matches_hotel, issue_coupons, published_campaigns
 from booking.integrations.core import CoreClient, CoreIntegrationError
 from booking.models import BookingCoupon, CouponCampaign, Hotel
 from booking.permissions import IsCoreSuperAdmin
@@ -104,7 +104,7 @@ def available_campaign_payloads(hotels, user_id=None, request=None, country_id=N
     hotels = list(hotels)
     if not hotels:
         return {}
-    queryset = active_campaigns()
+    queryset = published_campaigns()
     if country_id is not None:
         queryset = queryset.filter(country_id=country_id)
     campaigns = [
@@ -124,15 +124,23 @@ def available_campaign_payloads(hotels, user_id=None, request=None, country_id=N
 
 
 def ticket_status(ticket):
-    state = "used" if ticket.used_at else "reserved" if ticket.booking_id else "available"
-    if state == "available" and (
-        not ticket.campaign.is_active or ticket.campaign.end_at < timezone.now()
-        or (ticket.campaign.audience == "targeted" and ticket.user_id not in ticket.campaign.user_ids)
+    if ticket.used_at:
+        return "used"
+    if ticket.booking_id:
+        return "reserved"
+
+    now = timezone.now()
+    campaign = ticket.campaign
+    if (
+        not campaign.is_active or campaign.end_at < now
+        or (campaign.audience == "targeted" and ticket.user_id not in campaign.user_ids)
     ):
-        state = "expired"
-    if state == "available" and max(ticket.campaign.start_at, ticket.campaign.publish_at) > timezone.now():
-        state = "scheduled"
-    return state
+        return "expired"
+    if campaign.publish_at > now:
+        return "scheduled"
+    if campaign.start_at > now:
+        return "available_soon"
+    return "available"
 
 
 def ticket_payload(ticket, request=None, *, status=None):
@@ -237,7 +245,7 @@ class CouponCampaignDiscoveryView(APIView):
                 Hotel, core_business_id=serializers.IntegerField(min_value=1).run_validation(business_id),
             )
             return success(available_campaign_payloads([hotel], user_id, request, country_id)[hotel.core_business_id])
-        campaigns = active_campaigns().filter(country_id=country_id).order_by("end_at", "id")
+        campaigns = published_campaigns().filter(country_id=country_id).order_by("end_at", "id")
         tickets = {}
         if user_id:
             for coupon in BookingCoupon.objects.filter(user_id=user_id, campaign__in=campaigns):
@@ -254,7 +262,7 @@ class CouponClaimView(APIView):
 
     @transaction.atomic
     def post(self, request, campaign_id):
-        campaign = get_object_or_404(active_campaigns().select_for_update(), pk=campaign_id)
+        campaign = get_object_or_404(published_campaigns().select_for_update(), pk=campaign_id)
         user_id = request.user.id
         if campaign.audience == "targeted" and user_id not in campaign.user_ids:
             raise serializers.ValidationError({"coupon": "This campaign is unavailable."})
@@ -270,22 +278,25 @@ class MyCouponsView(APIView):
     def get(self, request):
         requested_status = request.query_params.get("status")
         if requested_status is not None:
-            requested_status = serializers.ChoiceField(
-                choices=("available", "expired", "scheduled", "reserved", "used"),
-            ).run_validation(requested_status)
+            status_field = serializers.ChoiceField(
+                choices=("available", "available_soon", "expired", "scheduled", "reserved", "used"),
+            )
+            requested_status = {
+                status_field.run_validation(value.strip()) for value in requested_status.split(",")
+            }
         business_id = request.query_params.get("business_id")
         hotel = None
         if business_id is not None:
             business_id = serializers.IntegerField(min_value=1).run_validation(business_id)
             hotel = get_object_or_404(Hotel, core_business_id=business_id)
             if requested_status is None:
-                requested_status = "available"
+                requested_status = {"available"}
         tickets = BookingCoupon.objects.select_related("campaign").filter(user_id=request.user.id).order_by("campaign__end_at", "slot")
         results = []
         for ticket in tickets:
             if hotel is not None and not campaign_matches_hotel(ticket.campaign, hotel):
                 continue
             status = ticket_status(ticket)
-            if requested_status is None or status == requested_status:
+            if requested_status is None or status in requested_status:
                 results.append(ticket_payload(ticket, request, status=status))
         return success(results)
