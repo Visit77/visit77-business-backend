@@ -279,7 +279,7 @@ class MyCouponsView(APIView):
         requested_status = request.query_params.get("status")
         if requested_status is not None:
             status_field = serializers.ChoiceField(
-                choices=("available", "available_soon", "expired", "scheduled", "reserved", "used"),
+                choices=("all", "available", "available_soon", "expired", "scheduled", "reserved", "used"),
             )
             requested_status = {
                 status_field.run_validation(value.strip()) for value in requested_status.split(",")
@@ -297,6 +297,6 @@ class MyCouponsView(APIView):
             if hotel is not None and not campaign_matches_hotel(ticket.campaign, hotel):
                 continue
             status = ticket_status(ticket)
-            if requested_status is None or status in requested_status:
+            if requested_status is None or "all" in requested_status or status in requested_status:
                 results.append(ticket_payload(ticket, request, status=status))
         return success(results)

@@ -197,6 +197,9 @@ class BookingCouponTests(TestCase):
                 [(status, expected_campaign)],
             )
         self.assertEqual(len(client.get(url).data["data"]), 2)
+        response = client.get(url, {"status": "all", "business_id": self.hotel.core_business_id})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual({ticket["status"] for ticket in response.data["data"]}, {"available", "expired"})
         self.assertEqual(client.get(url, {"status": "invalid"}).status_code, 400)
 
     def test_campaign_category_is_returned_without_filtering_hotel_discovery(self):
