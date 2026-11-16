@@ -87,7 +87,15 @@ class SeasonalRateTests(TestCase):
             (4, [20000, 32000, 50000], [False, True, False]),
         ):
             with self.subTest(nights=nights):
-                booking, _ = create_booking({**self.payload, 'check_out': self.start + timedelta(days=nights)})
+                payload = {**self.payload, 'check_out': self.start + timedelta(days=nights)}
+                estimate = estimate_booking(payload)
+                room_items = [item for item in estimate['summary_items'] if item['type'] == 'room']
+                self.assertEqual([item['amount'] for item in room_items], totals)
+                self.assertEqual(['(Discount)' in item['label'] for item in room_items], labels)
+                if nights == 4:
+                    self.assertIn(self.season.name, room_items[-1]['label'])
+                    self.assertEqual([item['night_count'] for item in room_items], [1, 2, 1])
+                booking, _ = create_booking(payload)
                 invoice = booking.invoices.get()
                 payment = record_payment(booking, {'provider': 'cash', 'amount': invoice.total})
                 for snapshot in (build_invoice_snapshot(invoice), build_receipt_snapshot(payment)):
@@ -97,10 +105,13 @@ class SeasonalRateTests(TestCase):
                         '(Discount)' in line['metadata']['display_description'] for line in lines
                     ], labels)
 
-        booking, _ = create_booking({
+        payload = {
             **self.payload, 'check_in': self.start + timedelta(days=1),
             'check_out': self.start + timedelta(days=3),
-        })
+        }
+        room_items = [item for item in estimate_booking(payload)['summary_items'] if item['type'] == 'room']
+        self.assertEqual([(item['label'], item['amount']) for item in room_items], [('1 x Deluxe', 32000)])
+        booking, _ = create_booking(payload)
         line = booking.invoices.get().lines.get(metadata__line_type='room')
         self.assertEqual(line.total, 32000)
         self.assertNotIn('(Discount)', line.metadata['display_description'])

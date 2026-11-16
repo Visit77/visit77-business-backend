@@ -234,9 +234,9 @@ class BookingCouponTests(TestCase):
                 self.assertIn("Key-Pair-Id=TESTKEY", url)
 
     def test_multiple_coupons_are_reserved_released_and_consumed_together(self):
-        fixed = self.claim(self.campaign(quantity_per_user=1)).data["data"][0]
+        fixed = self.claim(self.campaign(title="Fixed Hotel Coupon", quantity_per_user=1)).data["data"][0]
         percent = self.claim(self.campaign(
-            discount_type="percentage", discount_value=10, quantity_per_user=1,
+            title="Percentage Hotel Coupon", discount_type="percentage", discount_value=10, quantity_per_user=1,
         )).data["data"][0]
         ids = [fixed["id"], percent["id"]]
         client = APIClient()
@@ -254,6 +254,16 @@ class BookingCouponTests(TestCase):
         booking = Booking.objects.get(pk=response.data["data"]["id"])
         self.assertEqual(booking.reserved_coupons.count(), 2)
         self.assertEqual(booking.invoices.get().coupon_discount_amount, 17000)
+        detail = client.get(f"/api/v1/public/bookings/{booking.public_token}/")
+        self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertEqual(detail.data["data"]["coupon_discounts"], [
+            {"name": "Fixed Hotel Coupon", "amount": 10000.0},
+            {"name": "Percentage Hotel Coupon", "amount": 7000.0},
+        ])
+        self.assertEqual(
+            detail.data["data"]["invoices"][0]["coupon_discounts"],
+            detail.data["data"]["coupon_discounts"],
+        )
         cancel_booking(booking)
         self.assertFalse(booking.reserved_coupons.exists())
 
@@ -262,6 +272,17 @@ class BookingCouponTests(TestCase):
         booking = Booking.objects.get(pk=response.data["data"]["id"])
         payment = record_payment(booking, {"provider": "cash", "amount": Decimal("53000")})
         self.assertEqual(booking.reserved_coupons.filter(used_at__isnull=False).count(), 2)
+        CouponCampaign.objects.update(title="Renamed Campaign")
+        for pdf in (
+            render_invoice_pdf(build_invoice_snapshot(booking.invoices.get())),
+            render_receipt_pdf(payment.receipt_snapshot),
+        ):
+            content = "".join(page.extract_text() for page in PdfReader(BytesIO(pdf)).pages)
+            first = content.index("Fixed Hotel Coupon", content.index("Grand Total"))
+            second = content.index("Percentage Hotel Coupon", first)
+            self.assertIn("MMK 10,000", content[first:second])
+            self.assertIn("MMK 7,000", content[second:content.index("Amount Paid", second)])
+
         self.assertEqual(payment.ota_revenue_ledger.get(event_type="booking_collection").gross_amount, 70000)
 
     def test_claim_and_coupon_invoice_payment_remittance_and_refund(self):
@@ -299,7 +320,7 @@ class BookingCouponTests(TestCase):
         for pdf in (render_invoice_pdf(build_invoice_snapshot(invoice)), render_receipt_pdf(payment.receipt_snapshot)):
             text = "".join(page.extract_text() for page in PdfReader(BytesIO(pdf)).pages)
             grand_total = text.index("Grand Total")
-            coupon = text.index("Visit 77 Coupon Discount", grand_total)
+            coupon = text.index("Visit 77 Hotel Coupon", grand_total)
             amount_paid = text.index("Amount Paid", coupon)
             self.assertIn("MMK 70,000", text[grand_total:coupon])
             self.assertIn("MMK 10,000", text[coupon:amount_paid])

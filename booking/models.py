@@ -941,6 +941,7 @@ class Booking(models.Model):
     add_on_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     service_charge_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     tax_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    coupon_discount_snapshot = models.JSONField(default=list, blank=True)
     coupon_discount_amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     discount_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     grand_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)

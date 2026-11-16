@@ -85,8 +85,12 @@ def booking_coupon_discount(data, hotel, room_subtotal, total, *, booking=None):
     eligible_campaigns = set(active_campaigns().filter(
         pk__in={coupon.campaign_id for coupon in coupons},
     ).values_list("pk", flat=True))
-    discount = Decimal("0")
-    for coupon in coupons:
+    by_identifier = {str(coupon.pk) if ids else coupon.code: coupon for coupon in coupons}
+    total_before_discount = round_mmk(total, hotel.base_currency)
+    discount = applied = Decimal("0")
+    snapshot = []
+    for identifier in identifiers:
+        coupon = by_identifier[identifier]
         campaign = coupon.campaign
         if (
             coupon.used_at or coupon.booking_id or campaign.pk not in eligible_campaigns
@@ -97,13 +101,15 @@ def booking_coupon_discount(data, hotel, room_subtotal, total, *, booking=None):
         value = campaign.discount_value
         if campaign.discount_type == "percentage":
             value = (room_subtotal * value / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        discount += value
+        discount = min(discount + value, room_subtotal, total)
+        cumulative = total_before_discount - round_mmk(total - discount, hotel.base_currency)
+        snapshot.append({"name": campaign.title, "amount": str(cumulative - applied)})
+        applied = cumulative
 
-    discount = min(discount, room_subtotal, total)
-    applied = round_mmk(total, hotel.base_currency) - round_mmk(total - discount, hotel.base_currency)
     if applied <= 0:
         raise ValidationError({"coupon": "The selected coupons have no value on this booking."})
     if booking is not None:
+        booking.coupon_discount_snapshot = snapshot
         BookingCoupon.objects.filter(pk__in=[coupon.pk for coupon in coupons]).update(booking=booking)
     return applied
 

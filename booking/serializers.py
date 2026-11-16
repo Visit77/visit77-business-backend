@@ -1753,6 +1753,7 @@ class InvoiceLineSerializer(serializers.ModelSerializer):
 
 
 class InvoiceSerializer(serializers.ModelSerializer):
+    coupon_discounts = serializers.SerializerMethodField()
     booking_code = serializers.CharField(source="booking.booking_code", read_only=True)
     lines = InvoiceLineSerializer(many=True, read_only=True)
     receipts = PaymentSerializer(many=True, read_only=True)
@@ -1768,6 +1769,11 @@ class InvoiceSerializer(serializers.ModelSerializer):
     latest_receipt_summary = serializers.SerializerMethodField()
     pending_charge_groups = serializers.SerializerMethodField()
     payment_summary = serializers.SerializerMethodField()
+
+    def get_coupon_discounts(self, obj):
+        if not obj.coupon_discount_amount:
+            return []
+        return obj.booking.coupon_discount_snapshot
 
     @staticmethod
     def _display_subtotal(obj):
@@ -2512,6 +2518,7 @@ class InvoiceCreateSerializer(serializers.Serializer):
 
 
 class BookingSerializer(serializers.ModelSerializer):
+    coupon_discounts = serializers.JSONField(source="coupon_discount_snapshot", read_only=True)
     grand_total = serializers.DecimalField(
         source="price_before_coupon", max_digits=14, decimal_places=2, read_only=True,
     )
@@ -2586,7 +2593,7 @@ class BookingSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Booking
-        exclude = ["coupon_discount_amount"]
+        exclude = ["coupon_discount_amount", "coupon_discount_snapshot"]
 
 
 class BookingDetailSerializer(BookingSerializer):
