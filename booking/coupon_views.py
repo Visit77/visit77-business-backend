@@ -280,7 +280,7 @@ class CouponClaimView(APIView):
         if campaign.audience == "targeted" and user_id not in campaign.user_ids:
             raise serializers.ValidationError({"coupon": "This campaign is unavailable."})
         if campaign.coupons.filter(user_id=user_id).exists():
-            raise serializers.ValidationError({"coupon": "Already claimed."})
+            raise serializers.ValidationError({"coupon": "You've already claimed the coupon."})
         return success([ticket_payload(ticket, request) for ticket in issue_coupons(campaign, user_id)])
 
 
