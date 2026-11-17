@@ -2491,7 +2491,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
                 (obj.charge_snapshot or {}).get("taxes", [])
             ),
             "discount_total": money(obj.discount_total),
-            "grand_total": money(obj.total),
+            "grand_total": money(obj.total + obj.coupon_discount_amount),
             "deposit_amount": money(deposit_amount),
             "amount_paid": money(obj.paid_amount),
             "amount_due": money(obj.balance),

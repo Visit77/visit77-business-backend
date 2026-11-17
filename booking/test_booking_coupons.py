@@ -256,6 +256,10 @@ class BookingCouponTests(TestCase):
         self.assertEqual(booking.invoices.get().coupon_discount_amount, 17000)
         detail = client.get(f"/api/v1/public/bookings/{booking.public_token}/")
         self.assertEqual(detail.status_code, 200, detail.data)
+        invoice_data = detail.data["data"]["invoices"][0]
+        self.assertEqual(invoice_data["invoice_details"]["grand_total"], 70000.0)
+        self.assertEqual(invoice_data["invoice_details"]["amount_due"], 53000.0)
+        self.assertEqual(invoice_data["total"], 53000.0)
         self.assertEqual(detail.data["data"]["coupon_discounts"], [
             {"name": "Fixed Hotel Coupon", "amount": 10000.0},
             {"name": "Percentage Hotel Coupon", "amount": 7000.0},
