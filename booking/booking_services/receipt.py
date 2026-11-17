@@ -28,7 +28,7 @@ from booking.money_display import format_money as _money
 
 DOCUMENT_FONT = "NotoSansMyanmar"
 DOCUMENT_FONT_BOLD = "NotoSansMyanmar-Bold"
-PDF_RENDER_VERSION = 8
+PDF_RENDER_VERSION = 9
 MYANMAR_TEXT_RE = re.compile(r"[\u1000-\u109f\uaa60-\uaa7f\ua9e0-\ua9ff]")
 
 
@@ -718,8 +718,8 @@ def _render_payment_document_pdf(snapshot, document_title, document_number):
         for coupon in coupons:
             centered_label_rows.add(len(amount_rows))
             amount_rows.append((
-                f'<font color="#C00000"><b>{escape(coupon["name"])}</b></font>',
-                f'<font color="#C00000"><b>{_money(coupon["amount"], currency)}</b></font>',
+                f'<font color="#FF0000"><b>{escape(coupon["name"])} (Visit 77)</b></font>',
+                f'<font color="#FF0000"><b>{_money(coupon["amount"], currency)}</b></font>',
             ))
     if document_title == "Invoice":
         remaining_balance = Decimal(str(snapshot["remaining_balance"]))

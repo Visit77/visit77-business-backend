@@ -278,8 +278,8 @@ class BookingCouponTests(TestCase):
             render_receipt_pdf(payment.receipt_snapshot),
         ):
             content = "".join(page.extract_text() for page in PdfReader(BytesIO(pdf)).pages)
-            first = content.index("Fixed Hotel Coupon", content.index("Grand Total"))
-            second = content.index("Percentage Hotel Coupon", first)
+            first = content.index("Fixed Hotel Coupon (Visit 77)", content.index("Grand Total"))
+            second = content.index("Percentage Hotel Coupon (Visit 77)", first)
             self.assertIn("MMK 10,000", content[first:second])
             self.assertIn("MMK 7,000", content[second:content.index("Amount Paid", second)])
 
