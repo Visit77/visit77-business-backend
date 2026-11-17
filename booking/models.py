@@ -1556,6 +1556,7 @@ class CouponCampaign(models.Model):
     banner_image = models.ImageField(upload_to="booking/coupons/banners/", blank=True)
     popup_image = models.ImageField(upload_to="booking/coupons/popups/", blank=True)
     is_active = models.BooleanField(default=True)
+    deleted_at = models.DateTimeField(null=True, blank=True, editable=False)
 
 
 class BookingCoupon(models.Model):

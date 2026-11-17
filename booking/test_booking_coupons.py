@@ -108,6 +108,25 @@ class BookingCouponTests(TestCase):
             self.assertEqual(row["cities"], [{"id": 68, "name": "Yangon"}])
             self.assertEqual(row["businesses"], [{"id": 7529, "name": "Coupon Hotel", "profile": "https://media.example.com/hotel.jpg"}])
 
+    def test_delete_campaign_hides_it_but_claimed_ticket_still_redeems(self):
+        campaign_id = self.campaign(quantity_per_user=1)
+        ticket = self.claim(campaign_id).data["data"][0]
+        admin_url = "/api/v1/admin/coupon-campaigns/"
+        self.assertEqual(self.client.delete(f"{admin_url}{campaign_id}/").status_code, 204)
+        self.assertEqual(self.client.get(admin_url).data["data"], [])
+        self.assertEqual(self.client.get(f"{admin_url}{campaign_id}/").status_code, 404)
+        self.assertEqual(self.claim(campaign_id, user=8).status_code, 404)
+        client = APIClient()
+        discovery = client.get("/api/v1/coupon-campaigns/", {
+            "country_id": 1, "business_id": self.hotel.core_business_id,
+        })
+        self.assertEqual(discovery.data["data"], [])
+        client.force_authenticate(CoreJWTUser(id=7))
+        coupons = client.get("/api/v1/me/coupons/", {"status": "available"}).data["data"]
+        self.assertEqual([row["id"] for row in coupons], [ticket["id"]])
+        booking, _ = create_booking({**self.data, "coupon_id": ticket["id"]})
+        self.assertEqual(booking.coupon_discount_amount, 10000)
+
     def test_admin_campaign_status(self):
         future = self.now + timedelta(days=1)
         active = self.campaign()

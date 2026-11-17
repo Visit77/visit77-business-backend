@@ -8,16 +8,19 @@ from booking.models import Booking, BookingCoupon, CouponCampaign, Hotel, Invoic
 from booking.money_display import round_mmk
 
 
-def published_campaigns(now=None):
-    now = now or timezone.now()
+def _campaigns_in_publication_window(now):
     return CouponCampaign.objects.filter(
         type="booking", is_active=True, publish_at__lte=now, end_at__gte=now,
     )
 
 
-def active_campaigns(now=None):
+def published_campaigns(now=None):
+    return _campaigns_in_publication_window(now or timezone.now()).filter(deleted_at__isnull=True)
+
+
+def redeemable_campaigns(now=None):
     now = now or timezone.now()
-    return published_campaigns(now).filter(start_at__lte=now)
+    return _campaigns_in_publication_window(now).filter(start_at__lte=now)
 
 
 def campaign_matches_hotel(campaign, hotel):
@@ -82,7 +85,7 @@ def booking_coupon_discount(data, hotel, room_subtotal, total, *, booking=None):
     if len(coupons) != len(identifiers):
         raise ValidationError({"coupon": "A selected coupon is unavailable for this booking."})
 
-    eligible_campaigns = set(active_campaigns().filter(
+    eligible_campaigns = set(redeemable_campaigns().filter(
         pk__in={coupon.campaign_id for coupon in coupons},
     ).values_list("pk", flat=True))
     by_identifier = {str(coupon.pk) if ids else coupon.code: coupon for coupon in coupons}

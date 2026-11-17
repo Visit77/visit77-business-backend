@@ -9,6 +9,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import MethodNotAllowed
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from booking.authentication import CoreJWTAuthentication
@@ -50,7 +51,7 @@ class CampaignSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = CouponCampaign
-        fields = "__all__"
+        exclude = ("deleted_at",)
 
     def get_status(self, campaign):
         now = timezone.now()
@@ -157,9 +158,9 @@ class CouponCampaignAdminView(APIView):
 
     def get(self, request, campaign_id=None):
         campaigns = (
-            [get_object_or_404(CouponCampaign, pk=campaign_id)]
+            [get_object_or_404(CouponCampaign, pk=campaign_id, deleted_at__isnull=True)]
             if campaign_id is not None
-            else list(CouponCampaign.objects.order_by("-id"))
+            else list(CouponCampaign.objects.filter(deleted_at__isnull=True).order_by("-id"))
         )
         rows = CampaignSerializer(campaigns, many=True, context={"request": request}).data
         scopes = {"countries": set(), "states": set(), "cities": set(), "businesses": set()}
@@ -203,8 +204,19 @@ class CouponCampaignAdminView(APIView):
     def patch(self, request, campaign_id=None):
         if campaign_id is None:
             raise MethodNotAllowed(request.method)
-        campaign = get_object_or_404(CouponCampaign.objects.select_for_update(), pk=campaign_id)
+        campaign = get_object_or_404(CouponCampaign.objects.select_for_update(), pk=campaign_id, deleted_at__isnull=True)
         return self._save(request, campaign)
+
+    @transaction.atomic
+    def delete(self, request, campaign_id=None):
+        if campaign_id is None:
+            raise MethodNotAllowed(request.method)
+        campaign = get_object_or_404(
+            CouponCampaign.objects.select_for_update(), pk=campaign_id, deleted_at__isnull=True,
+        )
+        campaign.deleted_at = timezone.now()
+        campaign.save(update_fields=["deleted_at"])
+        return Response(status=204)
 
     @staticmethod
     def _save(request, campaign=None):
