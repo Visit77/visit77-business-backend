@@ -2522,6 +2522,9 @@ class BookingSerializer(serializers.ModelSerializer):
     grand_total = serializers.DecimalField(
         source="price_before_coupon", max_digits=14, decimal_places=2, read_only=True,
     )
+    total = serializers.DecimalField(
+        source="grand_total", max_digits=14, decimal_places=2, read_only=True,
+    )
     booking_code = serializers.CharField(read_only=True)
     room_charge_total = serializers.SerializerMethodField()
     breakfast_total = serializers.SerializerMethodField()

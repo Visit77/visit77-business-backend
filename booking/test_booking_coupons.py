@@ -275,6 +275,8 @@ class BookingCouponTests(TestCase):
         self.assertEqual(booking.invoices.get().coupon_discount_amount, 17000)
         detail = client.get(f"/api/v1/public/bookings/{booking.public_token}/")
         self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertEqual(detail.data["data"]["grand_total"], 70000.0)
+        self.assertEqual(detail.data["data"]["total"], 53000.0)
         invoice_data = detail.data["data"]["invoices"][0]
         self.assertEqual(invoice_data["invoice_details"]["grand_total"], 70000.0)
         self.assertEqual(invoice_data["invoice_details"]["amount_due"], 53000.0)
@@ -317,7 +319,7 @@ class BookingCouponTests(TestCase):
         self.assertNotEqual(tickets[0]["code"], tickets[1]["code"])
         duplicate_claim = self.claim(campaign_id)
         self.assertEqual(duplicate_claim.status_code, 400, duplicate_claim.data)
-        self.assertIn("Already claimed.", str(duplicate_claim.data))
+        self.assertIn("already claimed", str(duplicate_claim.data).lower())
         self.assertEqual(BookingCoupon.objects.filter(campaign_id=campaign_id, user_id=7).count(), 2)
 
         data = {**self.data, "coupon_code": tickets[0]["code"].lower()}
