@@ -56,7 +56,7 @@ def issue_coupons(campaign, user_id):
     ])
 
 
-def booking_coupon_discount(data, hotel, room_subtotal, total, *, booking=None):
+def booking_coupon_discount(data, hotel, total, *, booking=None):
     ids = data.get("coupon_ids") or []
     codes = data.get("coupon_codes") or []
     if data.get("coupon_id"):
@@ -103,8 +103,8 @@ def booking_coupon_discount(data, hotel, room_subtotal, total, *, booking=None):
             raise ValidationError({"coupon": "A selected coupon is unavailable for this booking."})
         value = campaign.discount_value
         if campaign.discount_type == "percentage":
-            value = (room_subtotal * value / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        discount = min(discount + value, room_subtotal, total)
+            value = (total_before_discount * value / 100).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        discount = min(discount + value, total)
         cumulative = total_before_discount - round_mmk(total - discount, hotel.base_currency)
         snapshot.append({"name": campaign.title, "amount": str(cumulative - applied)})
         applied = cumulative

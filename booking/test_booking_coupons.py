@@ -391,6 +391,27 @@ class BookingCouponTests(TestCase):
         with self.assertRaises(ValidationError):
             estimate_booking({**self.data, "coupon_id": coupon.id})
 
+    def test_coupons_use_grand_total_including_tax_and_service_charge(self):
+        self.hotel.ota_invoice_charges = {
+            "taxes": [{"title": "Tax", "mode": "percentage", "value": "10"}],
+            "service_charges": [{"title": "Service", "mode": "percentage", "value": "5"}],
+        }
+        self.hotel.save(update_fields=["ota_invoice_charges"])
+        fixed = self.claim(self.campaign(discount_value=70000)).data["data"][0]
+        percentage = self.claim(self.campaign(
+            discount_type="percentage", discount_value=10,
+        )).data["data"][0]
+        body = {**self.data, "coupon_ids": [fixed["id"], percentage["id"]]}
+        self.assertEqual(estimate_booking(body)["payable_total"], 2450)
+        booking, _ = create_booking(body)
+        self.assertEqual(booking.grand_total, 2450)
+        self.assertEqual(booking.coupon_discount_amount, 78050)
+        full = self.claim(self.campaign(discount_value=90000)).data["data"][0]
+        booking, _ = create_booking({**self.data, "coupon_id": full["id"]})
+        self.assertEqual((booking.grand_total, booking.status), (0, Booking.Status.CONFIRMED))
+        self.assertEqual(booking.invoices.get().tax_total, 7000)
+        self.assertEqual(booking.coupon_discount_amount, 80500)
+
     def test_fully_funded_booking_and_cancellation_reverse_subsidy(self):
         campaign_id = self.campaign(discount_type="percentage", discount_value=100)
         coupon = self.claim(campaign_id).data["data"][0]

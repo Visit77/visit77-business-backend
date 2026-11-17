@@ -1502,7 +1502,6 @@ def estimate_booking(data):
     dates = list(stay_dates(check_in, check_out))
     guest_market = data.get("guest_market", RatePlan.GuestMarket.LOCAL)
     room_total = Decimal("0")
-    coupon_room_subtotal = Decimal("0")
     breakfast_total = Decimal("0")
     grand_total = Decimal("0")
     rooms = []
@@ -1568,7 +1567,6 @@ def estimate_booking(data):
         for day in dates:
             rule = daily_rate_rows.get(day) or periods.get(day)
             original_price, _, unit_price, usd_display_price = _effective_rate_amounts(rule, rate_plan, day, guest_market, discounts)
-            coupon_room_subtotal += unit_price * quantity
             extra_bed_total = extra_bed_amounts(room_type, guest_market)[0] * extra_beds
             meal_plan_night_total = sum((
                 _meal_plan_nightly_total(link, plan, guest_market, quantity)
@@ -1757,7 +1755,7 @@ def estimate_booking(data):
                     "formatted_amount": format_money(charge["amount"], hotel.base_currency),
                 })
     total_before_coupon = grand_total + service_charge_total + tax_total
-    coupon_discount = booking_coupon_discount(data, hotel, coupon_room_subtotal, total_before_coupon)
+    coupon_discount = booking_coupon_discount(data, hotel, total_before_coupon)
     regular_total = round_mmk(total_before_coupon, hotel.base_currency)
     payable_total = regular_total - coupon_discount
     return {
@@ -1846,7 +1844,6 @@ def create_booking(data, idempotency_key=None):
     )
 
     room_total = Decimal("0")
-    coupon_room_subtotal = Decimal("0")
     booking_currency = hotel.base_currency
     guest_market = data.get("guest_market", RatePlan.GuestMarket.LOCAL)
     policy_snapshot = {}
@@ -1962,7 +1959,6 @@ def create_booking(data, idempotency_key=None):
             original_price, _, unit_price, _ = _effective_rate_amounts(rule, rate_plan, day, guest_market, discounts)
             rate_snapshot = seasonal_price_metadata(room_type, day, guest_market)
             rate_snapshot["has_discount"] = original_price is not None and unit_price < original_price
-            coupon_room_subtotal += unit_price * quantity
             extra_bed_total = extra_bed_amounts(room_type, booking.guest_market)[0] * requested.get("extra_beds", 0)
             meal_plan_night_total = sum((
                 _meal_plan_nightly_total(link, plan, guest_market, quantity)
@@ -2075,7 +2071,7 @@ def create_booking(data, idempotency_key=None):
         room_total + add_on_total + booking.service_charge_total + booking.tax_total - booking.discount_total
     )
     booking.coupon_discount_amount = booking_coupon_discount(
-        data, hotel, coupon_room_subtotal, total_before_coupon, booking=booking,
+        data, hotel, total_before_coupon, booking=booking,
     )
     booking.grand_total = round_mmk(total_before_coupon, booking.currency) - booking.coupon_discount_amount
     booking.cancellation_policy_snapshot = policy_snapshot
