@@ -1538,6 +1538,7 @@ class OTARemittanceAuditLog(models.Model):
 
 class CouponCampaign(models.Model):
     title = models.CharField(max_length=160)
+    description = models.TextField(blank=True, default="")
     type = models.CharField(max_length=16, default="booking")
     discount_type = models.CharField(max_length=16, choices=[("fixed", "Fixed"), ("percentage", "Percentage")])
     discount_value = models.DecimalField(max_digits=14, decimal_places=2)

@@ -89,6 +89,7 @@ def campaign_payload(campaign, request=None, tickets=()):
     remaining = sum(ticket.booking_id is None and ticket.used_at is None for ticket in tickets)
     payload = {
         "id": campaign.id, "title": campaign.title, "type": campaign.type,
+        "description": campaign.description,
         "discount_type": campaign.discount_type, "discount_value": campaign.discount_value,
         "currency": campaign.currency, "quantity_per_user": campaign.quantity_per_user,
         "category_id": campaign.category_id,
