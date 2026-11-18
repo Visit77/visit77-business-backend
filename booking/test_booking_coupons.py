@@ -112,7 +112,9 @@ class BookingCouponTests(TestCase):
         campaign_id = self.campaign(quantity_per_user=1)
         ticket = self.claim(campaign_id).data["data"][0]
         admin_url = "/api/v1/admin/coupon-campaigns/"
-        self.assertEqual(self.client.delete(f"{admin_url}{campaign_id}/").status_code, 204)
+        response = self.client.delete(f"{admin_url}{campaign_id}/")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["data"]["message"], "Successfully deleted")
         self.assertEqual(self.client.get(admin_url).data["data"], [])
         self.assertEqual(self.client.get(f"{admin_url}{campaign_id}/").status_code, 404)
         self.assertEqual(self.claim(campaign_id, user=8).status_code, 404)

@@ -9,7 +9,6 @@ from rest_framework import serializers
 from rest_framework.exceptions import MethodNotAllowed
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from booking.authentication import CoreJWTAuthentication
@@ -219,7 +218,7 @@ class CouponCampaignAdminView(APIView):
         )
         campaign.deleted_at = timezone.now()
         campaign.save(update_fields=["deleted_at"])
-        return Response(status=204)
+        return success({"message": "Successfully deleted"})
 
     @staticmethod
     def _save(request, campaign=None):
