@@ -104,7 +104,7 @@ from booking.serializers import (
     DEFAULT_CANCELLATION_POLICY,
     normalize_cancellation_policy,
 )
-from booking.services import apply_check_in_invoice_adjustments, availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, deprovision_hotel, ensure_daily_inventory_for_room_type, estimate_booking, format_money, reconcile_daily_inventory_for_room_type, record_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, release_checked_in_room_inventory, replace_booking_payment_snapshot, sync_guest_profile, update_reservation_for_check_in, validate_assignment_preferences
+from booking.services import apply_check_in_invoice_adjustments, availability_for_hotel_with_display, availability_for_hotels, cancel_booking, create_admin_reservation, create_booking, create_invoice, create_walk_in_booking, deprovision_hotel, ensure_daily_inventory_for_room_type, estimate_booking, format_money, reconcile_daily_inventory_for_room_type, record_payment, restore_booking_hold_for_payment, refund_payment, refund_quote as calculate_refund_quote, release_checked_in_booking_inventory, release_checked_in_room_inventory, replace_booking_payment_snapshot, sync_guest_profile, update_reservation_for_check_in, validate_assignment_preferences
 from config.response_formatter import success
 
 import logging
@@ -1656,10 +1656,10 @@ class CorePaymentSuccessView(APIView):
         query = Q()
 
         if data.get("booking_id"):
-            query |= Q(id=data["booking_id"])
+            query &= Q(id=data["booking_id"])
 
         if data.get("booking_public_token"):
-            query |= Q(public_token=data["booking_public_token"])
+            query &= Q(public_token=data["booking_public_token"])
 
         booking = (
             Booking.objects
@@ -1703,11 +1703,22 @@ class CorePaymentSuccessView(APIView):
                 },
             )
 
-        if booking.status != Booking.Status.PENDING_PAYMENT:
+        reconcile = data["reconcile"]
+        if booking.status != Booking.Status.PENDING_PAYMENT and not (
+            reconcile and booking.status == Booking.Status.EXPIRED
+        ):
             raise ValidationError(
                 f"A booking in status '{booking.status}' "
                 "cannot be marked paid by Core."
             )
+
+        if reconcile:
+            if booking.source != Booking.Source.OTA or data["currency"] != booking.currency:
+                raise ValidationError("Verified payment does not match the OTA booking currency.")
+            if booking.status == Booking.Status.EXPIRED or (
+                booking.hold_expires_at and booking.hold_expires_at <= timezone.now()
+            ):
+                restore_booking_hold_for_payment(booking)
 
         payment_payload = data["payment"] or {}
 
@@ -1719,7 +1730,7 @@ class CorePaymentSuccessView(APIView):
                 "status": Payment.Status.PAID,
                 "amount": data["amount"],
                 "metadata": {
-                    "source": "visit77_core_aya_webhook",
+                    "source": "visit77_core_aya_reconcile" if reconcile else "visit77_core_aya_webhook",
                     "core_payment": payment_payload,
                     "aya": data.get("aya") or {},
                 },

@@ -970,6 +970,10 @@ class Booking(models.Model):
         indexes = [models.Index(fields=["hotel", "check_in", "check_out"]), models.Index(fields=["reference"])]
 
     @property
+    def coupon_discounts(self):
+        return [{"name": item["name"], "amount": item["amount"]} for item in self.coupon_discount_snapshot]
+
+    @property
     def price_before_coupon(self):
         return self.grand_total + self.coupon_discount_amount
 

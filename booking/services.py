@@ -12,7 +12,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from booking.room_pricing import effective_room_amounts, seasonal_price_metadata, validate_extra_bed_settlement, extra_bed_price_payload, extra_bed_amounts, discounted_room_amounts, guest_price_fields, market_default_prices
-from booking.coupons import booking_coupon_discount, consume_booking_coupon, release_booking_coupon
+from booking.coupons import booking_coupon_discount, consume_booking_coupon, release_booking_coupon, restore_expired_booking_coupons
 from booking.money_display import format_amount, format_money, round_mmk
 from booking.add_on_templates import validate_configuration_values
 from booking.booking_services.invoice_charges import (
@@ -2947,6 +2947,44 @@ def apply_check_in_invoice_adjustments(booking, adjustments=None):
     booking.grand_total += invoice.total - previous_total
     booking.save(update_fields=["grand_total", "updated_at"])
     return invoice
+
+
+def restore_booking_hold_for_payment(booking):
+    """Restore released inventory inside the caller's locked payment transaction."""
+    if booking.check_in < timezone.localdate():
+        raise ValidationError("The booking check-in date has passed.")
+
+    if booking.status == Booking.Status.EXPIRED:
+        if not booking.hotel.is_active or not uses_shared_daily_inventory(
+            booking.hotel, booking.source, booking.inventory_mode,
+        ):
+            raise ValidationError("The original hotel inventory is unavailable.")
+
+        dates = list(stay_dates(booking.check_in, booking.check_out))
+        quantities = defaultdict(int)
+        room_types = {}
+        for room in booking.rooms.select_related("room_type").order_by("room_type_id"):
+            quantities[room.room_type_id] += room.quantity
+            room_types[room.room_type_id] = room.room_type
+
+        if not quantities:
+            raise ValidationError("The booking has no rooms to reserve.")
+
+        for room_type_id, quantity in quantities.items():
+            room_type = room_types[room_type_id]
+            if not room_type.booking_enabled or not room_type.core_active:
+                raise ValidationError({"rooms": f"{room_type.name} is no longer bookable."})
+            rows = _lock_inventory(room_type, dates)
+            if len(rows) != len(dates) or any(row.available_rooms < quantity for row in rows):
+                raise ValidationError({"rooms": f"{room_type.name} is no longer available for all selected dates."})
+            DailyInventory.objects.filter(pk__in=[row.pk for row in rows]).update(
+                held_rooms=F("held_rooms") + quantity,
+            )
+        restore_expired_booking_coupons(booking)
+
+    booking.status = Booking.Status.PENDING_PAYMENT
+    booking.hold_expires_at = None
+    booking.save(update_fields=["status", "hold_expires_at", "updated_at"])
 
 
 @transaction.atomic

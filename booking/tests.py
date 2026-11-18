@@ -8029,6 +8029,44 @@ class BookingApiTests(BookingServiceTests):
         self.assertTrue(duplicate.data["duplicate"])
         self.assertEqual(Payment.objects.filter(provider_reference="AYA-BKG-test-001").count(), 1)
 
+    def test_core_payment_reconciliation_reserves_expired_booking_inventory_once(self):
+        from booking.services import expire_pending_bookings
+
+        booking, _ = create_booking(self.payload())
+        Booking.objects.filter(pk=booking.pk).update(hold_expires_at=timezone.now() - timedelta(seconds=1))
+        expire_pending_bookings()
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, Booking.Status.EXPIRED)
+        self.assertEqual(list(DailyInventory.objects.values_list("held_rooms", flat=True)), [0, 0])
+
+        payload = {
+            "booking_id": str(booking.id),
+            "business_id": self.hotel.core_business_id,
+            "reconcile": True,
+            "payment": {
+                "amount": str(booking.grand_total), "currency": booking.currency,
+                "payment_reference": "AYA-BKG-reconcile",
+            },
+        }
+        url = "/api/v1/admin/payments/core-success/"
+        headers = {"HTTP_X_BOOKING_ADMIN_KEY": "test-admin-key"}
+
+        DailyInventory.objects.update(stop_sell=True)
+        unavailable = self.client.post(url, payload, format="json", **headers)
+        self.assertEqual(unavailable.status_code, 400, unavailable.data)
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, Booking.Status.EXPIRED)
+        self.assertFalse(booking.payments.exists())
+
+        DailyInventory.objects.update(stop_sell=False)
+        confirmed = self.client.post(url, payload, format="json", **headers)
+        self.assertEqual(confirmed.status_code, 201, confirmed.data)
+        self.assertEqual(confirmed.data["data"]["booking"]["status"], Booking.Status.CONFIRMED)
+        duplicate = self.client.post(url, payload, format="json", **headers)
+        self.assertEqual(duplicate.status_code, 200, duplicate.data)
+        self.assertEqual(booking.payments.count(), 1)
+        self.assertEqual(list(DailyInventory.objects.values_list("reserved_rooms", flat=True)), [2, 2])
+
     def test_admin_api_requires_key(self):
         denied = self.client.get("/api/v1/admin/bookings/")
         allowed = self.client.get("/api/v1/admin/bookings/", HTTP_X_BOOKING_ADMIN_KEY="test-admin-key")

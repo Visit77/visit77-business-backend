@@ -88,13 +88,15 @@ def request_user_id(request):
 
 def campaign_payload(campaign, request=None, tickets=(), *, include_scope=False):
     remaining = sum(ticket.booking_id is None and ticket.used_at is None for ticket in tickets)
+    datetime_field = serializers.DateTimeField()
     payload = {
         "id": campaign.id, "title": campaign.title, "type": campaign.type,
         "description": campaign.description,
         "discount_type": campaign.discount_type, "discount_value": campaign.discount_value,
         "currency": campaign.currency, "quantity_per_user": campaign.quantity_per_user,
         "category_id": campaign.category_id,
-        "start_at": campaign.start_at, "end_at": campaign.end_at,
+        "start_at": datetime_field.to_representation(campaign.start_at),
+        "end_at": datetime_field.to_representation(campaign.end_at),
         "claim_status": "claimed" if tickets else "claimable",
         "remaining_quantity": remaining,
     }

@@ -107,6 +107,8 @@ def booking_coupon_discount(data, hotel, total, *, booking=None):
         discount = min(discount + value, total)
         cumulative = total_before_discount - round_mmk(total - discount, hotel.base_currency)
         snapshot.append({"name": campaign.title, "amount": str(cumulative - applied)})
+        if booking is not None:
+            snapshot[-1]["coupon_id"] = str(coupon.pk)
         applied = cumulative
 
     if applied <= 0:
@@ -119,6 +121,22 @@ def booking_coupon_discount(data, hotel, total, *, booking=None):
 
 def release_booking_coupon(booking):
     BookingCoupon.objects.filter(booking=booking, used_at__isnull=True).update(booking=None)
+
+
+def restore_expired_booking_coupons(booking):
+    if not booking.coupon_discount_amount:
+        return
+
+    coupon_ids = [item.get("coupon_id") for item in booking.coupon_discount_snapshot]
+    if not coupon_ids or not all(coupon_ids):
+        raise ValidationError({"coupon": "The original coupon tickets could not be identified."})
+
+    tickets = list(BookingCoupon.objects.select_for_update().filter(
+        pk__in=coupon_ids, user_id=booking.booked_by_core_user_id,
+    ).order_by("pk"))
+    if len(tickets) != len(coupon_ids) or any(ticket.booking_id or ticket.used_at for ticket in tickets):
+        raise ValidationError({"coupon": "An original coupon ticket has already been reserved or used."})
+    BookingCoupon.objects.filter(pk__in=coupon_ids).update(booking=booking)
 
 
 def consume_booking_coupon(invoice):

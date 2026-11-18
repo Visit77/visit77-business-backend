@@ -339,7 +339,7 @@ def _build_document_snapshot(
             "subtotal": str(display_subtotal),
             "tax_total": str(invoice.tax_total if invoice else booking.tax_total),
             "discount_total": str(invoice.discount_total if invoice else booking.discount_total),
-            "coupon_discounts": booking.coupon_discount_snapshot if invoice and invoice.coupon_discount_amount else [],
+            "coupon_discounts": booking.coupon_discounts if invoice and invoice.coupon_discount_amount else [],
             "coupon_discount_amount": str(invoice.coupon_discount_amount if invoice else Decimal("0")),
             "invoice_total": str(invoice.total if invoice else booking.grand_total),
             "manual_adjustments": (
