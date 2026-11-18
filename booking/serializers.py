@@ -2596,7 +2596,7 @@ class BookingSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Booking
-        exclude = ["coupon_discount_amount", "coupon_discount_snapshot"]
+        exclude = ["coupon_discount_amount", "coupon_discount_snapshot", "hidden_from_my_bookings"]
 
 
 class BookingDetailSerializer(BookingSerializer):

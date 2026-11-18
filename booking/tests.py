@@ -7317,6 +7317,27 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(room["extra_bed_count"], 2)
         self.assertEqual(room["extra_beds"], 2)
 
+    def test_delete_my_booking_only_hides_it_for_the_booker(self):
+        booking, _ = create_booking({**self.payload(), "booked_by_core_user_id": 501})
+        history_url = "/api/v1/public/my-bookings/"
+        delete_url = f"{history_url}{booking.id}/"
+        owner = {"HTTP_AUTHORIZATION": f"Bearer {self.core_access_token(user_id=501)}"}
+        other = {"HTTP_AUTHORIZATION": f"Bearer {self.core_access_token(user_id=502)}"}
+        self.assertEqual(self.client.get(history_url, **owner).data["data"]["count"], 1)
+        self.assertEqual(self.client.delete(delete_url, **other).status_code, 404)
+        for _ in range(2):
+            self.assertEqual(self.client.delete(delete_url, **owner).status_code, 204)
+        self.assertEqual(self.client.get(history_url, **owner).data["data"]["bookings"], [])
+
+        detail = self.client.get(
+            f"/api/v1/admin/bookings/{booking.id}/",
+            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+            HTTP_X_BOOKING_BUSINESS_ID=str(self.hotel.core_business_id),
+        )
+        self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertEqual(detail.data["data"]["status"], booking.status)
+        self.assertNotIn("hidden_from_my_bookings", detail.data["data"])
+
     def test_logged_in_user_can_list_bookings_they_created(self):
         self.hotel.cover_image_url = "https://staging-api.visit77.com/media/business_profile/hotel.jpg"
         self.hotel.save(update_fields=["cover_image_url"])

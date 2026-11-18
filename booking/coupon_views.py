@@ -152,6 +152,36 @@ def ticket_payload(ticket, request=None, *, status=None):
     }
 
 
+def add_campaign_scope_details(rows):
+    scopes = {"countries": set(), "states": set(), "cities": set(), "businesses": set()}
+    for row in rows:
+        scopes["countries"].add(row["country_id"])
+        scopes["states"].update(row["state_ids"])
+        scopes["cities"].update(row["city_ids"])
+        scopes["businesses"].update(row["business_ids"])
+    names = {}
+    if rows:
+        try:
+            names = CoreClient().post(
+                "booking-integrations/coupons/scope-names/",
+                json={key: sorted(ids) for key, ids in scopes.items()},
+            )
+        except CoreIntegrationError:
+            logging.getLogger(__name__).warning("Could not resolve coupon scope names from Core.")
+    for row in rows:
+        row["country_name"] = names.get("countries", {}).get(str(row["country_id"]))
+        states = names.get("states", {})
+        row["state_names"] = [states.get(str(pk)) for pk in row["state_ids"]]
+        cities = names.get("cities", {})
+        row["cities"] = [{"id": pk, "name": cities.get(str(pk))} for pk in row["city_ids"]]
+        businesses = names.get("businesses", {})
+        profiles = names.get("business_profiles", {})
+        row["businesses"] = [
+            {"id": pk, "name": businesses.get(str(pk)), "profile": profiles.get(str(pk))}
+            for pk in row["business_ids"]
+        ]
+
+
 class CouponCampaignAdminView(APIView):
     authentication_classes = [CoreJWTAuthentication]
     permission_classes = [IsCoreSuperAdmin]
@@ -164,35 +194,7 @@ class CouponCampaignAdminView(APIView):
             else list(CouponCampaign.objects.filter(deleted_at__isnull=True).order_by("-id"))
         )
         rows = CampaignSerializer(campaigns, many=True, context={"request": request}).data
-        scopes = {"countries": set(), "states": set(), "cities": set(), "businesses": set()}
-        for campaign in campaigns:
-            scopes["countries"].add(campaign.country_id)
-            scopes["states"].update(campaign.state_ids)
-            scopes["cities"].update(campaign.city_ids)
-            scopes["businesses"].update(campaign.business_ids)
-
-        names = {}
-        if campaigns:
-            try:
-                names = CoreClient().post(
-                    "booking-integrations/coupons/scope-names/",
-                    json={key: sorted(ids) for key, ids in scopes.items()},
-                )
-            except CoreIntegrationError:
-                logging.getLogger(__name__).warning("Could not resolve coupon scope names from Core.")
-
-        for row in rows:
-            row["country_name"] = names.get("countries", {}).get(str(row["country_id"]))
-            states = names.get("states", {})
-            row["state_names"] = [states.get(str(pk)) for pk in row["state_ids"]]
-            cities = names.get("cities", {})
-            row["cities"] = [{"id": pk, "name": cities.get(str(pk))} for pk in row["city_ids"]]
-            businesses = names.get("businesses", {})
-            profiles = names.get("business_profiles", {})
-            row["businesses"] = [
-                {"id": pk, "name": businesses.get(str(pk)), "profile": profiles.get(str(pk))}
-                for pk in row["business_ids"]
-            ]
+        add_campaign_scope_details(rows)
         return success(rows[0] if campaign_id is not None else rows)
 
     @transaction.atomic
@@ -311,5 +313,14 @@ class MyCouponsView(APIView):
                 continue
             status = ticket_status(ticket)
             if requested_status is None or "all" in requested_status or status in requested_status:
-                results.append(ticket_payload(ticket, request, status=status))
+                result = ticket_payload(ticket, request, status=status)
+                campaign = ticket.campaign
+                result["campaign"].update(
+                    country_id=campaign.country_id,
+                    state_ids=campaign.state_ids,
+                    city_ids=campaign.city_ids,
+                    business_ids=campaign.business_ids,
+                )
+                results.append(result)
+        add_campaign_scope_details([result["campaign"] for result in results])
         return success(results)

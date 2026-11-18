@@ -8,7 +8,7 @@ import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
-from django.http import FileResponse
+from django.http import FileResponse, HttpResponse
 from django.shortcuts import redirect
 from django.db import transaction
 from django.db.models import Count, F, Max, Prefetch, Q
@@ -986,7 +986,7 @@ class MyBookingHistoryView(APIView):
 
     def get(self, request):
         queryset = Booking.objects.filter(
-            booked_by_core_user_id=request.user.id,
+            booked_by_core_user_id=request.user.id, hidden_from_my_bookings=False,
         ).select_related("hotel").prefetch_related(
             "rooms__nights", "rooms__assignments__physical_room", "guests",
             "add_ons", "payments", "invoices__lines", "invoices__receipts",
@@ -1019,6 +1019,19 @@ class MyBookingHistoryView(APIView):
             "count": len(bookings),
             "bookings": BookingHistorySerializer(bookings, many=True).data,
         })
+
+
+class MyBookingHistoryDeleteView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, booking_id):
+        updated = Booking.objects.filter(
+            pk=booking_id, booked_by_core_user_id=request.user.id,
+        ).update(hidden_from_my_bookings=True)
+        if not updated:
+            raise NotFound("Booking not found.")
+        return HttpResponse(status=204)
 
 
 class OTARevenueView(APIView):

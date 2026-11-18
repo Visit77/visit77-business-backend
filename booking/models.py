@@ -919,6 +919,7 @@ class Booking(models.Model):
     public_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     hotel = models.ForeignKey(Hotel, on_delete=models.PROTECT, related_name="bookings")
     booked_by_core_user_id = models.PositiveBigIntegerField(null=True, blank=True, db_index=True)
+    hidden_from_my_bookings = models.BooleanField(default=False)
     core_customer_user_id = models.PositiveBigIntegerField(null=True, blank=True)
     idempotency_key = models.CharField(max_length=128, null=True, blank=True)
     status = models.CharField(max_length=32, choices=Status.choices, default=Status.PENDING_PAYMENT)

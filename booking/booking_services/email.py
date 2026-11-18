@@ -146,7 +146,11 @@ def build_booking_confirmation_context(booking, primary_guest):
         policy.get("description")
         or "Please contact the hotel for detailed cancellation terms."
     )
-    hotel_phones = _hotel_phone_numbers(booking.hotel.phone)
+    verification = hotel_snapshot.get("merchant_verification") or {}
+    hotel_phones = _hotel_phone_numbers([
+        verification.get("reception_phone_one"),
+        verification.get("receiption_phone_two"),
+    ]) or _hotel_phone_numbers(booking.hotel.phone)
     return {
         "property_name": booking.hotel.name,
         "property_address": booking.hotel.address or "-",

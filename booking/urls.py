@@ -19,6 +19,7 @@ from booking.views import (
     HotelGuestStayHistoryView,
     IntegrationStatusView,
     MealPlanViewSet,
+    MyBookingHistoryDeleteView,
     MyBookingHistoryView,
     OTARevenueView,
     OTAInvoiceChargeViewSet,
@@ -226,6 +227,7 @@ urlpatterns = [
     path("public/hotels/<int:core_business_id>/meal-plans/", PublicHotelMealPlanView.as_view()),
     path("public/bookings/estimate/", PublicBookingEstimateView.as_view()),
     path("public/my-bookings/", MyBookingHistoryView.as_view()),
+    path("public/my-bookings/<uuid:booking_id>/", MyBookingHistoryDeleteView.as_view()),
     path("public/bookings/", PublicBookingCreateView.as_view()),
     path("public/bookings/<uuid:public_token>/", PublicBookingDetailView.as_view()),
     path(

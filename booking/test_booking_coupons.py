@@ -159,6 +159,33 @@ class BookingCouponTests(TestCase):
         now_id = self.campaign(publish_at="now")
         self.assertLessEqual(before, CouponCampaign.objects.get(pk=now_id).publish_at)
 
+    def test_my_coupons_include_campaign_scope_details(self):
+        campaign_id = self.campaign(description="Save on your hotel stay.")
+        self.claim(campaign_id)
+        client = APIClient()
+        client.force_authenticate(CoreJWTUser(id=7))
+        with patch("booking.coupon_views.CoreClient.post", return_value={
+            "countries": {"1": "Myanmar"}, "states": {"5": "Yangon Region"},
+            "cities": {"68": "Yangon"}, "businesses": {"7529": "Coupon Hotel"},
+            "business_profiles": {"7529": "https://media.example.com/hotel.jpg"},
+        }) as lookup:
+            response = client.get("/api/v1/me/coupons/", {"status": "all"})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(len(response.data["data"]), 2)
+        lookup.assert_called_once_with(
+            "booking-integrations/coupons/scope-names/",
+            json={"countries": [1], "states": [5], "cities": [68], "businesses": [7529]},
+        )
+        for ticket in response.data["data"]:
+            campaign = ticket["campaign"]
+            self.assertEqual(campaign["description"], "Save on your hotel stay.")
+            self.assertEqual(campaign["country_name"], "Myanmar")
+            self.assertEqual(campaign["state_names"], ["Yangon Region"])
+            self.assertEqual(campaign["cities"], [{"id": 68, "name": "Yangon"}])
+            self.assertEqual(campaign["businesses"], [
+                {"id": 7529, "name": "Coupon Hotel", "profile": "https://media.example.com/hotel.jpg"},
+            ])
+
     def test_my_coupons_filters_by_core_business_id(self):
         general = self.campaign(state_ids=[], city_ids=[], business_ids=[], quantity_per_user=1)
         hotel_only = self.campaign(business_ids=[self.hotel.core_business_id], quantity_per_user=1)
