@@ -102,14 +102,17 @@ class RoomPriceDiscountSerializer(BasePriceFieldNamesMixin, serializers.ModelSer
             raise serializers.ValidationError("Set the normal room price before adding a discount.")
         for field in PRICE_FIELDS:
             attrs.setdefault(field, getattr(self.instance, field, None))
-        if not any(attrs.get(field) is not None for field in PRICE_FIELDS):
-            raise serializers.ValidationError("Set at least one Local/Foreigner base currency or USD discount price.")
         for field in PRICE_FIELDS:
             value, normal = attrs.get(field), getattr(room_type, field)
+            if normal is None and value == 0:
+                attrs[field] = None
+                continue
             if value is None or normal == value == 0:
                 continue
             if normal is None or value >= normal:
                 raise serializers.ValidationError({field.replace("_mmk_", "_base_"): "Set a discount price lower than its configured normal price."})
+        if not any(attrs.get(field) is not None for field in PRICE_FIELDS):
+            raise serializers.ValidationError("Set at least one Local/Foreigner base currency or USD discount price.")
         mode = attrs.get("timing_mode", getattr(self.instance, "timing_mode", None))
         if mode == RoomPriceDiscount.TimingMode.MANUAL:
             start = (

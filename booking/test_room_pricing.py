@@ -278,6 +278,26 @@ class RoomPricingTests(TestCase):
         self.assertTrue(serializer.is_valid(), serializer.errors)
         self.assertIsNone(serializer.save().local_usd_percentage)
 
+    def test_discount_ignores_zero_placeholders_for_unconfigured_prices(self):
+        self.room_type.local_usd_price = None
+        self.room_type.foreign_mmk_price = None
+        self.room_type.foreign_usd_price = None
+        discount = self.discount()
+        serializer = RoomPriceDiscountSerializer(
+            discount,
+            data={"local_base_price": "100", "local_usd_price": "0.0",
+                  "foreign_base_price": "0.0", "foreign_usd_price": "0.0"},
+            partial=True,
+            context={"room_type": self.room_type},
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        discount = serializer.save()
+        self.assertEqual(discount.local_mmk_price, Decimal("100"))
+        self.assertIsNone(discount.local_usd_price)
+        self.assertIsNone(discount.local_usd_percentage)
+        self.assertIsNone(discount.foreign_mmk_price)
+        self.assertIsNone(discount.foreign_usd_price)
+
     def test_each_currency_can_be_the_only_supplied_discount(self):
         for field, amount in zip(PRICE_FIELDS, (80000, 80, 160000, 160)):
             serializer = RoomPriceDiscountSerializer(data={"timing_mode": "manual", field.replace("_mmk_", "_base_"): amount}, context={"room_type": self.room_type})
