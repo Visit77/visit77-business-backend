@@ -6,7 +6,7 @@ from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import serializers
-from rest_framework.exceptions import MethodNotAllowed
+from rest_framework.exceptions import MethodNotAllowed, NotFound
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
@@ -84,7 +84,7 @@ def request_user_id(request):
     return request.user.id if request.user and request.user.is_authenticated else None
 
 
-def campaign_payload(campaign, request=None, tickets=()):
+def campaign_payload(campaign, request=None, tickets=(), *, include_scope=False):
     remaining = sum(ticket.booking_id is None and ticket.used_at is None for ticket in tickets)
     payload = {
         "id": campaign.id, "title": campaign.title, "type": campaign.type,
@@ -96,12 +96,19 @@ def campaign_payload(campaign, request=None, tickets=()):
         "claim_status": "claimed" if tickets else "claimable",
         "remaining_quantity": remaining,
     }
+    if include_scope:
+        payload.update(
+            country_id=campaign.country_id,
+            state_ids=campaign.state_ids,
+            city_ids=campaign.city_ids,
+            business_ids=campaign.business_ids,
+        )
     for field in ("banner_image", "popup_image"):
         payload[f"{field}_url"] = coupon_image_url(getattr(campaign, field), request)
     return payload
 
 
-def available_campaign_payloads(hotels, user_id=None, request=None, country_id=None):
+def available_campaign_payloads(hotels, user_id=None, request=None, country_id=None, *, include_scope=False):
     hotels = list(hotels)
     if not hotels:
         return {}
@@ -118,7 +125,9 @@ def available_campaign_payloads(hotels, user_id=None, request=None, country_id=N
             tickets_by_campaign.setdefault(ticket.campaign_id, []).append(ticket)
     return {
         hotel.core_business_id: [
-            campaign_payload(campaign, request, tickets_by_campaign.get(campaign.id, ()))
+            campaign_payload(
+                campaign, request, tickets_by_campaign.get(campaign.id, ()), include_scope=include_scope,
+            )
             for campaign in campaigns if campaign_matches_hotel(campaign, hotel)
         ] for hotel in hotels
     }
@@ -152,8 +161,10 @@ def ticket_payload(ticket, request=None, *, status=None):
 
 
 def add_campaign_scope_details(rows):
-    scopes = {"countries": set(), "states": set(), "cities": set(), "businesses": set()}
+    scopes = {key: set() for key in ("countries", "states", "cities", "businesses", "categories")}
     for row in rows:
+        if row["category_id"] is not None:
+            scopes["categories"].add(row["category_id"])
         scopes["countries"].add(row["country_id"])
         scopes["states"].update(row["state_ids"])
         scopes["cities"].update(row["city_ids"])
@@ -168,6 +179,11 @@ def add_campaign_scope_details(rows):
         except CoreIntegrationError:
             logging.getLogger(__name__).warning("Could not resolve coupon scope names from Core.")
     for row in rows:
+        category_id = row["category_id"]
+        row["category"] = (
+            {"id": category_id, "name": names.get("categories", {}).get(str(category_id))}
+            if category_id is not None else None
+        )
         row["country_name"] = names.get("countries", {}).get(str(row["country_id"]))
         states = names.get("states", {})
         row["state_names"] = [states.get(str(pk)) for pk in row["state_ids"]]
@@ -258,16 +274,38 @@ class CouponCampaignDiscoveryView(APIView):
             hotel = get_object_or_404(
                 Hotel, core_business_id=serializers.IntegerField(min_value=1).run_validation(business_id),
             )
-            return success(available_campaign_payloads([hotel], user_id, request, country_id)[hotel.core_business_id])
+            rows = available_campaign_payloads(
+                [hotel], user_id, request, country_id, include_scope=True,
+            )[hotel.core_business_id]
+            add_campaign_scope_details(rows)
+            return success(rows)
         campaigns = published_campaigns().filter(country_id=country_id).order_by("end_at", "id")
         tickets = {}
         if user_id:
             for coupon in BookingCoupon.objects.filter(user_id=user_id, campaign__in=campaigns):
                 tickets.setdefault(coupon.campaign_id, []).append(coupon)
-        return success([
-            campaign_payload(campaign, request, tickets.get(campaign.id, ())) for campaign in campaigns
-            if campaign.audience == "public" or user_id in campaign.user_ids
-        ])
+        rows = [
+            campaign_payload(campaign, request, tickets.get(campaign.id, ()), include_scope=True)
+            for campaign in campaigns if campaign.audience == "public" or user_id in campaign.user_ids
+        ]
+        add_campaign_scope_details(rows)
+        return success(rows)
+
+
+class CouponCampaignDetailView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
+    permission_classes = [AllowAny]
+
+    def get(self, request, campaign_id):
+        campaign = get_object_or_404(published_campaigns(), pk=campaign_id)
+        user_id = request_user_id(request)
+        if campaign.audience == "targeted" and user_id not in campaign.user_ids:
+            raise NotFound("Coupon campaign not found.")
+
+        tickets = list(campaign.coupons.filter(user_id=user_id)) if user_id else []
+        data = campaign_payload(campaign, request, tickets, include_scope=True)
+        add_campaign_scope_details([data])
+        return success(data)
 
 
 class CouponClaimView(APIView):

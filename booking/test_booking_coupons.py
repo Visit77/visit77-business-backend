@@ -97,7 +97,7 @@ class BookingCouponTests(TestCase):
                 response = self.client.get(url)
             lookup.assert_called_once_with(
                 "booking-integrations/coupons/scope-names/",
-                json={"countries": [1], "states": [5], "cities": [68], "businesses": [7529]},
+                json={"countries": [1], "states": [5], "cities": [68], "businesses": [7529], "categories": []},
             )
             self.assertEqual(response.status_code, 200)
             row = response.data["data"]
@@ -128,6 +128,26 @@ class BookingCouponTests(TestCase):
         self.assertEqual([row["id"] for row in coupons], [ticket["id"]])
         booking, _ = create_booking({**self.data, "coupon_id": ticket["id"]})
         self.assertEqual(booking.coupon_discount_amount, 10000)
+
+    def test_public_campaign_detail_visibility_and_scope(self):
+        public = self.campaign(description="Book a stay.")
+        targeted = self.campaign(audience="targeted", user_ids=[7])
+        future = self.campaign(publish_at=(self.now + timedelta(days=1)).isoformat())
+        url = "/api/v1/coupon-campaigns/"
+        client = APIClient()
+        with patch("booking.coupon_views.CoreClient.post", return_value={"cities": {"68": "Yangon"}}):
+            response = client.get(f"{url}{public}/")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data["data"]["description"], "Book a stay.")
+            self.assertEqual(response.data["data"]["cities"], [{"id": 68, "name": "Yangon"}])
+            for filters in ({"country_id": 1}, {"country_id": 1, "business_id": self.hotel.core_business_id}):
+                listed = client.get(url, filters)
+                self.assertEqual(listed.status_code, 200)
+                self.assertEqual(listed.data["data"], [response.data["data"]])
+            self.assertEqual(client.get(f"{url}{targeted}/").status_code, 404)
+            self.assertEqual(client.get(f"{url}{future}/").status_code, 404)
+            client.force_authenticate(CoreJWTUser(id=7))
+            self.assertEqual(client.get(f"{url}{targeted}/").data["data"]["claim_status"], "claimed")
 
     def test_admin_campaign_status(self):
         future = self.now + timedelta(days=1)
@@ -162,11 +182,12 @@ class BookingCouponTests(TestCase):
         self.assertLessEqual(before, CouponCampaign.objects.get(pk=now_id).publish_at)
 
     def test_my_coupons_include_campaign_scope_details(self):
-        campaign_id = self.campaign(description="Save on your hotel stay.")
+        campaign_id = self.campaign(category_id=4, description="Save on your hotel stay.")
         self.claim(campaign_id)
         client = APIClient()
         client.force_authenticate(CoreJWTUser(id=7))
         with patch("booking.coupon_views.CoreClient.post", return_value={
+            "categories": {"4": "Hotel"},
             "countries": {"1": "Myanmar"}, "states": {"5": "Yangon Region"},
             "cities": {"68": "Yangon"}, "businesses": {"7529": "Coupon Hotel"},
             "business_profiles": {"7529": "https://media.example.com/hotel.jpg"},
@@ -176,10 +197,11 @@ class BookingCouponTests(TestCase):
         self.assertEqual(len(response.data["data"]), 2)
         lookup.assert_called_once_with(
             "booking-integrations/coupons/scope-names/",
-            json={"countries": [1], "states": [5], "cities": [68], "businesses": [7529]},
+            json={"countries": [1], "states": [5], "cities": [68], "businesses": [7529], "categories": [4]},
         )
         for ticket in response.data["data"]:
             campaign = ticket["campaign"]
+            self.assertEqual(campaign["category"], {"id": 4, "name": "Hotel"})
             self.assertEqual(campaign["description"], "Save on your hotel stay.")
             self.assertEqual(campaign["country_name"], "Myanmar")
             self.assertEqual(campaign["state_names"], ["Yangon Region"])
