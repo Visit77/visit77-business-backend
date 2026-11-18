@@ -7374,6 +7374,8 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(history.status_code, 200, history.data)
         self.assertEqual(history.data["data"]["count"], 1)
         self.assertEqual(history.data["data"]["bookings"][0]["id"], str(booking.id))
+        self.assertEqual(history.data["data"]["bookings"][0]["total_adults"], 1)
+        self.assertEqual(history.data["data"]["bookings"][0]["total_children"], payload["rooms"][0].get("children", 0))
         self.assertEqual(history.data["data"]["bookings"][0]["history_status"], "upcoming")
         self.assertEqual(
             history.data["data"]["bookings"][0]["hotel"]["cover_image_url"],

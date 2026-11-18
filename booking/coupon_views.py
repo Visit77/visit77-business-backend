@@ -180,10 +180,16 @@ def add_campaign_scope_details(rows):
             logging.getLogger(__name__).warning("Could not resolve coupon scope names from Core.")
     for row in rows:
         category_id = row["category_id"]
-        row["category"] = (
-            {"id": category_id, "name": names.get("categories", {}).get(str(category_id))}
-            if category_id is not None else None
-        )
+        row["category"] = None
+        if category_id is not None:
+            key = str(category_id)
+            row["category"] = names.get("category_details", {}).get(key) or {
+                "id": category_id,
+                "name": names.get("categories", {}).get(key),
+                "lang": None,
+                "lang_code": None,
+                "other_languages": [],
+            }
         row["country_name"] = names.get("countries", {}).get(str(row["country_id"]))
         states = names.get("states", {})
         row["state_names"] = [states.get(str(pk)) for pk in row["state_ids"]]

@@ -2599,11 +2599,9 @@ class BookingSerializer(serializers.ModelSerializer):
         exclude = ["coupon_discount_amount", "coupon_discount_snapshot", "hidden_from_my_bookings"]
 
 
-class BookingDetailSerializer(BookingSerializer):
+class BookingGuestTotalsSerializer(BookingSerializer):
     total_adults = serializers.SerializerMethodField()
     total_children = serializers.SerializerMethodField()
-    rooms = BookingDetailRoomSerializer(many=True, read_only=True)
-    invoice_adjustments = serializers.SerializerMethodField()
 
     @staticmethod
     def get_total_adults(obj):
@@ -2612,6 +2610,11 @@ class BookingDetailSerializer(BookingSerializer):
     @staticmethod
     def get_total_children(obj):
         return sum(room.children for room in obj.rooms.all())
+
+
+class BookingDetailSerializer(BookingGuestTotalsSerializer):
+    rooms = BookingDetailRoomSerializer(many=True, read_only=True)
+    invoice_adjustments = serializers.SerializerMethodField()
 
     @staticmethod
     def get_invoice_adjustments(obj):
@@ -2651,7 +2654,7 @@ class BookingDetailSerializer(BookingSerializer):
         })
 
 
-class BookingHistorySerializer(BookingSerializer):
+class BookingHistorySerializer(BookingGuestTotalsSerializer):
     rooms = BookingHistoryRoomSerializer(many=True, read_only=True)
     history_status = serializers.SerializerMethodField()
 

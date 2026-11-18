@@ -186,8 +186,12 @@ class BookingCouponTests(TestCase):
         self.claim(campaign_id)
         client = APIClient()
         client.force_authenticate(CoreJWTUser(id=7))
+        category = {
+            "id": 4, "name": "Hotel", "lang": "Hotel", "lang_code": "en_US",
+            "other_languages": [{"lang_code": "mm_MM", "lang": "ဟိုတယ်"}],
+        }
         with patch("booking.coupon_views.CoreClient.post", return_value={
-            "categories": {"4": "Hotel"},
+            "categories": {"4": "Hotel"}, "category_details": {"4": category},
             "countries": {"1": "Myanmar"}, "states": {"5": "Yangon Region"},
             "cities": {"68": "Yangon"}, "businesses": {"7529": "Coupon Hotel"},
             "business_profiles": {"7529": "https://media.example.com/hotel.jpg"},
@@ -201,7 +205,7 @@ class BookingCouponTests(TestCase):
         )
         for ticket in response.data["data"]:
             campaign = ticket["campaign"]
-            self.assertEqual(campaign["category"], {"id": 4, "name": "Hotel"})
+            self.assertEqual(campaign["category"], category)
             self.assertEqual(campaign["description"], "Save on your hotel stay.")
             self.assertEqual(campaign["country_name"], "Myanmar")
             self.assertEqual(campaign["state_names"], ["Yangon Region"])
