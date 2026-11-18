@@ -107,13 +107,13 @@ class RoomPricingTests(TestCase):
     def test_extra_bed_price_setup_and_scoping(self):
         url = f'/api/v1/admin/room-types/{self.room_type.id}/extra-bed-price/'
         response = self.admin_client().put(url, {
-            'local_base_price': '20000', 'local_usd_price': '10',
-            'foreign_base_price': '40000', 'foreign_usd_price': '20',
+            'extra_bed_local_base_price': '20000', 'extra_bed_local_usd_price': '10',
+            'extra_bed_foreign_base_price': '40000', 'extra_bed_foreign_usd_price': '20',
         }, format='json')
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data['data']['base_currency'], 'MMK')
         self.assertEqual(response.data['data']['local_base_price'], 20000)
-        response = self.admin_client().patch(url, {'foreign_base_price': None}, format='json')
+        response = self.admin_client().patch(url, {'extra_bed_foreign_base_price': None}, format='json')
         self.assertEqual(response.status_code, 200, response.data)
         self.assertIsNone(response.data['data']['foreign_base_price'])
         self.room_type.refresh_from_db()
@@ -124,6 +124,8 @@ class RoomPricingTests(TestCase):
         self.assertFalse(any(key.startswith('extra_bed_') or '_mmk_' in key for key in response.data['data']))
         self.assertEqual(self.room_type.local_mmk_price, 100000)
         response = self.admin_client().patch(url, {
+            'local_base_price': '0.0',
+            'local_usd_price': '123',
             'extra_bed_local_base_price': '7000.0',
             'extra_bed_local_usd_price': '0.0',
             'extra_bed_foreign_usd_price': '100.0',
@@ -133,18 +135,23 @@ class RoomPricingTests(TestCase):
         self.assertEqual(response.data['data']['local_usd_price'], 0)
         self.assertEqual(response.data['data']['foreign_usd_price'], 100)
         self.assertIsNone(response.data['data']['foreign_base_price'])
+        for method in (self.admin_client().put, self.admin_client().patch):
+            ignored = method(url, {'local_base_price': '1', 'foreign_usd_price': '-1'}, format='json')
+            self.assertEqual(ignored.status_code, 200, ignored.data)
+            self.assertEqual(ignored.data['data']['local_base_price'], 7000)
+            self.assertEqual(ignored.data['data']['foreign_usd_price'], 100)
         self.assertEqual(self.admin_client().patch(url, {'extra_bed_local_mmk_price': 1}, format='json').status_code, 400)
-        response = self.admin_client().put(url, {'foreign_base_price': 0}, format='json')
+        response = self.admin_client().put(url, {'extra_bed_foreign_base_price': 0}, format='json')
         self.assertEqual(response.status_code, 200, response.data)
         self.assertIsNone(response.data['data']['local_base_price'])
         self.assertIsNone(response.data['data']['local_usd_price'])
         self.assertEqual(response.data['data']['foreign_base_price'], 0)
         self.assertIsNone(response.data['data']['foreign_usd_price'])
-        self.assertEqual(self.admin_client('999').patch(url, {'local_base_price': 1}, format='json').status_code, 404)
-        self.assertEqual(self.admin_client().patch(url, {'local_base_price': -1}, format='json').status_code, 400)
+        self.assertEqual(self.admin_client('999').patch(url, {'extra_bed_local_base_price': 1}, format='json').status_code, 404)
+        self.assertEqual(self.admin_client().patch(url, {'extra_bed_local_base_price': -1}, format='json').status_code, 400)
         self.room_type.room_price_setup = False
         self.room_type.save()
-        self.assertEqual(self.admin_client().patch(url, {'local_base_price': 1}, format='json').status_code, 400)
+        self.assertEqual(self.admin_client().patch(url, {'extra_bed_local_base_price': 1}, format='json').status_code, 400)
 
     def test_extra_bed_market_fallback_zero_and_display_currency(self):
         from booking.room_pricing import extra_bed_amounts, extra_bed_price_payload
@@ -252,6 +259,24 @@ class RoomPricingTests(TestCase):
         self.room_type.room_price_setup = False
         serializer = RoomPriceDiscountSerializer(data={"timing_mode": "manual", "local_base_price": "80000"}, context={"room_type": self.room_type})
         self.assertFalse(serializer.is_valid())
+
+    def test_discount_accepts_zero_for_a_zero_normal_price(self):
+        self.room_type.local_usd_price = Decimal("0")
+        serializer = RoomPriceDiscountSerializer(
+            data={"timing_mode": "manual", "local_base_price": "100", "local_usd_price": "0.0"},
+            context={"room_type": self.room_type},
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        discount = serializer.save()
+        self.assertEqual(discount.local_usd_price, Decimal("0"))
+        self.assertIsNone(discount.local_usd_percentage)
+
+        serializer = RoomPriceDiscountSerializer(
+            discount, data={"local_usd_price": "0.0"}, partial=True,
+            context={"room_type": self.room_type},
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertIsNone(serializer.save().local_usd_percentage)
 
     def test_each_currency_can_be_the_only_supplied_discount(self):
         for field, amount in zip(PRICE_FIELDS, (80000, 80, 160000, 160)):

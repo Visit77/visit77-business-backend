@@ -62,7 +62,7 @@ class RoomPricingMixin:
             serializer = ExtraBedPriceSetupSerializer(data=request.data, context={'room_type': room_type})
             serializer.is_valid(raise_exception=True)
             values = serializer.validated_data
-            if request.method == 'PUT':
+            if request.method == 'PUT' and values:
                 values = {field: values.get(field) for field in EXTRA_BED_PRICE_FIELDS}
             for field, value in values.items():
                 setattr(room_type, field, value)

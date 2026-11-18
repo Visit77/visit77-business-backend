@@ -27,11 +27,11 @@ class BasePriceFieldNamesMixin:
         return super().to_internal_value(data)
 
 
-class ExtraBedPriceSetupSerializer(BasePriceFieldNamesMixin, serializers.Serializer):
-    local_base_price = serializers.DecimalField(source='extra_bed_local_mmk_price', max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
-    local_usd_price = serializers.DecimalField(source='extra_bed_local_usd_price', max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
-    foreign_base_price = serializers.DecimalField(source='extra_bed_foreign_mmk_price', max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
-    foreign_usd_price = serializers.DecimalField(source='extra_bed_foreign_usd_price', max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
+class ExtraBedPriceSetupSerializer(serializers.Serializer):
+    extra_bed_local_base_price = serializers.DecimalField(source='extra_bed_local_mmk_price', max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
+    extra_bed_local_usd_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
+    extra_bed_foreign_base_price = serializers.DecimalField(source='extra_bed_foreign_mmk_price', max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
+    extra_bed_foreign_usd_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
 
     def to_internal_value(self, data):
         deprecated = set(data).intersection({
@@ -43,19 +43,10 @@ class ExtraBedPriceSetupSerializer(BasePriceFieldNamesMixin, serializers.Seriali
                 for field in deprecated
             })
 
-        if any(f"extra_bed_{field}" in data for field in API_PRICE_FIELDS):
-            data = data.copy()
-            for field in API_PRICE_FIELDS:
-                prefixed = f"extra_bed_{field}"
-                if prefixed not in data:
-                    continue
-                if field in data:
-                    raise serializers.ValidationError({prefixed: f"Send either {field} or {prefixed}."})
-                data[field] = data[prefixed]
         return super().to_internal_value(data)
 
     def validate(self, attrs):
-        if not self.context['room_type'].room_price_setup:
+        if attrs and not self.context['room_type'].room_price_setup:
             raise serializers.ValidationError('Set the normal room price before adding an extra bed rate.')
         return attrs
 
@@ -115,7 +106,7 @@ class RoomPriceDiscountSerializer(BasePriceFieldNamesMixin, serializers.ModelSer
             raise serializers.ValidationError("Set at least one Local/Foreigner base currency or USD discount price.")
         for field in PRICE_FIELDS:
             value, normal = attrs.get(field), getattr(room_type, field)
-            if value is None:
+            if value is None or normal == value == 0:
                 continue
             if normal is None or value >= normal:
                 raise serializers.ValidationError({field.replace("_mmk_", "_base_"): "Set a discount price lower than its configured normal price."})
@@ -141,10 +132,10 @@ class RoomPriceDiscountSerializer(BasePriceFieldNamesMixin, serializers.ModelSer
         for field in PRICE_FIELDS:
             value = validated_data.get(field)
             percentage_field = field.replace("_price", "_percentage")
-            if value is None:
+            normal = getattr(room_type, field)
+            if value is None or normal == 0:
                 validated_data[percentage_field] = None
             else:
-                normal = getattr(room_type, field)
                 validated_data[percentage_field] = (
                     (normal - value) * Decimal("100") / normal
                 ).quantize(Decimal("0.01"))
