@@ -129,6 +129,23 @@ class BookingCouponTests(TestCase):
         booking, _ = create_booking({**self.data, "coupon_id": ticket["id"]})
         self.assertEqual(booking.coupon_discount_amount, 10000)
 
+    def test_public_campaign_list_falls_back_to_core_category_detail_once(self):
+        campaigns = {self.campaign(category_id=4), self.campaign(category_id=4)}
+        category = {
+            "id": 4, "name": "Hotel & Resident", "lang": "Hotel & Resident", "lang_code": "en_US",
+            "other_languages": [{"lang_code": "mm_MM", "lang": "ဟိုတယ်"}],
+        }
+        with (
+            patch("booking.coupon_views.CoreClient.post", return_value={"countries": {"1": "Myanmar"}}),
+            patch("booking.coupon_views.CoreClient.get", return_value=[category]) as lookup,
+        ):
+            response = APIClient().get("/api/v1/coupon-campaigns/", {"country_id": 1})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual({row["id"] for row in response.data["data"]}, campaigns)
+        self.assertTrue(all(row["category"] == category for row in response.data["data"]))
+        self.assertTrue(all(row["country_name"] == "Myanmar" for row in response.data["data"]))
+        lookup.assert_called_once_with("category/4/")
+
     def test_public_campaign_detail_visibility_and_scope(self):
         public = self.campaign(description="Book a stay.")
         targeted = self.campaign(audience="targeted", user_ids=[7])

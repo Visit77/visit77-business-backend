@@ -171,25 +171,40 @@ def add_campaign_scope_details(rows):
         scopes["businesses"].update(row["business_ids"])
     names = {}
     if rows:
+        client = CoreClient()
         try:
-            names = CoreClient().post(
+            names = client.post(
                 "booking-integrations/coupons/scope-names/",
                 json={key: sorted(ids) for key, ids in scopes.items()},
             )
         except CoreIntegrationError:
             logging.getLogger(__name__).warning("Could not resolve coupon scope names from Core.")
+
+    categories = dict(names.get("category_details", {}))
+    for category_id in sorted(scopes["categories"]):
+        key = str(category_id)
+        if categories.get(key):
+            continue
+        category = {
+            "id": category_id,
+            "name": names.get("categories", {}).get(key),
+            "lang": None,
+            "lang_code": None,
+            "other_languages": [],
+        }
+        # Older Core deployments may return scope names without category details.
+        try:
+            details = client.get(f"category/{category_id}/")
+            if isinstance(details, list) and details:
+                details = details[0]
+            if isinstance(details, dict) and details.get("id") == category_id:
+                category.update(details)
+        except CoreIntegrationError:
+            logging.getLogger(__name__).warning("Could not resolve coupon category %s from Core.", category_id)
+        categories[key] = category
+
     for row in rows:
-        category_id = row["category_id"]
-        row["category"] = None
-        if category_id is not None:
-            key = str(category_id)
-            row["category"] = names.get("category_details", {}).get(key) or {
-                "id": category_id,
-                "name": names.get("categories", {}).get(key),
-                "lang": None,
-                "lang_code": None,
-                "other_languages": [],
-            }
+        row["category"] = categories.get(str(row["category_id"]))
         row["country_name"] = names.get("countries", {}).get(str(row["country_id"]))
         states = names.get("states", {})
         row["state_names"] = [states.get(str(pk)) for pk in row["state_ids"]]
