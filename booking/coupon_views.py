@@ -2,6 +2,7 @@ import json
 import logging
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -13,6 +14,7 @@ from rest_framework.views import APIView
 
 from booking.authentication import CoreJWTAuthentication
 from booking.coupons import campaign_matches_hotel, issue_coupons, published_campaigns
+from booking.integrations.category_languages import category_languages
 from booking.integrations.core import CoreClient, CoreIntegrationError
 from booking.models import BookingCoupon, CouponCampaign, Hotel
 from booking.permissions import IsCoreSuperAdmin
@@ -171,36 +173,37 @@ def add_campaign_scope_details(rows):
         scopes["businesses"].update(row["business_ids"])
     names = {}
     if rows:
-        client = CoreClient()
+        lookup = {key: sorted(ids) for key, ids in scopes.items()}
+        if settings.CATEGORY_MONGODB_URI:
+            lookup.pop("categories")
         try:
-            names = client.post(
-                "booking-integrations/coupons/scope-names/",
-                json={key: sorted(ids) for key, ids in scopes.items()},
-            )
+            names = CoreClient().post("booking-integrations/coupons/scope-names/", json=lookup)
         except CoreIntegrationError:
             logging.getLogger(__name__).warning("Could not resolve coupon scope names from Core.")
 
-    categories = dict(names.get("category_details", {}))
-    for category_id in sorted(scopes["categories"]):
+    categories = {}
+    languages = category_languages(scopes["categories"])
+    for category_id in scopes["categories"]:
         key = str(category_id)
-        if categories.get(key):
-            continue
         category = {
             "id": category_id,
             "name": names.get("categories", {}).get(key),
             "lang": None,
             "lang_code": None,
             "other_languages": [],
+            **names.get("category_details", {}).get(key, {}),
         }
-        # Older Core deployments may return scope names without category details.
-        try:
-            details = client.get(f"category/{category_id}/")
-            if isinstance(details, list) and details:
-                details = details[0]
-            if isinstance(details, dict) and details.get("id") == category_id:
-                category.update(details)
-        except CoreIntegrationError:
-            logging.getLogger(__name__).warning("Could not resolve coupon category %s from Core.", category_id)
+        translations = languages.get(category_id)
+        if translations:
+            category["other_languages"] = translations
+            if not category["lang_code"] or not category["name"] or not category["lang"]:
+                preferred_code = category["lang_code"] or "en_US"
+                primary = next((row for row in translations if row["lang_code"] == preferred_code), None)
+                if not category["lang_code"] and primary is None:
+                    primary = translations[0]
+                if primary:
+                    for field in ("name", "lang", "lang_code"):
+                        category[field] = category[field] or primary[field]
         categories[key] = category
 
     for row in rows:

@@ -149,6 +149,7 @@ REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "booking.exceptions.api_exception_handler",
 }
 
+CATEGORY_MONGODB_URI = env("CATEGORY_MONGODB_URI", default="")
 CORE_BASE_URL = env("CORE_BASE_URL", default="http://127.0.0.1:8000").rstrip("/")
 CORE_SERVICE_TOKEN = env("CORE_SERVICE_TOKEN", default="")
 CORE_SERVICE_KEY = env("CORE_SERVICE_KEY", default="")
