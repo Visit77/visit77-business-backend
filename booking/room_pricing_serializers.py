@@ -61,10 +61,10 @@ class ExtraBedPriceSetupSerializer(BasePriceFieldNamesMixin, serializers.Seriali
 
 
 class RoomPriceSetupSerializer(BasePriceFieldNamesMixin, serializers.Serializer):
-    local_base_price = serializers.DecimalField(source="local_mmk_price", max_digits=14, decimal_places=2, min_value=Decimal("0.01"), required=False, allow_null=True)
-    local_usd_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.01"), required=False, allow_null=True)
-    foreign_base_price = serializers.DecimalField(source="foreign_mmk_price", max_digits=14, decimal_places=2, min_value=Decimal("0.01"), required=False, allow_null=True)
-    foreign_usd_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.01"), required=False, allow_null=True)
+    local_base_price = serializers.DecimalField(source="local_mmk_price", max_digits=14, decimal_places=2, min_value=Decimal("0"), required=False, allow_null=True)
+    local_usd_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0"), required=False, allow_null=True)
+    foreign_base_price = serializers.DecimalField(source="foreign_mmk_price", max_digits=14, decimal_places=2, min_value=Decimal("0"), required=False, allow_null=True)
+    foreign_usd_price = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0"), required=False, allow_null=True)
 
     def validate(self, attrs):
         room_type = self.context["room_type"]
@@ -74,8 +74,8 @@ class RoomPriceSetupSerializer(BasePriceFieldNamesMixin, serializers.Serializer)
 
 
 class RoomPriceDiscountSerializer(BasePriceFieldNamesMixin, serializers.ModelSerializer):
-    local_base_price = serializers.DecimalField(source='local_mmk_price', max_digits=14, decimal_places=2, min_value=Decimal('0.01'), required=False, allow_null=True)
-    foreign_base_price = serializers.DecimalField(source='foreign_mmk_price', max_digits=14, decimal_places=2, min_value=Decimal('0.01'), required=False, allow_null=True)
+    local_base_price = serializers.DecimalField(source='local_mmk_price', max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
+    foreign_base_price = serializers.DecimalField(source='foreign_mmk_price', max_digits=14, decimal_places=2, min_value=Decimal('0'), required=False, allow_null=True)
     local_base_percentage = serializers.DecimalField(source='local_mmk_percentage', max_digits=7, decimal_places=2, read_only=True, allow_null=True)
     foreign_base_percentage = serializers.DecimalField(source='foreign_mmk_percentage', max_digits=7, decimal_places=2, read_only=True, allow_null=True)
     base_currency = serializers.CharField(source='room_type.hotel.base_currency', read_only=True)
@@ -88,7 +88,7 @@ class RoomPriceDiscountSerializer(BasePriceFieldNamesMixin, serializers.ModelSer
         fields = ["id", "timing_mode", "start_date", "end_date", *API_PRICE_FIELDS, *API_PERCENTAGE_FIELDS, "base_currency",
                   "status", "ended_at", "created_at", "updated_at"]
         read_only_fields = [*API_PERCENTAGE_FIELDS, "ended_at", "created_at", "updated_at"]
-        extra_kwargs = {field: {"required": False, "allow_null": True, "min_value": Decimal("0.01")} for field in API_PRICE_FIELDS}
+        extra_kwargs = {field: {"required": False, "allow_null": True, "min_value": Decimal("0")} for field in API_PRICE_FIELDS}
 
     def get_status(self, obj):
         if obj.ended_at:
@@ -170,7 +170,7 @@ class RoomSeasonalRateSerializer(BasePriceFieldNamesMixin, serializers.ModelSeri
         model = RoomSeasonalRate
         fields = ['id', 'name', 'start_date', 'end_date', *SEASONAL_PRICE_FIELDS, 'base_currency', 'ended_at']
         read_only_fields = ['id', 'ended_at']
-        extra_kwargs = {field: {'min_value': Decimal('0.01'), 'required': False, 'allow_null': True} for field in SEASONAL_PRICE_FIELDS}
+        extra_kwargs = {field: {'min_value': Decimal('0'), 'required': False, 'allow_null': True} for field in SEASONAL_PRICE_FIELDS}
 
     def validate(self, attrs):
         room = self.context['room_type']
