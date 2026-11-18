@@ -556,6 +556,8 @@ class RoomBoardQuerySerializer(serializers.Serializer):
 class RoomTypeSerializer(serializers.ModelSerializer):
     local_base_price = serializers.DecimalField(source='local_mmk_price', max_digits=14, decimal_places=2, read_only=True, allow_null=True)
     foreign_base_price = serializers.DecimalField(source='foreign_mmk_price', max_digits=14, decimal_places=2, read_only=True, allow_null=True)
+    extra_bed_local_base_price = serializers.DecimalField(source="extra_bed_local_mmk_price", max_digits=14, decimal_places=2, read_only=True, allow_null=True)
+    extra_bed_foreign_base_price = serializers.DecimalField(source="extra_bed_foreign_mmk_price", max_digits=14, decimal_places=2, read_only=True, allow_null=True)
     base_currency = serializers.CharField(source='hotel.base_currency', read_only=True)
 
     seasonal_rates = serializers.SerializerMethodField()
@@ -688,8 +690,8 @@ class RoomTypeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = RoomType
-        exclude = ["local_mmk_price", "foreign_mmk_price"]
-        read_only_fields = ["extra_bed_local_mmk_price", "extra_bed_local_usd_price", "extra_bed_foreign_mmk_price", "extra_bed_foreign_usd_price", "hotel", "core_room_type_id", "name", "description", "cover_image_url", "max_adults", "max_children", "max_occupancy", "core_active", "core_snapshot", "synced_at", "room_price_setup", "local_mmk_price", "local_usd_price", "foreign_mmk_price", "foreign_usd_price"]
+        exclude = ["local_mmk_price", "foreign_mmk_price", "extra_bed_local_mmk_price", "extra_bed_foreign_mmk_price"]
+        read_only_fields = ["extra_bed_local_usd_price", "extra_bed_foreign_usd_price", "hotel", "core_room_type_id", "name", "description", "cover_image_url", "max_adults", "max_children", "max_occupancy", "core_active", "core_snapshot", "synced_at", "room_price_setup", "local_mmk_price", "local_usd_price", "foreign_mmk_price", "foreign_usd_price"]
 
 
 class MealPlanSerializer(serializers.ModelSerializer):
