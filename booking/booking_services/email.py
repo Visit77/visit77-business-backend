@@ -193,8 +193,12 @@ def build_booking_confirmation_context(booking, primary_guest):
         "taxes": format_money(invoice.tax_total if invoice else booking.tax_total, booking.currency),
         "has_invoice_discount": (invoice.discount_total if invoice else booking.discount_total) > 0,
         "discount": format_money(invoice.discount_total if invoice else booking.discount_total, booking.currency),
+        "coupon_discounts": [
+            {"name": item["name"], "amount": format_money(item["amount"], booking.currency)}
+            for item in booking.coupon_discounts
+        ] if (invoice.coupon_discount_amount if invoice else booking.coupon_discount_amount) else [],
         "total_price": format_money(
-            invoice.total + invoice.coupon_discount_amount if invoice else booking.price_before_coupon,
+            invoice.total if invoice else booking.grand_total,
             booking.currency,
         ),
         "booking_code": booking.booking_code,

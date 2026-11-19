@@ -378,6 +378,16 @@
                                 </td>
                               </tr>
                               {% endif %}
+                              {% for coupon in coupon_discounts %}
+                              <tr>
+                                <td style="color:#64748b;padding:4px 0">
+                                  Coupon Discount ({{ coupon.name }})
+                                </td>
+                                <td style="text-align:right;font-weight:600;color:#16a34a;padding:4px 0">
+                                  -{{ coupon.amount }}
+                                </td>
+                              </tr>
+                              {% endfor %}
                             </table>
                             <div
                               style="border-top:1px dashed #cbd5e1;margin:12px 0"></div>
