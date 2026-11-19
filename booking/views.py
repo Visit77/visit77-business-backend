@@ -684,7 +684,10 @@ class AdminOTAHotelIdsView(APIView):
                 room_types__booking_enabled=True,
                 room_types__core_active=True,
                 room_types__rate_plans__is_active=True,
-            ).exclude(access_snapshot__public_booking_enabled=False).filter(base_filter)
+            ).filter(
+                Q(access_snapshot__public_booking_enabled__isnull=True)
+                | ~Q(access_snapshot__public_booking_enabled=False),
+            ).filter(base_filter)
             .order_by("core_business_id")
             .values_list("core_business_id", flat=True)
             .distinct()

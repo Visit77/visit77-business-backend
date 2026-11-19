@@ -3106,18 +3106,22 @@ class BookingApiTests(BookingServiceTests):
             ota_enabled=True,
             ota_sale_open=True,
         )
-        response = self.client.post(
-            "/api/v1/admin/ota/hotel-ids/",
-            {"business_ids": [self.hotel.core_business_id, 999999]},
-            format="json",
-            HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
-        )
-
-        self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(
-            response.data["data"]["ota_business_ids"],
-            [self.hotel.core_business_id],
-        )
+        for snapshot, expected in (
+            ({}, [self.hotel.core_business_id]),
+            ({"public_booking_enabled": True}, [self.hotel.core_business_id]),
+            ({"public_booking_enabled": False}, []),
+        ):
+            with self.subTest(snapshot=snapshot):
+                self.hotel.access_snapshot = snapshot
+                self.hotel.save(update_fields=["access_snapshot"])
+                response = self.client.post(
+                    "/api/v1/admin/ota/hotel-ids/",
+                    {"business_ids": [self.hotel.core_business_id, 999999]},
+                    format="json",
+                    HTTP_X_BOOKING_ADMIN_KEY="test-admin-key",
+                )
+                self.assertEqual(response.status_code, 200, response.data)
+                self.assertEqual(response.data["data"]["ota_business_ids"], expected)
 
     def test_bulk_hotel_availability_returns_only_available_candidate_ids(self):
         PhysicalRoom.objects.create(
