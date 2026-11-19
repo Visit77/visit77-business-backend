@@ -149,7 +149,7 @@ def build_booking_confirmation_context(booking, primary_guest):
     verification = hotel_snapshot.get("merchant_verification") or {}
     hotel_phones = _hotel_phone_numbers([
         verification.get("reception_phone_one"),
-        verification.get("receiption_phone_two"),
+        verification.get("reception_phone_two"),
     ]) or _hotel_phone_numbers(booking.hotel.phone)
     return {
         "property_name": booking.hotel.name,

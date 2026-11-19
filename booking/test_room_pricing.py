@@ -320,7 +320,7 @@ class RoomPricingTests(TestCase):
         booking.hotel.phone = "+959111111111"
         booking.hotel.core_snapshot = {"merchant_verification": {
             "reception_phone_one": "+959222222222",
-            "receiption_phone_two": "+959333333333",
+            "reception_phone_two": "+959333333333",
         }}
         context = build_booking_confirmation_context(booking, SimpleNamespace(name="Guest"))
         self.assertEqual(context["hotel_phones"], ["+959222222222", "+959333333333"])
