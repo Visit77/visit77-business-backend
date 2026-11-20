@@ -54,6 +54,20 @@ from booking.tasks import (
 
 
 class BookingCodeTests(TestCase):
+    def test_pdf_contact_phone_prefers_reception_numbers(self):
+        from types import SimpleNamespace
+        from booking.booking_services.receipt import _hotel_phone
+        hotel = SimpleNamespace(phone="09111111111", core_snapshot={
+            "phone": "09222222222",
+            "merchant_verification": {
+                "reception_phone_one": "+959333333333",
+                "reception_phone_two": "09444444444",
+            },
+        })
+        self.assertEqual(_hotel_phone(hotel), "+959333333333, 09444444444")
+        hotel.core_snapshot["merchant_verification"]["reception_phone_two"] = ""
+        self.assertEqual(_hotel_phone(hotel), "+959333333333")
+
     def setUp(self):
         self.hotel = Hotel.objects.create(core_business_id=987654321, name="Code Test Hotel", document_code="MAND")
 

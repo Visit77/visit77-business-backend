@@ -28,7 +28,7 @@ from booking.money_display import format_money as _money
 
 DOCUMENT_FONT = "NotoSansMyanmar"
 DOCUMENT_FONT_BOLD = "NotoSansMyanmar-Bold"
-PDF_RENDER_VERSION = 10
+PDF_RENDER_VERSION = 11
 MYANMAR_TEXT_RE = re.compile(r"[\u1000-\u109f\uaa60-\uaa7f\ua9e0-\ua9ff]")
 
 
@@ -138,8 +138,14 @@ def _hotel_address(hotel):
 
 def _hotel_phone(hotel):
     snapshot = hotel.core_snapshot or {}
-    value = snapshot.get("phone") or snapshot.get("phone_no") or hotel.phone
-    return ", ".join(_contact_values(value))
+    verification = snapshot.get("merchant_verification") or {}
+    phones = _contact_values([
+        verification.get("reception_phone_one"),
+        verification.get("reception_phone_two"),
+    ])
+    if not phones:
+        phones = _contact_values(snapshot.get("phone") or snapshot.get("phone_no") or hotel.phone)
+    return ", ".join(dict.fromkeys(phones))
 
 
 def _hotel_email(hotel):
@@ -845,7 +851,11 @@ def ensure_receipt_pdf(payment):
     finalize_receipt_snapshot(payment)
     receipt_snapshot = dict(payment.receipt_snapshot or {})
     receipt_snapshot["pdf_render_version"] = PDF_RENDER_VERSION
-    pdf_bytes = render_receipt_pdf(payment.receipt_snapshot)
+    receipt_snapshot["booking"] = {
+        **receipt_snapshot["booking"],
+        "hotel_phone": _hotel_phone(payment.booking.hotel),
+    }
+    pdf_bytes = render_receipt_pdf(receipt_snapshot)
     if payment.receipt_pdf:
         payment.receipt_pdf.delete(save=False)
     payment.receipt_pdf.save(
