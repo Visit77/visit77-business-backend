@@ -13,7 +13,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 
 from booking.authentication import CoreJWTAuthentication
-from booking.coupons import campaign_matches_hotel, issue_coupons, published_campaigns
+from booking.coupons import campaign_matches_hotel, issue_coupons, published_campaigns, campaign_claim_stats
 from booking.integrations.category_languages import category_languages
 from booking.integrations.core import CoreClient, CoreIntegrationError
 from booking.models import BookingCoupon, CouponCampaign, Hotel
@@ -35,6 +35,16 @@ class CampaignImageField(serializers.ImageField):
 
 
 class CampaignSerializer(serializers.ModelSerializer):
+    max_claim_users = serializers.IntegerField(min_value=1, required=False, allow_null=True)
+    claimed_user_count = serializers.SerializerMethodField()
+    remaining_user_count = serializers.SerializerMethodField()
+
+    def get_claimed_user_count(self, campaign):
+        return campaign_claim_stats(campaign)["claimed_user_count"]
+
+    def get_remaining_user_count(self, campaign):
+        return campaign_claim_stats(campaign)["remaining_user_count"]
+
     status = serializers.SerializerMethodField()
     banner_image = serializers.ImageField(required=False, write_only=True)
     popup_image = serializers.ImageField(required=False, write_only=True)
@@ -75,6 +85,9 @@ class CampaignSerializer(serializers.ModelSerializer):
         audience = value("audience", "public")
         if (audience == "targeted") != bool(value("user_ids", [])):
             raise serializers.ValidationError({"user_ids": "Provide user IDs for targeted campaigns only."})
+        if self.instance and value("max_claim_users") is not None:
+            if value("max_claim_users") < campaign_claim_stats(self.instance)["claimed_user_count"]:
+                raise serializers.ValidationError({"max_claim_users": "Cannot be lower than the claimed user count."})
         if self.instance and self.instance.coupons.exists():
             for field in ("audience", "quantity_per_user", "currency"):
                 if value(field) != getattr(self.instance, field):
@@ -90,6 +103,7 @@ def campaign_payload(campaign, request=None, tickets=(), *, include_scope=False)
     remaining = sum(ticket.deleted_at is None and ticket.booking_id is None and ticket.used_at is None for ticket in tickets)
     datetime_field = serializers.DateTimeField()
     payload = {
+        **campaign_claim_stats(campaign),
         "id": campaign.id, "title": campaign.title, "type": campaign.type,
         "description": campaign.description,
         "discount_type": campaign.discount_type, "discount_value": campaign.discount_value,
@@ -340,7 +354,7 @@ class CouponClaimView(APIView):
 
     @transaction.atomic
     def post(self, request, campaign_id):
-        campaign = get_object_or_404(published_campaigns().select_for_update(), pk=campaign_id)
+        campaign = get_object_or_404(published_campaigns().select_for_update(of=("self",)), pk=campaign_id)
         user_id = request.user.id
         if campaign.audience == "targeted" and user_id not in campaign.user_ids:
             raise serializers.ValidationError({"coupon": "This campaign is unavailable."})

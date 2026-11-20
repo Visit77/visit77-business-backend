@@ -1548,6 +1548,7 @@ class CouponCampaign(models.Model):
     discount_type = models.CharField(max_length=16, choices=[("fixed", "Fixed"), ("percentage", "Percentage")])
     discount_value = models.DecimalField(max_digits=14, decimal_places=2)
     currency = models.CharField(max_length=3)
+    max_claim_users = models.PositiveIntegerField(null=True, blank=True)
     quantity_per_user = models.PositiveSmallIntegerField(default=1)
     country_id = models.PositiveBigIntegerField()
     category_id = models.PositiveBigIntegerField(null=True, blank=True)

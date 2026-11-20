@@ -2,6 +2,8 @@ from decimal import Decimal, ROUND_HALF_UP
 from secrets import token_hex
 
 from django.utils import timezone
+from django.db.models import Count, OuterRef, Subquery, IntegerField, Q, F
+from django.db.models.functions import Coalesce
 from rest_framework.exceptions import ValidationError
 
 from booking.models import Booking, BookingCoupon, CouponCampaign, Hotel, Invoice
@@ -14,8 +16,31 @@ def _campaigns_in_publication_window(now):
     )
 
 
+def campaigns_with_claim_counts(queryset):
+    counts = BookingCoupon.objects.filter(campaign_id=OuterRef("pk")).order_by().values(
+        "campaign_id",
+    ).annotate(total=Count("user_id", distinct=True)).values("total")
+    return queryset.annotate(claimed_user_count=Coalesce(
+        Subquery(counts, output_field=IntegerField()), 0,
+    ))
+
+
+def campaign_claim_stats(campaign):
+    count = getattr(campaign, "claimed_user_count", None)
+    if count is None:
+        count = campaign.coupons.values("user_id").distinct().count()
+    limit = campaign.max_claim_users
+    return {
+        "max_claim_users": limit,
+        "claimed_user_count": count,
+        "remaining_user_count": max(limit - count, 0) if limit is not None else None,
+    }
+
+
 def published_campaigns(now=None):
-    return _campaigns_in_publication_window(now or timezone.now()).filter(is_active=True, deleted_at__isnull=True)
+    return campaigns_with_claim_counts(
+        _campaigns_in_publication_window(now or timezone.now()).filter(is_active=True, deleted_at__isnull=True),
+    ).filter(Q(max_claim_users__isnull=True) | Q(claimed_user_count__lt=F("max_claim_users")))
 
 
 def redeemable_campaigns(now=None):
@@ -50,10 +75,16 @@ def issue_coupons(campaign, user_id):
     existing = list(campaign.coupons.filter(user_id=user_id).order_by("slot"))
     if existing:
         return existing
-    return BookingCoupon.objects.bulk_create([
+    claimed_users = campaign.coupons.values("user_id").distinct().count()
+    if campaign.max_claim_users is not None and claimed_users >= campaign.max_claim_users:
+        raise ValidationError({"coupon": "This campaign has reached its user claim limit."})
+    result = BookingCoupon.objects.bulk_create([
         BookingCoupon(campaign=campaign, user_id=user_id, slot=slot, code=token_hex(12).upper())
         for slot in range(1, campaign.quantity_per_user + 1)
     ])
+    if hasattr(campaign, "claimed_user_count"):
+        campaign.claimed_user_count = claimed_users + 1
+    return result
 
 
 def booking_coupon_discount(data, hotel, total, *, booking=None):

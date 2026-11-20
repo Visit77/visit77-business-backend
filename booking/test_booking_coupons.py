@@ -87,6 +87,31 @@ class BookingCouponTests(TestCase):
         booking, _ = create_booking({**self.data, "coupon_id": str(ticket.pk)})
         self.assertEqual(booking.coupon_discount_amount, Decimal("10000"))
 
+    def test_campaign_user_limit_counts_users_and_preserves_claimed_tickets(self):
+        campaign_id = self.campaign(max_claim_users=2)
+        first = self.claim(campaign_id, user=7)
+        self.assertEqual(len(first.data["data"]), 2)
+        self.assertEqual(first.data["data"][0]["campaign"]["claimed_user_count"], 1)
+        self.assertEqual(first.data["data"][0]["campaign"]["remaining_user_count"], 1)
+        self.claim(campaign_id, user=8)
+        client = APIClient()
+        client.force_authenticate(CoreJWTUser(id=9))
+        url = f"/api/v1/coupon-campaigns/{campaign_id}/"
+        self.assertEqual(client.get(url).status_code, 404)
+        self.assertEqual(client.post(url + "claim/").status_code, 404)
+        response = client.get("/api/v1/coupon-campaigns/?country_id=1")
+        self.assertNotIn(campaign_id, [row["id"] for row in response.data["data"]])
+        ticket = BookingCoupon.objects.filter(campaign_id=campaign_id, user_id=7).first()
+        booking, _ = create_booking({**self.data, "coupon_id": str(ticket.pk)})
+        self.assertEqual(booking.coupon_discount_amount, Decimal("10000"))
+        client.force_authenticate(CoreJWTUser(id=7))
+        self.assertEqual(client.delete(f"/api/v1/me/coupons/{ticket.pk}/").status_code, 400)
+        campaign = CouponCampaign.objects.get(pk=campaign_id)
+        from booking.coupons import campaign_claim_stats
+        self.assertEqual(campaign_claim_stats(campaign), {
+            "max_claim_users": 2, "claimed_user_count": 2, "remaining_user_count": 0,
+        })
+
     def campaign(self, **overrides):
         response = self.client.post(
             "/api/v1/admin/coupon-campaigns/", {**self.campaign_data, **overrides}, format="json",
