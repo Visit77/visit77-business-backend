@@ -53,6 +53,40 @@ class BookingCouponTests(TestCase):
             "rooms": [{"core_room_type_id": 1977, "rate_plan_id": self.plan.id, "quantity": 1}],
         }
 
+    def test_user_can_delete_coupon_and_cannot_redeem_or_reclaim_it(self):
+        campaign_id = self.campaign()
+        self.claim(campaign_id)
+        ticket = BookingCoupon.objects.filter(campaign_id=campaign_id, user_id=7).first()
+        url = f"/api/v1/me/coupons/{ticket.pk}/"
+        client = APIClient()
+        client.force_authenticate(CoreJWTUser(id=8))
+        self.assertEqual(client.delete(url).status_code, 404)
+        client.force_authenticate(CoreJWTUser(id=7))
+        self.assertEqual(client.delete(url).status_code, 200)
+        self.assertEqual(client.delete(url).status_code, 200)
+        ticket.refresh_from_db()
+        self.assertIsNotNone(ticket.deleted_at)
+        response = client.get("/api/v1/me/coupons/?status=all")
+        self.assertNotIn(str(ticket.pk), [row["id"] for row in response.data["data"]])
+        for field, value in (("coupon_id", str(ticket.pk)), ("coupon_code", ticket.code)):
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                create_booking({**self.data, field: value})
+        self.assertEqual(client.post(f"/api/v1/coupon-campaigns/{campaign_id}/claim/").status_code, 400)
+
+    def test_disabled_campaign_preserves_claimed_coupon_redemption(self):
+        campaign_id = self.campaign()
+        self.claim(campaign_id)
+        ticket = BookingCoupon.objects.filter(campaign_id=campaign_id, user_id=7).first()
+        CouponCampaign.objects.filter(pk=campaign_id).update(is_active=False)
+        client = APIClient()
+        client.force_authenticate(CoreJWTUser(id=7))
+        response = client.get("/api/v1/me/coupons/?status=available")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(str(ticket.pk), [row["id"] for row in response.data["data"]])
+        self.assertEqual(client.post(f"/api/v1/coupon-campaigns/{campaign_id}/claim/").status_code, 404)
+        booking, _ = create_booking({**self.data, "coupon_id": str(ticket.pk)})
+        self.assertEqual(booking.coupon_discount_amount, Decimal("10000"))
+
     def campaign(self, **overrides):
         response = self.client.post(
             "/api/v1/admin/coupon-campaigns/", {**self.campaign_data, **overrides}, format="json",
@@ -489,15 +523,39 @@ class BookingCouponTests(TestCase):
         self.assertEqual(booking.coupon_discount_amount, 78050)
         full = self.claim(self.campaign(discount_value=90000)).data["data"][0]
         booking, _ = create_booking({**self.data, "coupon_id": full["id"]})
-        self.assertEqual((booking.grand_total, booking.status), (0, Booking.Status.CONFIRMED))
+        self.assertEqual((booking.grand_total, booking.status), (0, Booking.Status.PENDING_PAYMENT))
         self.assertEqual(booking.invoices.get().tax_total, 7000)
         self.assertEqual(booking.coupon_discount_amount, 80500)
+
+    def test_zero_balance_confirmation_rejects_payable_and_expired_bookings(self):
+        booking, _ = create_booking(self.data)
+        url = f"/api/v1/public/bookings/{booking.public_token}/confirm-zero-balance/"
+        self.assertEqual(self.client.post(url).status_code, 400)
+        coupon = self.claim(self.campaign(discount_type="percentage", discount_value=100)).data["data"][0]
+        booking, _ = create_booking({**self.data, "coupon_id": coupon["id"]})
+        Booking.objects.filter(pk=booking.pk).update(hold_expires_at=self.now - timedelta(seconds=1))
+        response = self.client.post(f"/api/v1/public/bookings/{booking.public_token}/confirm-zero-balance/")
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(booking.payments.exists())
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, Booking.Status.PENDING_PAYMENT)
 
     def test_fully_funded_booking_and_cancellation_reverse_subsidy(self):
         campaign_id = self.campaign(discount_type="percentage", discount_value=100)
         coupon = self.claim(campaign_id).data["data"][0]
         booking, _ = create_booking({**self.data, "coupon_id": coupon["id"]})
-        self.assertEqual((booking.grand_total, booking.status), (0, Booking.Status.CONFIRMED))
+        self.assertEqual((booking.grand_total, booking.status), (0, Booking.Status.PENDING_PAYMENT))
+        self.assertFalse(booking.payments.exists())
+        invoice = booking.invoices.get()
+        self.assertEqual(invoice.balance, 0)
+        response = self.client.post(f"/api/v1/public/bookings/{booking.public_token}/confirm-zero-balance/")
+        self.assertEqual(response.status_code, 200, response.data)
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, Booking.Status.CONFIRMED)
+        duplicate = self.client.post(f"/api/v1/public/bookings/{booking.public_token}/confirm-zero-balance/")
+        self.assertEqual(duplicate.status_code, 200)
+        self.assertTrue(duplicate.data["duplicate"])
+        self.assertEqual(booking.payments.count(), 1)
         payment = booking.payments.get()
         self.assertEqual(payment.amount, 0)
         self.assertEqual(payment.ota_revenue_ledger.get(event_type="booking_collection").gross_amount, 70000)

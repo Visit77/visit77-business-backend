@@ -10,12 +10,12 @@ from booking.money_display import round_mmk
 
 def _campaigns_in_publication_window(now):
     return CouponCampaign.objects.filter(
-        type="booking", is_active=True, publish_at__lte=now, end_at__gte=now,
+        type="booking", publish_at__lte=now, end_at__gte=now,
     )
 
 
 def published_campaigns(now=None):
-    return _campaigns_in_publication_window(now or timezone.now()).filter(deleted_at__isnull=True)
+    return _campaigns_in_publication_window(now or timezone.now()).filter(is_active=True, deleted_at__isnull=True)
 
 
 def redeemable_campaigns(now=None):
@@ -77,7 +77,7 @@ def booking_coupon_discount(data, hotel, total, *, booking=None):
         raise ValidationError({"coupon": "Each coupon can only be selected once."})
 
     tickets = BookingCoupon.objects.select_related("campaign").filter(
-        user_id=user_id, **{"pk__in" if ids else "code__in": identifiers},
+        user_id=user_id, deleted_at__isnull=True, **{"pk__in" if ids else "code__in": identifiers},
     ).order_by("pk")
     if booking is not None:
         tickets = tickets.select_for_update(of=("self",))
@@ -132,7 +132,7 @@ def restore_expired_booking_coupons(booking):
         raise ValidationError({"coupon": "The original coupon tickets could not be identified."})
 
     tickets = list(BookingCoupon.objects.select_for_update().filter(
-        pk__in=coupon_ids, user_id=booking.booked_by_core_user_id,
+        pk__in=coupon_ids, user_id=booking.booked_by_core_user_id, deleted_at__isnull=True,
     ).order_by("pk"))
     if len(tickets) != len(coupon_ids) or any(ticket.booking_id or ticket.used_at for ticket in tickets):
         raise ValidationError({"coupon": "An original coupon ticket has already been reserved or used."})

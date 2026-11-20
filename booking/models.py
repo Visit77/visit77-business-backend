@@ -1572,6 +1572,7 @@ class BookingCoupon(models.Model):
     user_id = models.PositiveBigIntegerField()
     slot = models.PositiveSmallIntegerField()
     booking = models.ForeignKey(Booking, null=True, blank=True, on_delete=models.PROTECT, related_name="reserved_coupons")
+    deleted_at = models.DateTimeField(null=True, blank=True)
     used_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:

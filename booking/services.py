@@ -2081,9 +2081,6 @@ def create_booking(data, idempotency_key=None):
         "cancellation_policy_snapshot",
     ])
     invoice = ensure_initial_invoice(booking)
-    if booking.coupon_discount_amount and booking.grand_total == 0:
-        record_payment(booking, {"invoice_id": invoice.id, "provider": Payment.Provider.COUPON, "amount": Decimal("0")})
-        booking.refresh_from_db()
     return booking, True
 
 
@@ -3034,7 +3031,8 @@ def record_payment(booking, data, auto_assign=True):
     )
     if payment.status == Payment.Status.PAID:
         coupon_only = payment.provider == Payment.Provider.COUPON and bool(invoice.coupon_discount_amount) and invoice.total == 0
-        commits_booking = payment.amount > 0 or coupon_only
+        zero_balance_confirmed = data.get("_confirm_zero_balance", False) and invoice.total == 0 and payment.amount == 0
+        commits_booking = payment.amount > 0 or coupon_only or zero_balance_confirmed
         if commits_booking:
             consume_booking_coupon(invoice)
         was_pending = booking.status == Booking.Status.PENDING_PAYMENT

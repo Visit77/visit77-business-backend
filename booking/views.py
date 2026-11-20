@@ -1,3 +1,4 @@
+from django.shortcuts import get_object_or_404
 from collections import defaultdict
 from io import BytesIO
 from datetime import datetime, time, timedelta, timezone as datetime_timezone
@@ -798,8 +799,6 @@ class PublicBookingCreateView(APIView):
                     ),
                     file=file,
                 )
-        if created and booking.coupon_discount_amount and booking.grand_total == 0:
-            transaction.on_commit(lambda: queue_booking_confirmation_notifications(str(booking.id)), robust=True)
         response_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
         return success(
             BookingSerializer(booking).data,
@@ -1610,6 +1609,51 @@ class PublicDemoPaymentView(APIView):
             status_code=status.HTTP_201_CREATED,
             status=status.HTTP_201_CREATED,
         )
+
+class PublicZeroBalanceConfirmView(APIView):
+    permission_classes = [AllowAny]
+
+    @transaction.atomic
+    def post(self, request, public_token):
+        booking = get_object_or_404(
+            Booking.objects.select_for_update().select_related("hotel"),
+            public_token=public_token,
+        )
+        if booking.source != Booking.Source.OTA or booking.grand_total != 0:
+            raise ValidationError("Only a zero-total OTA booking can use this confirmation.")
+        existing = booking.payments.filter(
+            status=Payment.Status.PAID, amount=0,
+        ).first()
+        if booking.status == Booking.Status.CONFIRMED and existing:
+            return success({
+                "booking": BookingSerializer(booking, context={"request": request}).data,
+                "payment": PaymentSerializer(existing).data,
+            }, extra_dict={"duplicate": True})
+        if booking.status != Booking.Status.PENDING_PAYMENT:
+            raise ValidationError(f"A booking in status '{booking.status}' cannot be confirmed.")
+
+        invoice = booking.invoices.filter(
+            charge_scope=Invoice.ChargeScope.OTA,
+        ).exclude(status=Invoice.Status.VOID).order_by("issued_at", "id").first()
+        if invoice is None or invoice.total != 0 or invoice.balance != 0:
+            raise ValidationError("The booking does not have a zero-balance invoice.")
+        payment = record_payment(booking, {
+            "invoice_id": invoice.pk,
+            "provider": Payment.Provider.COUPON if invoice.coupon_discount_amount else Payment.Provider.OTHER,
+            "amount": Decimal("0"),
+            "_confirm_zero_balance": True,
+            "metadata": {"source": "user_zero_balance_confirmation"},
+        })
+        booking.refresh_from_db()
+        booking_id = str(booking.pk)
+        transaction.on_commit(
+            lambda: queue_booking_confirmation_notifications(booking_id), robust=True,
+        )
+        return success({
+            "booking": BookingSerializer(booking, context={"request": request}).data,
+            "payment": PaymentSerializer(payment).data,
+        })
+
 
 class PublicAYAPaymentView(APIView):
     permission_classes = [AllowAny]

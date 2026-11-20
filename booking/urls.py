@@ -1,4 +1,4 @@
-from booking.coupon_views import CouponCampaignAdminView, CouponCampaignDetailView, CouponCampaignDiscoveryView, CouponClaimView, MyCouponsView
+from booking.coupon_views import CouponCampaignAdminView, CouponCampaignDetailView, CouponCampaignDiscoveryView, CouponClaimView, MyCouponDetailView, MyCouponsView
 from booking.directory_pricing import AdminDirectoryMinimumPricesView
 from django.urls import path
 from rest_framework.routers import DefaultRouter
@@ -10,6 +10,7 @@ from booking.views import (
     AddOnViewSet,
     BookingViewSet,
     CorePaymentSuccessView,
+    PublicZeroBalanceConfirmView,
     CoreSyncView,
     CoreEventView,
     DailyInventoryViewSet,
@@ -217,6 +218,7 @@ urlpatterns = [
     path("coupon-campaigns/<int:campaign_id>/", CouponCampaignDetailView.as_view()),
     path("coupon-campaigns/<int:campaign_id>/claim/", CouponClaimView.as_view()),
     path("me/coupons/", MyCouponsView.as_view()),
+    path("me/coupons/<uuid:coupon_id>/", MyCouponDetailView.as_view()),
     path("admin/directory/minimum-room-prices/", AdminDirectoryMinimumPricesView.as_view()),
     path("admin/availability/hotel-ids/", AdminAvailableHotelIdsView.as_view()),
     path("admin/ota/hotel-ids/", AdminOTAHotelIdsView.as_view()),
@@ -241,6 +243,7 @@ urlpatterns = [
     ),
     path("public/bookings/<uuid:public_token>/stay-bill/", PublicStayBillView.as_view()),
     path("public/bookings/<uuid:public_token>/aya-payment/", PublicAYAPaymentView.as_view()),
+    path("public/bookings/<uuid:public_token>/confirm-zero-balance/", PublicZeroBalanceConfirmView.as_view()),
     path("public/bookings/<uuid:public_token>/demo-payment/", PublicDemoPaymentView.as_view()),
     path("admin/core-sync/businesses/<int:core_business_id>/", CoreSyncView.as_view()),
     path("admin/core-events/", CoreEventView.as_view()),

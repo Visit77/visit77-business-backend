@@ -87,7 +87,7 @@ def request_user_id(request):
 
 
 def campaign_payload(campaign, request=None, tickets=(), *, include_scope=False):
-    remaining = sum(ticket.booking_id is None and ticket.used_at is None for ticket in tickets)
+    remaining = sum(ticket.deleted_at is None and ticket.booking_id is None and ticket.used_at is None for ticket in tickets)
     datetime_field = serializers.DateTimeField()
     payload = {
         "id": campaign.id, "title": campaign.title, "type": campaign.type,
@@ -146,7 +146,7 @@ def ticket_status(ticket):
     now = timezone.now()
     campaign = ticket.campaign
     if (
-        not campaign.is_active or campaign.end_at < now
+        campaign.end_at < now
         or (campaign.audience == "targeted" and ticket.user_id not in campaign.user_ids)
     ):
         return "expired"
@@ -369,7 +369,7 @@ class MyCouponsView(APIView):
             hotel = get_object_or_404(Hotel, core_business_id=business_id)
             if requested_status is None:
                 requested_status = {"available"}
-        tickets = BookingCoupon.objects.select_related("campaign").filter(user_id=request.user.id).order_by("campaign__end_at", "slot")
+        tickets = BookingCoupon.objects.select_related("campaign").filter(user_id=request.user.id, deleted_at__isnull=True).order_by("campaign__end_at", "slot")
         results = []
         for ticket in tickets:
             if hotel is not None and not campaign_matches_hotel(ticket.campaign, hotel):
@@ -387,3 +387,23 @@ class MyCouponsView(APIView):
                 results.append(result)
         add_campaign_scope_details([result["campaign"] for result in results])
         return success(results)
+
+
+class MyCouponDetailView(APIView):
+    authentication_classes = [CoreJWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    @transaction.atomic
+    def delete(self, request, coupon_id):
+        ticket = get_object_or_404(
+            BookingCoupon.objects.select_for_update(),
+            pk=coupon_id, user_id=request.user.id,
+        )
+        if ticket.deleted_at is None:
+            if ticket.booking_id and ticket.used_at is None:
+                raise serializers.ValidationError({
+                    "coupon": "This coupon is reserved for a booking. Cancel the booking before deleting it.",
+                })
+            ticket.deleted_at = timezone.now()
+            ticket.save(update_fields=["deleted_at"])
+        return success({"detail": "Coupon deleted."})
