@@ -333,7 +333,7 @@ def cleanup_non_ota_revenue_ledgers(hotel=None):
             rate = remittance.commission_rate
         commissionable = max(collections + releases - tax - (service_charge if exclude_service_charge else 0), Decimal("0"))
         commission = _money(commissionable * rate / Decimal("100"))
-        base_net = _money(collections + releases - commission - refunds)
+        base_net = _money(collections + releases - tax - commission - refunds)
         remittance.gross_booking_amount = _money(collections)
         remittance.released_held_funds_amount = _money(releases)
         remittance.tax_amount = _money(tax)
@@ -427,7 +427,7 @@ def generate_weekly_remittance(
     rate = commission_rate_for(hotel)
     commissionable = max(collections + releases - tax, Decimal("0"))
     commission = _money(commissionable * rate / Decimal("100"))
-    exact_net = collections + releases - commission - refunds
+    exact_net = collections + releases - tax - commission - refunds
     net = _money(exact_net if historical else round_mmk(exact_net, hotel.base_currency))
     status = (
         OTARemittance.Status.ACCRUING if accruing
@@ -626,7 +626,7 @@ def recalculate_unpaid_remittance(remittance_id, *, dry_run=False):
     gross = record.gross_booking_amount + record.released_held_funds_amount
     base = max(gross - record.tax_amount, Decimal("0"))
     commission = _money(base * record.commission_rate / Decimal("100"))
-    payout = _money(round_mmk(gross - commission - record.refund_amount + record.adjustment_amount, record.currency))
+    payout = _money(round_mmk(gross - record.tax_amount - commission - record.refund_amount + record.adjustment_amount, record.currency))
     changed = (
         record.commission_excludes_service_charge
         or commission != record.commission_amount

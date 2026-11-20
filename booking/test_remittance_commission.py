@@ -72,11 +72,22 @@ class RemittanceCommissionPolicyTests(TestCase):
         self.assertEqual(payload['booking_collection_tax'], Decimal('500'))
         self.assertEqual(payload['booking_collection_excluding_tax'], Decimal('99500'))
 
+    def test_available_deducts_collection_tax_before_commission(self):
+        self.entry(3500, tax=250, service=750)
+        row = self.generate()
+        self.assertEqual(row.commission_amount, Decimal("162.50"))
+        payload = remittance_data(row)
+        self.assertEqual(payload["available"], Decimal("3088"))
+        row.adjustment_amount = Decimal("11")
+        row.net_remittance_amount += Decimal("11")
+        row.save(update_fields=["adjustment_amount", "net_remittance_amount"])
+        self.assertEqual(remittance_data(row)["net_payout"], Decimal("3099"))
+
     def test_single_payment_service_charge_is_commissionable(self):
         self.entry(256,tax=6,service=50)
         row=self.generate()
         self.assertEqual(row.commission_amount,Decimal('12.50'))
-        self.assertEqual(row.net_remittance_amount,Decimal('244.00'))
+        self.assertEqual(row.net_remittance_amount,Decimal('238.00'))
         self.assertEqual(row.service_charge_amount,Decimal('50'))
         payload=remittance_data(row)
         self.assertEqual(payload['service_charge_amount'],Decimal('50'))
@@ -91,11 +102,11 @@ class RemittanceCommissionPolicyTests(TestCase):
         self.entry(500,event='held_release')
         row=self.generate(accruing=True)
         self.assertEqual(row.commission_amount,Decimal('85'))
-        self.assertEqual(row.net_remittance_amount,Decimal('1645'))
+        self.assertEqual(row.net_remittance_amount,Decimal('1615'))
         self.entry(0,event='refund',refund=200)
         row=self.generate(accruing=True)
         self.assertEqual(row.commission_amount,Decimal('85'))
-        self.assertEqual(row.net_remittance_amount,Decimal('1445'))
+        self.assertEqual(row.net_remittance_amount,Decimal('1415'))
 
     def test_cleanup_recalculates_drafts_with_service_charge_included(self):
         self.entry(256,tax=6,service=50)
@@ -108,7 +119,7 @@ class RemittanceCommissionPolicyTests(TestCase):
         self.assertFalse(OTARevenueLedger.objects.filter(pk=bad.pk).exists())
         row.refresh_from_db()
         self.assertEqual(row.commission_amount,Decimal('12.50'))
-        self.assertEqual(row.net_remittance_amount,Decimal('244.00'))
+        self.assertEqual(row.net_remittance_amount,Decimal('238.00'))
         self.assertFalse(row.commission_excludes_service_charge)
 
     def test_policy_migration_updates_unapproved_drafts_and_preserves_paid_history(self):

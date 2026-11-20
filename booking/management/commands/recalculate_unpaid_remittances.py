@@ -6,7 +6,7 @@ from booking.remittance_services import recalculate_unpaid_remittance, unpaid_re
 
 class Command(BaseCommand):
     help = (
-        "Recalculate unpaid OTA remittances using tax-only commission exclusion. "
+        "Recalculate unpaid OTA remittances deducting tax and commission from payout. "
         "Preserves stored rate, refunds, adjustments and ledger items. "
         "Changed checked statements return to pending for recheck."
     )

@@ -110,10 +110,7 @@ def _item_sections(remittance, normal, bold, small):
                 + item.refund_amount
             )
 
-    definitions = (
-        ("booking_collection", "Booking Collection"),
-        ("held_release", "Release of Held Funds"),
-    )
+    definitions = (("booking_collection", "Booking Collection"),)
     collection_payment_ids = {
         item.ledger_entry.payment_id
         for item in items
@@ -315,13 +312,17 @@ def render_remittance_statement_pdf(remittance):
 
     available = remittance.net_remittance_amount - remittance.adjustment_amount
     adjustment_sign = "+" if remittance.adjustment_amount >= 0 else "-"
+    collection_tax = remittance.tax_amount
+    if remittance.released_held_funds_amount:
+        collection_tax -= sum(
+            (item.tax_amount for item in remittance.items.filter(item_type="held_release")),
+            Decimal("0"),
+        )
     summary_rows = [
-        ("Total Gross Booking Collection", remittance.gross_booking_amount),
-        ("Release of Held Funds", remittance.released_held_funds_amount),
-        ("Tax (Excluded from commission)", remittance.tax_amount),
-        ("Service Charge (Excluded from commission)" if remittance.commission_excludes_service_charge else "Service Charge (Included in commission)", remittance.service_charge_amount),
-        ("Visit 77 Commission", remittance.commission_amount),
-        ("Refund", remittance.refund_amount),
+        ("Total Gross of Booking Collection", remittance.gross_booking_amount),
+        ("Tax", collection_tax),
+        ("Booking Collection (Exclude Tax)", remittance.gross_booking_amount - collection_tax),
+        ("Commission", remittance.commission_amount),
     ]
     payment_data = [[_paragraph(label, normal), _paragraph(_money(value, remittance.currency), right)] for label, value in summary_rows]
     payment_data.extend([
@@ -335,8 +336,8 @@ def render_remittance_statement_pdf(remittance):
     payment_table = Table(payment_data, colWidths=[105 * mm, 61 * mm])
     payment_table.setStyle(TableStyle([
         ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#999999")),
+        ("BACKGROUND", (0, 4), (-1, 4), LIGHT_GREY),
         ("BACKGROUND", (0, 6), (-1, 6), LIGHT_GREY),
-        ("BACKGROUND", (0, 8), (-1, 8), LIGHT_GREY),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 5),
         ("RIGHTPADDING", (0, 0), (-1, -1), 5),

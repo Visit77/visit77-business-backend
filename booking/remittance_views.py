@@ -4,6 +4,7 @@ from io import BytesIO
 import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.db import transaction
 from django.db.models import OuterRef, Q, Subquery, Sum
@@ -286,6 +287,8 @@ def _group_remittance_items(remittance, items, request=None):
 
     sections = []
     for section_type, label in section_types:
+        if section_type == "held_release" and not settings.HELD_FUND_CALCULATION:
+            continue
         rows = section_rows[section_type]
         date_groups = {}
         for row in rows:
@@ -854,7 +857,7 @@ class HotelHeldFundsView(APIView):
                 "total_amount": total_held_fund,
                 "total_refund": total_refund,
                 "date_groups": date_groups,
-            }],
+            }] if settings.HELD_FUND_CALCULATION else [],
         })
 
 
