@@ -1625,10 +1625,7 @@ class PublicZeroBalanceConfirmView(APIView):
             status=Payment.Status.PAID, amount=0,
         ).first()
         if booking.status == Booking.Status.CONFIRMED and existing:
-            return success({
-                "booking": BookingSerializer(booking, context={"request": request}).data,
-                "payment": PaymentSerializer(existing).data,
-            }, extra_dict={"duplicate": True})
+            return success(BookingSerializer(booking, context={"request": request}).data)
         if booking.status != Booking.Status.PENDING_PAYMENT:
             raise ValidationError(f"A booking in status '{booking.status}' cannot be confirmed.")
 
@@ -1637,7 +1634,7 @@ class PublicZeroBalanceConfirmView(APIView):
         ).exclude(status=Invoice.Status.VOID).order_by("issued_at", "id").first()
         if invoice is None or invoice.total != 0 or invoice.balance != 0:
             raise ValidationError("The booking does not have a zero-balance invoice.")
-        payment = record_payment(booking, {
+        record_payment(booking, {
             "invoice_id": invoice.pk,
             "provider": Payment.Provider.COUPON if invoice.coupon_discount_amount else Payment.Provider.OTHER,
             "amount": Decimal("0"),
@@ -1649,10 +1646,7 @@ class PublicZeroBalanceConfirmView(APIView):
         transaction.on_commit(
             lambda: queue_booking_confirmation_notifications(booking_id), robust=True,
         )
-        return success({
-            "booking": BookingSerializer(booking, context={"request": request}).data,
-            "payment": PaymentSerializer(payment).data,
-        })
+        return success(BookingSerializer(booking, context={"request": request}).data)
 
 
 class PublicAYAPaymentView(APIView):
