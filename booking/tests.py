@@ -7321,8 +7321,33 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(room["extra_bed_count"], 2)
         self.assertEqual(room["extra_beds"], 2)
 
+    def test_my_bookings_only_lists_paid_confirmed_bookings(self):
+        from booking.authentication import CoreJWTUser
+        payload = self.payload()
+        payload["rooms"][0].update(quantity=1, adults=1)
+        pending, _ = create_booking({**payload, "booked_by_core_user_id": 501})
+        confirmed, _ = create_booking({**payload, "booked_by_core_user_id": 501})
+        Booking.objects.filter(pk=confirmed.pk).update(status=Booking.Status.CONFIRMED)
+        self.client.force_authenticate(CoreJWTUser(id=501))
+        url = "/api/v1/public/my-bookings/"
+        self.assertEqual(self.client.get(url).data["data"]["bookings"], [])
+        Payment.objects.create(
+            booking=confirmed, provider=Payment.Provider.COUPON,
+            amount=0, currency="MMK", status=Payment.Status.PAID,
+        )
+        Payment.objects.create(
+            booking=confirmed, provider=Payment.Provider.CASH,
+            amount=100, currency="MMK", status=Payment.Status.PAID,
+        )
+        result = self.client.get(url)
+        self.assertEqual(result.data["data"]["count"], 1)
+        self.assertEqual(result.data["data"]["bookings"][0]["id"], str(confirmed.pk))
+        self.assertEqual(self.client.get(url + "?status=pending_payment").data["data"]["count"], 0)
+
     def test_delete_my_booking_only_hides_it_for_the_booker(self):
         booking, _ = create_booking({**self.payload(), "booked_by_core_user_id": 501})
+        record_payment(booking, {"provider": Payment.Provider.CASH, "amount": booking.grand_total})
+        booking.refresh_from_db()
         history_url = "/api/v1/public/my-bookings/"
         delete_url = f"{history_url}{booking.id}/"
         owner = {"HTTP_AUTHORIZATION": f"Bearer {self.core_access_token(user_id=501)}"}
@@ -7368,8 +7393,7 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(created.status_code, 201, created.data)
         booking = Booking.objects.get(id=created.data["data"]["id"])
         self.assertEqual(booking.booked_by_core_user_id, 501)
-        booking.status = Booking.Status.CONFIRMED
-        booking.save(update_fields=["status"])
+        record_payment(booking, {"provider": Payment.Provider.CASH, "amount": booking.grand_total})
 
         history = self.client.get(
             "/api/v1/public/my-bookings/",

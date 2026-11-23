@@ -12,7 +12,7 @@ from django.conf import settings
 from django.http import FileResponse, HttpResponse
 from django.shortcuts import redirect
 from django.db import transaction
-from django.db.models import Count, F, Max, Prefetch, Q
+from django.db.models import Count, Exists, F, Max, OuterRef, Prefetch, Q
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django.utils.text import slugify
@@ -989,7 +989,14 @@ class MyBookingHistoryView(APIView):
     def get(self, request):
         queryset = Booking.objects.filter(
             booked_by_core_user_id=request.user.id, hidden_from_my_bookings=False,
-        ).select_related("hotel").prefetch_related(
+            status__in=[
+                Booking.Status.CONFIRMED, Booking.Status.CHECKED_IN,
+                Booking.Status.CHECKED_OUT, Booking.Status.CANCELED,
+            ],
+        ).filter(Exists(Payment.objects.filter(
+            booking_id=OuterRef("pk"),
+            status__in=[Payment.Status.PAID, Payment.Status.PARTIALLY_REFUNDED, Payment.Status.REFUNDED],
+        ))).select_related("hotel").prefetch_related(
             "rooms__nights", "rooms__assignments__physical_room", "guests",
             "add_ons", "payments", "invoices__lines", "invoices__receipts",
         )
