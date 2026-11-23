@@ -120,7 +120,7 @@ def _merchant_verification_data(hotel):
             "payment_account_number", "bank_account_number", "account_number",
             "mobile_wallet_account", "mobile_wallet_number",
         ),
-        "beneficiary_name": pick("beneficiary_name", "account_name", "account_holder_name"),
+        "beneficiary_name": pick("bank_account_name", "beneficiary_name", "account_name", "account_holder_name"),
         "bank_or_mobile_wallet_name": pick(
             "bank_or_mobile_wallet_name", "bank_name", "wallet_name", "payment_provider_name",
         ),

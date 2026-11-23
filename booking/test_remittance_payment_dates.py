@@ -14,6 +14,20 @@ from booking.models import Hotel, OTARemittance
 class RemittancePaymentDateTests(TestCase):
     base_path = "/api/v1/superadmin/remittances/payment-list/"
 
+    def test_core_bank_account_name_is_used_for_api_and_pdf(self):
+        from types import SimpleNamespace
+        from booking.remittance_views import _merchant_verification_data
+        from booking.booking_services.remittance_pdf import _merchant_details
+        hotel = SimpleNamespace(
+            name="Hotel Win", phone="", address="",
+            core_snapshot={"merchant_verification": {
+                "bank_account_name": "Myo Wai Tun",
+                "bank_account_number": "09262052742",
+            }},
+        )
+        self.assertEqual(_merchant_verification_data(hotel)["beneficiary_name"], "Myo Wai Tun")
+        self.assertEqual(dict(_merchant_details(hotel))["Beneficiary Name"], "Myo Wai Tun")
+
     def get(self, suffix="", **params):
         path = self.base_path + suffix
         request = APIRequestFactory().get(path, params)

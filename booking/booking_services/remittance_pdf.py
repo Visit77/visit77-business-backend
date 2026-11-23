@@ -60,7 +60,7 @@ def _merchant_details(hotel):
             "mobile_wallet_account", "mobile_wallet_number",
         )),
         ("Beneficiary Name", pick(
-            "beneficiary_name", "account_name", "account_holder_name",
+            "bank_account_name", "beneficiary_name", "account_name", "account_holder_name",
         )),
         ("Bank / Mobile Wallet Name", pick(
             "bank_or_mobile_wallet_name", "bank_name", "wallet_name",
