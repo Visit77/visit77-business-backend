@@ -210,7 +210,33 @@ class HotelSerializer(serializers.ModelSerializer):
         return value
 
 
+def public_hotel_policies(hotel):
+    """Hide inactive and unconfigured Core policy shells from guest displays."""
+    policies = dict.fromkeys(("check_in_out", "child", "smoking", "pet", "general_description"))
+    for policy in (hotel.core_snapshot or {}).get("hotel_policies", []) or []:
+        kind = policy.get("policy_type")
+        if kind not in policies or not policy.get("is_active", True):
+            continue
+        config = policy.get("config") or {}
+        description = policy.get("description") or ""
+        if not policy.get("is_configured", bool(config or description.strip())):
+            continue
+        if not config and not description.strip():
+            continue
+        policies[kind] = {
+            "title": policy.get("title") or "",
+            "description": description,
+            "config": config,
+        }
+    return policies
+
+
 class PublicHotelSerializer(serializers.ModelSerializer):
+    hotel_policies = serializers.SerializerMethodField()
+
+    def get_hotel_policies(self, obj):
+        return public_hotel_policies(obj)
+
     direct_booking_package = serializers.CharField(source="package", read_only=True)
     latitude = serializers.SerializerMethodField()
     longitude = serializers.SerializerMethodField()
@@ -236,6 +262,7 @@ class PublicHotelSerializer(serializers.ModelSerializer):
             "longitude",
             "base_currency",
             "direct_booking_package",
+            "hotel_policies",
             "check_in_time",
             "check_out_time",
         ]
@@ -318,6 +345,11 @@ class OTARoomTimelineQuerySerializer(serializers.Serializer):
 
 
 class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
+    hotel_policies = serializers.SerializerMethodField()
+
+    def get_hotel_policies(self, obj):
+        return public_hotel_policies(obj.hotel)
+
     room_type_id = serializers.IntegerField(source="id", read_only=True)
     photos = serializers.SerializerMethodField()
     amenities = serializers.SerializerMethodField()
@@ -535,7 +567,7 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
         model = RoomType
         fields = [
             "room_type_id", "core_room_type_id", "name", "description", "cover_image_url",
-            "photos", "amenities", "facilities", "policies", "bed_type", "beds",
+            "photos", "amenities", "facilities", "policies", "hotel_policies", "bed_type", "beds",
             "room_standard", "room_build_type", "room_view", "room_area", "room_area_from",
             "room_area_to", "area_unit", "size_sqft", "max_adults", "max_children",
             "max_occupancy", "default_prices", "default_price", "rate_plans", "breakfast",

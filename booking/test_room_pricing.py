@@ -186,6 +186,39 @@ class RoomPricingTests(TestCase):
                 )
                 self.assertEqual(available[0]['rate_plans'][0]['extra_bed_price_set_up'], expected)
 
+    def test_estimate_summary_descriptions_include_quantity_and_duration(self):
+        self.room_type.breakfast_plan_type = RoomType.BreakfastPlanType.CUSTOM_PRICE
+        self.room_type.breakfast_custom_local_base_price = Decimal('1000')
+        self.room_type.save()
+        self.payload['rooms'][0].update(quantity=2, breakfast_selected=True)
+        ensure_daily_inventory_for_room_type(self.room_type, self.start, days=2)
+        result = estimate_booking(self.payload)
+        rows = {item['type']: item for item in result['summary_items']}
+        self.assertEqual(rows['room']['desc'], '2 x 2 Nights (Room)')
+        self.assertEqual(rows['breakfast']['desc'], '2 x 2 Days (Breakfast)')
+        self.assertEqual(rows['room']['label'], rows['room']['desc'])
+        self.assertEqual(rows['breakfast']['label'], rows['breakfast']['desc'])
+
+    def test_public_catalog_hotel_policy_shells_are_null(self):
+        from booking.serializers import PublicHotelSerializer, PublicOTARoomTypeCatalogSerializer
+        self.hotel.core_snapshot = {'hotel_policies': [
+            {'policy_type': 'child', 'is_configured': False, 'config': {'age_bands': []}},
+            {'policy_type': 'pet', 'is_configured': True, 'is_active': True,
+             'title': 'Pet Policy', 'config': {'choice': 'not_allowed'}},
+            {'policy_type': 'smoking', 'is_configured': True, 'is_active': False,
+             'config': {'choice': 'non_smoking_property'}},
+            {'policy_type': 'general_description', 'is_configured': True,
+             'config': {'description': 'Welcome to our hotel.'}},
+        ]}
+        hotel = PublicHotelSerializer(self.hotel).data['hotel_policies']
+        room = PublicOTARoomTypeCatalogSerializer(self.room_type).data['hotel_policies']
+        self.assertEqual(hotel, room)
+        self.assertIsNone(room['check_in_out'])
+        self.assertIsNone(room['child'])
+        self.assertIsNone(room['smoking'])
+        self.assertEqual(room['pet']['config']['choice'], 'not_allowed')
+        self.assertEqual(room['general_description']['config']['description'], 'Welcome to our hotel.')
+
     def test_extra_bed_markets_are_independent_and_preserve_zero(self):
         from booking.room_pricing import extra_bed_amounts, extra_bed_price_payload
         self.room_type.extra_bed_local_mmk_price = Decimal('20000')

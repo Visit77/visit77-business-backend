@@ -1602,7 +1602,8 @@ def estimate_booking(data):
         room_stay_total = item_total - extra_bed_stay_total - option_total - meal_plan_stay_total - breakfast_stay_total
         room_summary = {
             "type": "room",
-            "label": f"{quantity} x {room_type.name}",
+            "label": f"{quantity} x {len(dates)} Night{'s' if len(dates) != 1 else ''} ({room_type.name})",
+            "desc": f"{quantity} x {len(dates)} Night{'s' if len(dates) != 1 else ''} ({room_type.name})",
             "room_type_id": room_type.id,
             "core_room_type_id": room_type.core_room_type_id,
             "rate_plan_id": rate_plan.id,
@@ -1619,7 +1620,7 @@ def estimate_booking(data):
                 snapshot = segment["snapshot"]
                 count = segment["nights"]
                 amount = segment["unit_price"] * count * quantity
-                label = room_summary["label"]
+                label = f"{quantity} x {count} Night{'s' if count != 1 else ''} ({room_type.name})"
                 season_name = snapshot.get("seasonal_rate_name")
                 if show_season_name and season_name:
                     label += f" ({season_name})"
@@ -1628,6 +1629,7 @@ def estimate_booking(data):
                 summary_items.append({
                     **room_summary,
                     "label": label,
+                    "desc": label,
                     "night_count": count,
                     "stay_from": segment["start"],
                     "stay_to": segment["end"],
@@ -1683,7 +1685,8 @@ def estimate_booking(data):
         if breakfast_stay_total:
             summary_items.append({
                 "type": "breakfast",
-                "label": f"{quantity} x Breakfast x {len(dates)} Night{'s' if len(dates) != 1 else ''}",
+                "label": f"{quantity} x {len(dates)} Day{'s' if len(dates) != 1 else ''} (Breakfast)",
+                "desc": f"{quantity} x {len(dates)} Day{'s' if len(dates) != 1 else ''} (Breakfast)",
                 "room_type_id": room_type.id,
                 "core_room_type_id": room_type.core_room_type_id,
                 "quantity": quantity,

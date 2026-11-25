@@ -110,7 +110,7 @@ class SeasonalRateTests(TestCase):
             'check_out': self.start + timedelta(days=3),
         }
         room_items = [item for item in estimate_booking(payload)['summary_items'] if item['type'] == 'room']
-        self.assertEqual([(item['label'], item['amount']) for item in room_items], [('1 x Deluxe', 32000)])
+        self.assertEqual([(item['label'], item['amount']) for item in room_items], [('1 x 2 Nights (Deluxe)', 32000)])
         booking, _ = create_booking(payload)
         line = booking.invoices.get().lines.get(metadata__line_type='room')
         self.assertEqual(line.total, 32000)

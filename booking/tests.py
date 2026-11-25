@@ -6457,7 +6457,7 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(data["formatted_grand_total"], "MMK 380,000")
         self.assertEqual(data["summary_text"], "2 Rooms x 2 Nights x 1 Extra Bed")
         self.assertEqual(data["breakfast_summary_text"], "")
-        self.assertEqual(data["summary_items"][0]["label"], "2 x Double Room")
+        self.assertEqual(data["summary_items"][0]["label"], "2 x 2 Nights (Double Room)")
         self.assertEqual(data["summary_items"][1]["label"], "1 x Extra Bed(s)")
 
     def test_public_booking_estimate_echoes_guests_and_splits_breakfast_total(self):
