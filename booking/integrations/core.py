@@ -178,6 +178,7 @@ def sync_business_from_core(core_business_id: int, client=None, *, preserve_acce
     )
     if isinstance(merchant_verification, dict):
         business_snapshot["merchant_verification"] = merchant_verification
+    business_snapshot["hotel_policies"] = hotel_policies
     business_snapshot["hotel_check_in_out_policy"] = hotel_check_in_out_policy
     business_snapshot["hotel_cancellation_policy"] = hotel_cancellation_policy or {
         "type": "non_refundable",
