@@ -8,7 +8,7 @@ from django.db.models import Q
 from django.utils import timezone
 from rest_framework import serializers
 
-from booking.room_pricing import effective_room_amounts, seasonal_price_metadata, extra_bed_price_payload, extra_bed_amounts, discounted_room_amounts, guest_price_fields, market_default_prices, room_price_today
+from booking.room_pricing import extra_bed_price_is_set_up, effective_room_amounts, seasonal_price_metadata, extra_bed_price_payload, extra_bed_amounts, discounted_room_amounts, guest_price_fields, market_default_prices, room_price_today
 from booking.add_on_templates import normalize_configuration_schema
 from booking.models import (
     AddOn,
@@ -471,6 +471,7 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
             "usd_display_price": usd_price,
             "display_price": display_price,
             "display_currency": display_currency,
+            "extra_bed_price_set_up": extra_bed_price_is_set_up(obj, market),
             "extra_bed_base_price": extra_base,
             "extra_bed_base_currency": "MMK",
             "extra_bed_usd_display_price": extra_usd,
@@ -1198,7 +1199,7 @@ class RatePlanSerializer(serializers.ModelSerializer):
             instance.guest_market if instance.guest_market != RatePlan.GuestMarket.ALL else RatePlan.GuestMarket.LOCAL
         )
         base, usd = extra_bed_amounts(instance.room_type, market)
-        data.update(extra_bed_base_price=base, extra_bed_usd_display_price=usd, extra_bed_price=base)
+        data.update(extra_bed_price_set_up=extra_bed_price_is_set_up(instance.room_type, market), extra_bed_base_price=base, extra_bed_usd_display_price=usd, extra_bed_price=base)
         return data
 
     class Meta:

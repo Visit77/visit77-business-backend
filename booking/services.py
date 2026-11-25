@@ -11,7 +11,7 @@ from rest_framework.exceptions import ValidationError
 import logging
 logger = logging.getLogger(__name__)
 
-from booking.room_pricing import effective_room_amounts, seasonal_price_metadata, validate_extra_bed_settlement, extra_bed_price_payload, extra_bed_amounts, discounted_room_amounts, guest_price_fields, market_default_prices
+from booking.room_pricing import extra_bed_price_is_set_up, effective_room_amounts, seasonal_price_metadata, validate_extra_bed_settlement, extra_bed_price_payload, extra_bed_amounts, discounted_room_amounts, guest_price_fields, market_default_prices
 from booking.coupons import booking_coupon_discount, consume_booking_coupon, release_booking_coupon, restore_expired_booking_coupons
 from booking.money_display import format_amount, format_money, round_mmk
 from booking.add_on_templates import validate_configuration_values
@@ -1237,6 +1237,7 @@ def availability_for_hotels(
                 "extra_bed_base_price": extra_base,
                 "extra_bed_base_currency": "MMK",
                 "extra_bed_usd_display_price": extra_usd,
+                "extra_bed_price_set_up": extra_bed_price_is_set_up(room_type, guest_market),
                 "extra_bed_display_price": extra_payload["display_price"],
                 "extra_bed_display_currency": extra_payload["display_currency"],
                 "extra_bed_price": extra_base,

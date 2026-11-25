@@ -165,6 +165,27 @@ class RoomPricingTests(TestCase):
         self.room_type.save()
         self.assertEqual(self.admin_client().patch(url, {'extra_bed_local_base_price': 1}, format='json').status_code, 400)
 
+    def test_extra_bed_setup_flag_per_market_in_all_room_type_plans(self):
+        from booking.serializers import RatePlanSerializer, PublicOTARoomTypeCatalogSerializer
+        self.room_type.extra_bed_local_mmk_price = Decimal('0')
+        self.room_type.save()
+        foreign = RatePlan.objects.create(
+            room_type=self.room_type, code='foreign', name='Foreign', guest_market='foreign',
+            is_default=True, default_price=200000,
+        )
+        for plan, expected in ((self.plan, True), (foreign, False)):
+            with self.subTest(market=plan.guest_market):
+                self.assertEqual(RatePlanSerializer(plan).data['extra_bed_price_set_up'], expected)
+                catalog = PublicOTARoomTypeCatalogSerializer(
+                    self.room_type, context={'guest_market': plan.guest_market},
+                ).data
+                self.assertEqual(catalog['rate_plans'][0]['extra_bed_price_set_up'], expected)
+                ensure_daily_inventory_for_room_type(self.room_type, self.start, days=2)
+                available = availability_for_hotel(
+                    self.hotel, self.start, self.end, guest_market=plan.guest_market,
+                )
+                self.assertEqual(available[0]['rate_plans'][0]['extra_bed_price_set_up'], expected)
+
     def test_extra_bed_markets_are_independent_and_preserve_zero(self):
         from booking.room_pricing import extra_bed_amounts, extra_bed_price_payload
         self.room_type.extra_bed_local_mmk_price = Decimal('20000')

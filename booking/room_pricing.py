@@ -42,6 +42,10 @@ def extra_bed_currency_rates(room_type, market):
     return {'MMK': amount('mmk'), 'USD': amount('usd')}
 
 
+def extra_bed_price_is_set_up(room_type, market):
+    return any(value is not None for value in extra_bed_currency_rates(room_type, market).values())
+
+
 def extra_bed_amounts(room_type, market):
     from decimal import Decimal
     rates = extra_bed_currency_rates(room_type, market)
