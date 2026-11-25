@@ -34,11 +34,9 @@ def guest_price_fields(original_price, payable_price):
 
 
 def extra_bed_currency_rates(room_type, market):
-    """Room-type owned rates; absent foreign currency rates inherit local rates."""
+    """Room-type owned rates for the requested guest market only."""
     def amount(currency):
         value = getattr(room_type, f'extra_bed_{market}_{currency}_price')
-        if value is None and market == 'foreign':
-            value = getattr(room_type, f'extra_bed_local_{currency}_price')
         return value
 
     return {'MMK': amount('mmk'), 'USD': amount('usd')}

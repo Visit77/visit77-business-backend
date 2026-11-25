@@ -153,11 +153,14 @@ class RoomPricingTests(TestCase):
         self.room_type.save()
         self.assertEqual(self.admin_client().patch(url, {'extra_bed_local_base_price': 1}, format='json').status_code, 400)
 
-    def test_extra_bed_market_fallback_zero_and_display_currency(self):
+    def test_extra_bed_markets_are_independent_and_preserve_zero(self):
         from booking.room_pricing import extra_bed_amounts, extra_bed_price_payload
         self.room_type.extra_bed_local_mmk_price = Decimal('20000')
+        self.room_type.extra_bed_local_usd_price = Decimal('10')
+        self.assertEqual(extra_bed_amounts(self.room_type, 'foreign'), (Decimal('0'), None))
+        self.room_type.extra_bed_local_usd_price = None
         self.room_type.extra_bed_foreign_usd_price = Decimal('20')
-        self.assertEqual(extra_bed_amounts(self.room_type, 'foreign'), (Decimal('20000'), Decimal('20')))
+        self.assertEqual(extra_bed_amounts(self.room_type, 'foreign'), (Decimal('0'), Decimal('20')))
         self.assertEqual(extra_bed_price_payload(self.room_type, 'local', 'USD')['display_currency'], 'MMK')
         self.room_type.extra_bed_foreign_mmk_price = Decimal('0')
         self.assertEqual(extra_bed_amounts(self.room_type, 'foreign')[0], 0)
