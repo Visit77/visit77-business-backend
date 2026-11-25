@@ -210,9 +210,13 @@ class RoomPricingTests(TestCase):
             {'policy_type': 'general_description', 'is_configured': True,
              'config': {'description': 'Welcome to our hotel.'}},
         ]}
+        self.hotel.save(update_fields=['core_snapshot'])
         hotel = PublicHotelSerializer(self.hotel).data['hotel_policies']
         room = PublicOTARoomTypeCatalogSerializer(self.room_type).data['hotel_policies']
         self.assertEqual(hotel, room)
+        ensure_daily_inventory_for_room_type(self.room_type, self.start, days=2)
+        available = availability_for_hotel(self.hotel, self.start, self.end, guest_market='local')
+        self.assertEqual(available[0]['hotel_policies'], hotel)
         self.assertIsNone(room['check_in_out'])
         self.assertIsNone(room['child'])
         self.assertIsNone(room['smoking'])

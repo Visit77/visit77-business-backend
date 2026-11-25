@@ -1,3 +1,4 @@
+from booking.hotel_policies import public_hotel_policies
 from collections import defaultdict
 from datetime import datetime, time, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -1348,6 +1349,7 @@ def availability_for_hotels(
                 ],
                 "rate_plans": room_plans,
                 "core_snapshot": room_type.core_snapshot,
+                "hotel_policies": public_hotel_policies(room_type.hotel),
             }
             base_payload.update({
                 "extra_bed_available": extra_bed_config["extra_bed_available"],

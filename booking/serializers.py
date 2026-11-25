@@ -1,3 +1,4 @@
+from booking.hotel_policies import public_hotel_policies
 from datetime import timedelta, timezone as datetime_timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import urlsplit
@@ -208,27 +209,6 @@ class HotelSerializer(serializers.ModelSerializer):
         if value not in {"MMK", "USD"}:
             raise serializers.ValidationError("Supported base currencies are MMK and USD.")
         return value
-
-
-def public_hotel_policies(hotel):
-    """Hide inactive and unconfigured Core policy shells from guest displays."""
-    policies = dict.fromkeys(("check_in_out", "child", "smoking", "pet", "general_description"))
-    for policy in (hotel.core_snapshot or {}).get("hotel_policies", []) or []:
-        kind = policy.get("policy_type")
-        if kind not in policies or not policy.get("is_active", True):
-            continue
-        config = policy.get("config") or {}
-        description = policy.get("description") or ""
-        if not policy.get("is_configured", bool(config or description.strip())):
-            continue
-        if not config and not description.strip():
-            continue
-        policies[kind] = {
-            "title": policy.get("title") or "",
-            "description": description,
-            "config": config,
-        }
-    return policies
 
 
 class PublicHotelSerializer(serializers.ModelSerializer):
