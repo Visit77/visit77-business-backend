@@ -24,6 +24,7 @@ class RoomPricingMixin:
         return {
             "room_type_id": room_type.id, "core_room_type_id": room_type.core_room_type_id,
             "room_price_setup": room_type.room_price_setup,
+            "extra_bed_price_set_up": room_type.extra_bed_price_set_up,
             "base_currency": room_type.hotel.base_currency,
             "seasonal_rates": RoomSeasonalRateSerializer(
                 room_type.seasonal_rates.filter(ended_at__isnull=True, end_date__gte=room_price_today(room_type)), many=True,
@@ -72,6 +73,7 @@ class RoomPricingMixin:
             "room_type_id": room_type.id,
             "core_room_type_id": room_type.core_room_type_id,
             "base_currency": "MMK",
+            "extra_bed_price_set_up": room_type.extra_bed_price_set_up,
             **{field: getattr(room_type, source) for field, source in zip(
                 ("local_base_price", "local_usd_price", "foreign_base_price", "foreign_usd_price"),
                 EXTRA_BED_PRICE_FIELDS,

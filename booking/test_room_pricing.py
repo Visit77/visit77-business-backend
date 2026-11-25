@@ -104,6 +104,18 @@ class RoomPricingTests(TestCase):
         return serializer.save()
 
     @override_settings(BOOKING_ADMIN_API_KEY='key')
+    def test_extra_bed_price_set_up_reflects_configured_rates(self):
+        url = f'/api/v1/admin/room-types/{self.room_type.id}/extra-bed-price/'
+        client = self.admin_client()
+        self.assertFalse(client.get(url).data['data']['extra_bed_price_set_up'])
+        response = client.put(url, {'extra_bed_local_base_price': '0'}, format='json')
+        self.assertTrue(response.data['data']['extra_bed_price_set_up'])
+        detail = client.get(f'/api/v1/admin/room-types/{self.room_type.id}/')
+        self.assertTrue(detail.data['data']['extra_bed_price_set_up'])
+        response = client.put(url, {'extra_bed_local_base_price': None}, format='json')
+        self.assertFalse(response.data['data']['extra_bed_price_set_up'])
+
+    @override_settings(BOOKING_ADMIN_API_KEY='key')
     def test_extra_bed_price_setup_and_scoping(self):
         url = f'/api/v1/admin/room-types/{self.room_type.id}/extra-bed-price/'
         response = self.admin_client().put(url, {
@@ -121,7 +133,7 @@ class RoomPricingTests(TestCase):
         response = self.admin_client().get(url)
         self.assertEqual(response.data['data']['local_base_price'], 20000)
         self.assertEqual(response.data['data']['local_usd_price'], 10)
-        self.assertFalse(any(key.startswith('extra_bed_') or '_mmk_' in key for key in response.data['data']))
+        self.assertFalse(any((key.startswith('extra_bed_') and key != 'extra_bed_price_set_up') or '_mmk_' in key for key in response.data['data']))
         self.assertEqual(self.room_type.local_mmk_price, 100000)
         response = self.admin_client().patch(url, {
             'local_base_price': '0.0',

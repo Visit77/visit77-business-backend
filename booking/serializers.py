@@ -554,6 +554,7 @@ class RoomBoardQuerySerializer(serializers.Serializer):
 
 
 class RoomTypeSerializer(serializers.ModelSerializer):
+    extra_bed_price_set_up = serializers.BooleanField(read_only=True)
     local_base_price = serializers.DecimalField(source='local_mmk_price', max_digits=14, decimal_places=2, read_only=True, allow_null=True)
     foreign_base_price = serializers.DecimalField(source='foreign_mmk_price', max_digits=14, decimal_places=2, read_only=True, allow_null=True)
     extra_bed_local_base_price = serializers.DecimalField(source="extra_bed_local_mmk_price", max_digits=14, decimal_places=2, read_only=True, allow_null=True)

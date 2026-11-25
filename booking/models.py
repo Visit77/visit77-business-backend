@@ -244,6 +244,14 @@ class RoomType(models.Model):
     class Meta:
         constraints = [models.UniqueConstraint(fields=["hotel", "core_room_type_id"], name="uniq_core_room_type_per_hotel")]
 
+    @property
+    def extra_bed_price_set_up(self):
+        return any(
+            getattr(self, f"extra_bed_{market}_{currency}_price") is not None
+            for market in ("local", "foreign")
+            for currency in ("mmk", "usd")
+        )
+
     def __str__(self):
         return f"{self.hotel.name} / {self.name}"
 
