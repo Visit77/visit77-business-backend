@@ -115,7 +115,7 @@ def room_price_today(room_type):
 
 
 def market_default_prices(room_type, stay_date, discounts):
-    """Normal Booking setup and campaign reductions for both markets/currencies."""
+    """Effective guest prices and original amounts for both markets/currencies."""
     result = {}
     base_currency = room_type.hotel.base_currency
     campaigns = discounts if room_type.room_price_setup else []
@@ -125,9 +125,9 @@ def market_default_prices(room_type, stay_date, discounts):
         normal_base, normal_usd, base, usd = effective_room_amounts(room_type, normal_base, normal_usd, campaigns, stay_date, market, base_currency)
         usd_promo = guest_price_fields(normal_usd, usd)
         result[market] = {
-            "base_price": normal_base,
+            "base_price": base,
             "base_currency": base_currency,
-            "usd_display_price": normal_usd,
+            "usd_display_price": usd,
             "price_date": str(stay_date),
             **seasonal_price_metadata(room_type, stay_date, market),
             **guest_price_fields(normal_base, base),
