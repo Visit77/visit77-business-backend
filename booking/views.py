@@ -2224,6 +2224,7 @@ class OTARoomSelectionView(APIView):
         room_types = list(hotel.room_types.filter(
             core_active=True,
             booking_enabled=True,
+            room_price_setup=True,
         ).order_by("name", "id"))
         inventory_today = {
             row.room_type_id: row
@@ -2407,12 +2408,14 @@ class OTARoomSelectionView(APIView):
     @staticmethod
     def _payload(
         hotel, timeline_status="all", physical_room_id=None, request=None,
-        include_unselected=False,
+        include_unselected=False, require_price_setup=False,
     ):
         today = timezone.localdate()
         # Selection must include every active room so the client can both select and
         # deselect OTA inventory. OTA-only feeds apply their own ota_enabled filter.
         rooms_query = PhysicalRoom.objects.filter(hotel=hotel, is_active=True)
+        if require_price_setup:
+            rooms_query = rooms_query.filter(room_type__room_price_setup=True)
         if physical_room_id is not None:
             rooms_query = rooms_query.filter(id=physical_room_id)
         rooms = list(rooms_query.select_related("room_type").order_by(
@@ -2595,6 +2598,7 @@ class OTARoomSelectionView(APIView):
             timeline_status=query.validated_data["timeline_status"],
             request=request,
             include_unselected=query.validated_data["include_unselected"],
+            require_price_setup=True,
         ))
 
     @transaction.atomic
@@ -2636,7 +2640,7 @@ class OTARoomSelectionView(APIView):
                 )
         if inventory_mode == Hotel.InventoryMode.ROOM_TYPE_COUNT:
             return success(self._ota_only_payload(hotel, request=request))
-        return success(self._payload(hotel, request=request))
+        return success(self._payload(hotel, request=request, require_price_setup=True))
 
     @transaction.atomic
     def put(self, request):
@@ -2773,7 +2777,7 @@ class OTARoomSelectionView(APIView):
         ])
         for room_type in affected_room_types.values():
             ensure_daily_inventory_for_room_type(room_type)
-        return success(self._payload(hotel, request=request))
+        return success(self._payload(hotel, request=request, require_price_setup=True))
 
 
 class OTARoomHistoryView(APIView):

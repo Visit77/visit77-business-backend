@@ -304,6 +304,26 @@ class RoomPricingTests(TestCase):
         self.assertIsNone(prices['foreign']['base_price'])
         self.assertEqual([plan['guest_market'] for plan in serializer.data['rate_plans']], ['local'])
 
+    @override_settings(BOOKING_ADMIN_API_KEY='key')
+    def test_ota_selection_hides_room_types_without_price_setup_in_both_modes(self):
+        from booking.models import PhysicalRoom
+        unpriced = RoomType.objects.create(
+            hotel=self.hotel, core_room_type_id=303, name='Unpriced',
+            room_type_count_inventory=5, room_price_setup=False,
+        )
+        for index, room_type in enumerate((self.room_type, unpriced)):
+            PhysicalRoom.objects.create(hotel=self.hotel, room_type=room_type,
+                core_physical_room_id=800 + index, room_number=str(index), is_active=True)
+        for mode in (Hotel.InventoryMode.ROOM_TYPE_COUNT, Hotel.InventoryMode.PHYSICAL_ROOM):
+            self.hotel.inventory_mode = mode
+            self.hotel.save(update_fields=['inventory_mode'])
+            response = self.admin_client().get('/api/v1/admin/ota-rooms/selection/',
+                {'include_unselected': 'true'})
+            self.assertEqual(response.status_code, 200, response.data)
+            groups = response.data['data']['room_types']
+            self.assertEqual(len(groups), 1, groups)
+            self.assertNotIn('Unpriced', str(groups))
+
     def test_extra_bed_markets_are_independent_and_preserve_zero(self):
         from booking.room_pricing import extra_bed_amounts, extra_bed_price_payload
         self.room_type.extra_bed_local_mmk_price = Decimal('20000')
