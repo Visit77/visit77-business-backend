@@ -223,6 +223,27 @@ class RoomPricingTests(TestCase):
         self.assertEqual(room['pet']['config']['choice'], 'not_allowed')
         self.assertEqual(room['general_description']['config']['description'], 'Welcome to our hotel.')
 
+    def test_default_prices_include_each_markets_full_plan_payload(self):
+        from booking.serializers import PublicOTARoomTypeCatalogSerializer
+        self.room_type.extra_bed_local_mmk_price = Decimal('5000')
+        foreign = RatePlan.objects.create(
+            room_type=self.room_type, code='foreign', name='Foreign', guest_market='foreign',
+            is_default=True, default_price=200000,
+        )
+        serializer = PublicOTARoomTypeCatalogSerializer(
+            self.room_type, context={'guest_market': 'foreign', 'display_currency': 'USD'},
+        )
+        prices = serializer.data['default_prices']
+        for market, plan in (('local', self.plan), ('foreign', foreign)):
+            expected = serializer._plan_payload(self.room_type, plan, market=market)
+            self.assertTrue(set(expected).issubset(prices[market]))
+            self.assertEqual(prices[market]['id'], plan.id)
+            self.assertEqual(prices[market]['guest_market'], market)
+        self.assertTrue(prices['local']['extra_bed_price_set_up'])
+        self.assertFalse(prices['foreign']['extra_bed_price_set_up'])
+        self.assertEqual(prices['local']['base_price'], Decimal('100000'))
+        self.assertEqual(len(serializer.data['rate_plans']), 1)
+
     def test_extra_bed_markets_are_independent_and_preserve_zero(self):
         from booking.room_pricing import extra_bed_amounts, extra_bed_price_payload
         self.room_type.extra_bed_local_mmk_price = Decimal('20000')

@@ -437,24 +437,33 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
         return self._snapshot_value(obj, "size_sqft")
 
     def get_default_prices(self, obj):
-        return market_default_prices(obj, room_price_today(obj), list(obj.price_discounts.all()))
+        prices = market_default_prices(obj, room_price_today(obj), list(obj.price_discounts.all()))
+        plans = self._plans(obj, filter_market=False)
+        for market, existing in prices.items():
+            candidates = [plan for plan in plans if plan.guest_market == market]
+            if not candidates:
+                candidates = [plan for plan in plans if plan.guest_market == RatePlan.GuestMarket.ALL]
+            if candidates:
+                plan = next((plan for plan in candidates if plan.is_default), candidates[0])
+                prices[market] = {**self._plan_payload(obj, plan, market=market), **existing}
+        return prices
 
-    def _plans(self, obj):
+    def _plans(self, obj, filter_market=True):
         plans = getattr(obj, "ota_catalog_rate_plans", None)
         if plans is None:
             plans = list(obj.rate_plans.filter(is_active=True).order_by("guest_market", "code", "id"))
         guest_market = self.context.get("guest_market")
-        if guest_market:
+        if guest_market and filter_market:
             plans = [
                 plan for plan in plans
                 if plan.guest_market in [guest_market, RatePlan.GuestMarket.ALL]
             ]
         return plans
 
-    def _plan_payload(self, obj, plan):
+    def _plan_payload(self, obj, plan, market=None):
         display_currency = self.context.get("display_currency") or obj.hotel.base_currency
         price_date = room_price_today(obj)
-        market = self.context.get("guest_market") or (
+        market = market or self.context.get("guest_market") or (
             plan.guest_market if plan.guest_market != RatePlan.GuestMarket.ALL else RatePlan.GuestMarket.LOCAL
         )
         original_base, original_usd, base_price, usd_price = effective_room_amounts(
