@@ -1514,6 +1514,7 @@ def estimate_booking(data):
     selected_breakfast_count = 0
     common_adults, common_children = booking_guest_counts(data)
     occupancy = common_adults + common_children
+    remaining_breakfast_guests = common_adults + common_children
     total_guest_capacity = 0
     for requested in data["rooms"]:
         try:
@@ -1550,6 +1551,13 @@ def estimate_booking(data):
         ]
         meal_plan_snapshot = meal_plan_snapshots[0] if meal_plan_snapshots else {}
         breakfast_snapshot, breakfast_unit_price = _resolve_booking_breakfast(room_type, requested, guest_market)
+        if "adults" in data or "children" in data:
+            breakfast_quantity = min(remaining_breakfast_guests, room_type.max_occupancy * quantity)
+            remaining_breakfast_guests -= breakfast_quantity
+        else:
+            breakfast_quantity = requested.get("adults", 1) + requested.get("children", 0)
+        breakfast_snapshot["quantity"] = breakfast_quantity
+        breakfast_snapshot["pricing_unit"] = "per_person_per_day"
         ensure_preference_capacity(
             room_type,
             dates,
@@ -1575,7 +1583,7 @@ def estimate_booking(data):
                 _meal_plan_nightly_total(link, plan, guest_market, quantity)
                 for link, plan in resolved_meal_plans
             ), Decimal("0"))
-            breakfast_night_total = breakfast_unit_price * quantity
+            breakfast_night_total = breakfast_unit_price * breakfast_quantity
             night_total = unit_price * quantity + extra_bed_total + nightly_option_total + meal_plan_night_total + breakfast_night_total
             nights.append({
                 "stay_date": day,
@@ -1600,7 +1608,7 @@ def estimate_booking(data):
         selected_room_count += quantity
         selected_extra_bed_count += extra_beds
         if breakfast_snapshot.get("selected"):
-            selected_breakfast_count += quantity
+            selected_breakfast_count += breakfast_quantity
         room_stay_total = item_total - extra_bed_stay_total - option_total - meal_plan_stay_total - breakfast_stay_total
         room_summary = {
             "type": "room",
@@ -1687,11 +1695,11 @@ def estimate_booking(data):
         if breakfast_stay_total:
             summary_items.append({
                 "type": "breakfast",
-                "label": f"{quantity} x {len(dates)} Day{'s' if len(dates) != 1 else ''} (Breakfast)",
-                "desc": f"{quantity} x {len(dates)} Day{'s' if len(dates) != 1 else ''} (Breakfast)",
+                "label": f"{breakfast_quantity} x {len(dates)} Day{'s' if len(dates) != 1 else ''} (Breakfast)",
+                "desc": f"{breakfast_quantity} x {len(dates)} Day{'s' if len(dates) != 1 else ''} (Breakfast)",
                 "room_type_id": room_type.id,
                 "core_room_type_id": room_type.core_room_type_id,
-                "quantity": quantity,
+                "quantity": breakfast_quantity,
                 "amount": breakfast_stay_total,
                 "formatted_amount": format_money(breakfast_stay_total, hotel.base_currency),
             })
@@ -1788,7 +1796,7 @@ def estimate_booking(data):
             if selected_extra_bed_count else ""
         ),
         "breakfast_summary_text": (
-            f"{selected_breakfast_count} x Breakfast"
+            f"Breakfast ({selected_breakfast_count} x {len(dates)} Day{'s' if len(dates) != 1 else ''})"
             if selected_breakfast_count else ""
         ),
         "room_total": room_total,
@@ -1855,6 +1863,7 @@ def create_booking(data, idempotency_key=None):
     policy_snapshot = {}
     common_adults, common_children = booking_guest_counts(data)
     occupancy = common_adults + common_children
+    remaining_breakfast_guests = common_adults + common_children
     total_guest_capacity = 0
     created_booking_rooms = []
     uses_common_guest_counts = "adults" in data or "children" in data
@@ -1889,6 +1898,13 @@ def create_booking(data, idempotency_key=None):
         meal_plan_link, meal_plan = resolved_meal_plans[0] if resolved_meal_plans else (None, None)
         meal_plan_snapshot = meal_plan_snapshots[0] if meal_plan_snapshots else {}
         breakfast_snapshot, breakfast_unit_price = _resolve_booking_breakfast(room_type, requested, guest_market)
+        if "adults" in data or "children" in data:
+            breakfast_quantity = min(remaining_breakfast_guests, room_type.max_occupancy * quantity)
+            remaining_breakfast_guests -= breakfast_quantity
+        else:
+            breakfast_quantity = requested.get("adults", 1) + requested.get("children", 0)
+        breakfast_snapshot["quantity"] = breakfast_quantity
+        breakfast_snapshot["pricing_unit"] = "per_person_per_day"
         ensure_preference_capacity(
             room_type,
             dates,
@@ -1970,7 +1986,7 @@ def create_booking(data, idempotency_key=None):
                 _meal_plan_nightly_total(link, plan, guest_market, quantity)
                 for link, plan in resolved_meal_plans
             ), Decimal("0"))
-            breakfast_night_total = breakfast_unit_price * quantity
+            breakfast_night_total = breakfast_unit_price * breakfast_quantity
             night_total = unit_price * quantity + extra_bed_total + nightly_option_total + meal_plan_night_total + breakfast_night_total
             BookingRoomNight.objects.create(
                 booking_room=booking_room,
@@ -2363,7 +2379,7 @@ def _booking_charge_lines(booking):
                 "core_meal_plan_id": room.breakfast_snapshot.get("core_meal_plan_id"),
                 "included": included,
             })
-            breakfast["quantity"] += room.quantity
+            breakfast["quantity"] += room.breakfast_snapshot.get("quantity", room.quantity)
             breakfast["total"] += breakfast_total
             breakfast["booking_room_ids"].append(room.id)
             breakfast["room_type_ids"].append(room.room_type_id)
@@ -2471,6 +2487,8 @@ def _booking_charge_lines(booking):
             },
         })
     for breakfast in breakfast_groups.values():
+        if not breakfast["quantity"]:
+            continue
         lines.append({
             "description": (
                 f"{breakfast['name']} x {breakfast['quantity']}"

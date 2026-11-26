@@ -443,9 +443,33 @@ class PublicOTARoomTypeCatalogSerializer(serializers.ModelSerializer):
             candidates = [plan for plan in plans if plan.guest_market == market]
             if not candidates:
                 candidates = [plan for plan in plans if plan.guest_market == RatePlan.GuestMarket.ALL]
+            if not candidates:
+                candidates = list(obj.rate_plans.filter(guest_market=market).order_by("-is_default", "id"))
             if candidates:
                 plan = next((plan for plan in candidates if plan.is_default), candidates[0])
                 prices[market] = {**self._plan_payload(obj, plan, market=market), **existing}
+            else:
+                display_currency = self.context.get("display_currency") or obj.hotel.base_currency
+                extra = extra_bed_price_payload(obj, market, display_currency)
+                prices[market] = {
+                    **existing,
+                    "id": None, "code": None, "name": None,
+                    "guest_market": market, "is_default": False,
+                    "display_price": (
+                        existing["usd_display_price"]
+                        if display_currency == "USD" and existing["usd_display_price"] is not None
+                        else existing["base_price"]
+                    ),
+                    "display_currency": display_currency,
+                    "extra_bed_price_set_up": extra_bed_price_is_set_up(obj, market),
+                    "extra_bed_base_price": extra["base_price"],
+                    "extra_bed_base_currency": extra["base_currency"],
+                    "extra_bed_usd_display_price": extra["usd_display_price"],
+                    "extra_bed_display_price": extra["display_price"],
+                    "extra_bed_display_currency": extra["display_currency"],
+                    "extra_bed_price": extra,
+                    "breakfast_included": None, "refundable": None, "cancellation_policy": None,
+                }
         return prices
 
     def _plans(self, obj, filter_market=True):

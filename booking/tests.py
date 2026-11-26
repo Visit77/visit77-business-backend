@@ -1852,16 +1852,16 @@ class BookingServiceTests(TestCase):
         booking, _ = create_booking(payload)
 
         booking_room = booking.rooms.get()
-        self.assertEqual(booking.grand_total, Decimal("368000"))
-        self.assertEqual(booking_room.breakfast_total, Decimal("48000"))
+        self.assertEqual(booking.grand_total, Decimal("416000"))
+        self.assertEqual(booking_room.breakfast_total, Decimal("96000"))
         self.assertEqual(booking_room.breakfast_snapshot["type"], "custom_price")
         self.assertEqual(booking_room.breakfast_snapshot["base_price"], "12000.00")
         self.assertEqual(
             list(booking_room.nights.values_list("breakfast_total", flat=True)),
-            [Decimal("24000"), Decimal("24000")],
+            [Decimal("48000"), Decimal("48000")],
         )
 
-    def test_breakfast_invoice_quantity_follows_selected_room_quantity(self):
+    def test_breakfast_invoice_quantity_follows_adult_quantity(self):
         self.room_type.breakfast_plan_type = RoomType.BreakfastPlanType.CUSTOM_PRICE
         self.room_type.breakfast_custom_local_base_price = Decimal("12000")
         self.room_type.save(update_fields=[
@@ -1875,10 +1875,10 @@ class BookingServiceTests(TestCase):
             invoice_type=Invoice.Type.ROOM_BOOKING,
         ).lines.get(metadata__line_type="breakfast")
 
-        self.assertEqual(breakfast_line.description, "Breakfast x 3 x 2 Nights")
-        self.assertEqual(breakfast_line.quantity, Decimal("3"))
+        self.assertEqual(breakfast_line.description, "Breakfast x 4 x 2 Nights")
+        self.assertEqual(breakfast_line.quantity, Decimal("4"))
         self.assertEqual(breakfast_line.unit_price, Decimal("24000"))
-        self.assertEqual(breakfast_line.total, Decimal("72000"))
+        self.assertEqual(breakfast_line.total, Decimal("96000"))
 
     def test_room_type_breakfast_invoice_uses_full_breakfast_label(self):
         MealPlan.objects.create(
@@ -1898,7 +1898,7 @@ class BookingServiceTests(TestCase):
             invoice_type=Invoice.Type.ROOM_BOOKING,
         ).lines.get(metadata__line_type="breakfast")
 
-        self.assertEqual(breakfast_line.description, "Breakfast x 2 x 2 Nights")
+        self.assertEqual(breakfast_line.description, "Breakfast x 4 x 2 Nights")
 
     def test_initial_invoice_splits_room_extra_bed_meal_plan_and_breakfast_lines(self):
         self.room_type.extra_bed_local_mmk_price = Decimal("30000")
@@ -1937,7 +1937,7 @@ class BookingServiceTests(TestCase):
         self.assertEqual(lines["room"].total, Decimal("320000"))
         self.assertEqual(lines["extra_bed"].total, Decimal("60000"))
         self.assertEqual(lines["meal_plan"].total, Decimal("80000"))
-        self.assertEqual(lines["breakfast"].total, Decimal("48000"))
+        self.assertEqual(lines["breakfast"].total, Decimal("96000"))
         self.assertEqual(lines["room"].description, "Double Room x 2 x 2 Nights")
         self.assertEqual(
             lines["extra_bed"].description,
@@ -1949,10 +1949,10 @@ class BookingServiceTests(TestCase):
         )
         self.assertEqual(
             lines["breakfast"].description,
-            "Breakfast x 2 x 2 Nights",
+            "Breakfast x 4 x 2 Nights",
         )
         self.assertEqual(lines["meal_plan"].quantity, Decimal("2"))
-        self.assertEqual(lines["breakfast"].quantity, Decimal("2"))
+        self.assertEqual(lines["breakfast"].quantity, Decimal("4"))
         self.assertEqual(invoice.total, booking.grand_total)
 
     def test_initial_invoice_groups_separate_booking_rooms_with_the_same_room_type(self):
@@ -2977,9 +2977,9 @@ class BookingApiTests(BookingServiceTests):
         )
 
         self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(response.data["data"]["room_total"], Decimal("44000"))
+        self.assertEqual(response.data["data"]["room_total"], Decimal("84000"))
         self.assertEqual(response.data["data"]["room_charge_total"], Decimal("4000"))
-        self.assertEqual(response.data["data"]["breakfast_total"], Decimal("40000"))
+        self.assertEqual(response.data["data"]["breakfast_total"], Decimal("80000"))
         self.assertEqual(response.data["data"]["total_adults"], 4)
         self.assertEqual(response.data["data"]["total_children"], 0)
 
@@ -6509,7 +6509,7 @@ class BookingApiTests(BookingServiceTests):
         self.assertEqual(data["breakfast_total"], Decimal("60000"))
         self.assertEqual(data["grand_total"], Decimal("540000"))
         self.assertEqual(data["formatted_breakfast_total"], "MMK 60,000")
-        self.assertEqual(data["breakfast_summary_text"], "3 x Breakfast")
+        self.assertEqual(data["breakfast_summary_text"], "Breakfast (3 x 2 Days)")
 
     def test_public_ota_estimate_and_booking_reject_extra_beds_over_room_type_limit(self):
         payload = self.payload()

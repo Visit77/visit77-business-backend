@@ -187,17 +187,27 @@ class RoomPricingTests(TestCase):
                 self.assertEqual(available[0]['rate_plans'][0]['extra_bed_price_set_up'], expected)
 
     def test_estimate_summary_descriptions_include_quantity_and_duration(self):
+        self.room_type.max_occupancy = 3
         self.room_type.breakfast_plan_type = RoomType.BreakfastPlanType.CUSTOM_PRICE
         self.room_type.breakfast_custom_local_base_price = Decimal('1000')
         self.room_type.save()
-        self.payload['rooms'][0].update(quantity=2, breakfast_selected=True)
+        self.payload['rooms'][0].update(quantity=2, adults=3, children=1, breakfast_selected=True)
         ensure_daily_inventory_for_room_type(self.room_type, self.start, days=2)
         result = estimate_booking(self.payload)
         rows = {item['type']: item for item in result['summary_items']}
         self.assertEqual(rows['room']['desc'], '2 x 2 Nights (Room)')
-        self.assertEqual(rows['breakfast']['desc'], '2 x 2 Days (Breakfast)')
+        self.assertEqual(rows['breakfast']['desc'], '4 x 2 Days (Breakfast)')
         self.assertEqual(rows['room']['label'], rows['room']['desc'])
         self.assertEqual(rows['breakfast']['label'], rows['breakfast']['desc'])
+        self.assertEqual(result['breakfast_total'], Decimal('8000'))
+        booking, _ = create_booking(self.payload)
+        self.assertEqual(booking.rooms.get().breakfast_total, Decimal('8000'))
+        self.assertEqual(booking.rooms.get().breakfast_snapshot['quantity'], 4)
+        from booking.services import ensure_initial_invoice
+        invoice = ensure_initial_invoice(booking)
+        line = invoice.lines.get(metadata__line_type='breakfast')
+        self.assertEqual(line.quantity, 4)
+        self.assertEqual(line.total, Decimal('8000'))
 
     def test_public_catalog_hotel_policy_shells_are_null(self):
         from booking.serializers import PublicHotelSerializer, PublicOTARoomTypeCatalogSerializer
@@ -243,6 +253,56 @@ class RoomPricingTests(TestCase):
         self.assertFalse(prices['foreign']['extra_bed_price_set_up'])
         self.assertEqual(prices['local']['base_price'], Decimal('100000'))
         self.assertEqual(len(serializer.data['rate_plans']), 1)
+
+    def test_common_guest_breakfast_is_not_charged_for_each_room_type(self):
+        self.room_type.max_occupancy = 2
+        self.room_type.breakfast_plan_type = RoomType.BreakfastPlanType.CUSTOM_PRICE
+        self.room_type.breakfast_custom_local_base_price = Decimal('1000')
+        self.room_type.save()
+        other = RoomType.objects.create(
+            hotel=self.hotel, core_room_type_id=302, name='Family', max_occupancy=3,
+            room_price_setup=True, room_type_count_inventory=5,
+            breakfast_plan_type=RoomType.BreakfastPlanType.CUSTOM_PRICE,
+            breakfast_custom_local_base_price=Decimal('2000'),
+        )
+        other_plan = RatePlan.objects.create(room_type=other, code='family', name='Family',
+            guest_market='local', default_price=200000)
+        self.payload.update(adults=3, children=1)
+        self.payload['rooms'][0].update(breakfast_selected=True)
+        self.payload['rooms'].append({'core_room_type_id': 302, 'rate_plan_id': other_plan.id,
+            'quantity': 1, 'breakfast_selected': True})
+        for room in (self.room_type, other):
+            ensure_daily_inventory_for_room_type(room, self.start, days=2)
+        estimate = estimate_booking(self.payload)
+        self.assertEqual(estimate['breakfast_total'], Decimal('12000'))
+        self.assertEqual(estimate['breakfast_summary_text'], 'Breakfast (4 x 2 Days)')
+        self.assertEqual(estimate['summary_text'], '2 Rooms x 2 Nights')
+        booking, _ = create_booking(self.payload)
+        self.assertEqual(sum(room.breakfast_total for room in booking.rooms.all()), Decimal('12000'))
+        self.assertEqual(booking.grand_total, estimate['grand_total'])
+        self.assertEqual([room.breakfast_snapshot['quantity'] for room in booking.rooms.order_by('id')], [2, 2])
+
+    def test_foreign_default_prices_are_complete_without_active_foreign_plan(self):
+        from booking.serializers import PublicOTARoomTypeCatalogSerializer
+        self.room_type.foreign_mmk_price = None
+        self.room_type.extra_bed_local_mmk_price = Decimal('5000')
+        serializer = PublicOTARoomTypeCatalogSerializer(self.room_type)
+        prices = serializer.data['default_prices']
+        self.assertEqual(set(prices['local']), set(prices['foreign']))
+        self.assertIsNone(prices['foreign']['id'])
+        self.assertIsNone(prices['foreign']['base_price'])
+        self.assertFalse(prices['foreign']['extra_bed_price_set_up'])
+        foreign = RatePlan.objects.create(
+            room_type=self.room_type, code='foreign-inactive', name='Foreign', guest_market='foreign',
+            is_default=True, is_active=False, default_price=0, breakfast_included=True,
+        )
+        serializer = PublicOTARoomTypeCatalogSerializer(self.room_type)
+        prices = serializer.data['default_prices']
+        self.assertEqual(set(prices['local']), set(prices['foreign']))
+        self.assertEqual(prices['foreign']['id'], foreign.id)
+        self.assertTrue(prices['foreign']['breakfast_included'])
+        self.assertIsNone(prices['foreign']['base_price'])
+        self.assertEqual([plan['guest_market'] for plan in serializer.data['rate_plans']], ['local'])
 
     def test_extra_bed_markets_are_independent_and_preserve_zero(self):
         from booking.room_pricing import extra_bed_amounts, extra_bed_price_payload
