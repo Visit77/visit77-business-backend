@@ -212,7 +212,7 @@ class RoomPricingTests(TestCase):
     def test_public_catalog_hotel_policy_shells_are_null(self):
         from booking.serializers import PublicHotelSerializer, PublicOTARoomTypeCatalogSerializer
         self.hotel.core_snapshot = {'hotel_policies': [
-            {'policy_type': 'child', 'is_configured': False, 'config': {'age_bands': []}},
+            {'policy_type': 'child', 'is_configured': False, 'config': {}, 'description': 'Old notes'},
             {'policy_type': 'pet', 'is_configured': True, 'is_active': True,
              'title': 'Pet Policy', 'config': {'choice': 'not_allowed'}},
             {'policy_type': 'smoking', 'is_configured': True, 'is_active': False,
