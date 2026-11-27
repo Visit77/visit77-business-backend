@@ -324,6 +324,34 @@ class RoomPricingTests(TestCase):
             self.assertEqual(len(groups), 1, groups)
             self.assertNotIn('Unpriced', str(groups))
 
+    @override_settings(BOOKING_INVENTORY_WINDOW_DAYS=2)
+    def test_core_policy_sync_exposes_legacy_config_and_clears_empty_policy(self):
+        from booking.serializers import PublicHotelSerializer, PublicOTARoomTypeCatalogSerializer
+        policy = {'policy_type': 'child', 'title': 'Child Policy', 'is_active': True,
+                  'is_configured': False, 'config': {'rules': [
+                      {'age_from': 0, 'age_to': 4, 'charge_type': 'free'},
+                  ]}}
+        class Client:
+            def provisioning_bundle(client, business_id):
+                return {'business': {'id': business_id, 'name': 'Hotel'},
+                        'access': {'status': 'active', 'package': 'ota_pms'},
+                        'hotel_policies': [policy], 'room_types': [{'id': 301, 'name': 'Room'}]}
+        for configured in (True, False):
+            with self.subTest(configured=configured):
+                if not configured:
+                    policy['config'] = {}
+                    policy['description'] = 'Old notes'
+                sync_business_from_core(77, client=Client())
+                self.hotel.refresh_from_db()
+                self.room_type.refresh_from_db()
+                for payload in (PublicHotelSerializer(self.hotel).data,
+                                PublicOTARoomTypeCatalogSerializer(self.room_type).data):
+                    child = payload['hotel_policies']['child']
+                    if configured:
+                        self.assertEqual(child['config'], policy['config'])
+                    else:
+                        self.assertIsNone(child)
+
     def test_extra_bed_markets_are_independent_and_preserve_zero(self):
         from booking.room_pricing import extra_bed_amounts, extra_bed_price_payload
         self.room_type.extra_bed_local_mmk_price = Decimal('20000')

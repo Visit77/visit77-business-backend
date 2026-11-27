@@ -7,7 +7,7 @@ def public_hotel_policies(hotel):
             continue
         config = policy.get("config") or {}
         description = policy.get("description") or ""
-        if not policy.get("is_configured", bool(config or description.strip())):
+        if not (policy.get("is_configured", False) or bool(config)):
             continue
         if not config and not description.strip():
             continue
